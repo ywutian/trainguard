@@ -35,7 +35,7 @@
       "total_steps": 4
     }
   },
-  "created_at": "2026-09-25T20:53:46.518056+00:00",
+  "created_at": "2026-09-25T21:05:20.169367+00:00",
   "environment": {
     "cpu_count": 10,
     "device": "cpu",
@@ -50,12 +50,12 @@
     {
       "checkpoint_count": 0,
       "checksum_commit_seconds": 0.0,
-      "elapsed_seconds": 1.8881587500000023,
+      "elapsed_seconds": 1.925151832998381,
       "mode": "none",
       "recomputed_steps": 0,
       "repeat": 1,
       "restart_seconds": 0.0,
-      "run_id": "2725649552f8",
+      "run_id": "ae75bf3abbc5",
       "staging_seconds": 0.0,
       "validation_differences": [],
       "validation_passed": true,
@@ -63,69 +63,69 @@
     },
     {
       "checkpoint_count": 4,
-      "checksum_commit_seconds": 0.014200833997165319,
-      "elapsed_seconds": 1.902223082997807,
+      "checksum_commit_seconds": 0.014711457995872479,
+      "elapsed_seconds": 1.9160221250022005,
       "mode": "sync",
       "recomputed_steps": 0,
       "repeat": 1,
       "restart_seconds": 0.0,
-      "run_id": "cd9b91f32cdf",
-      "staging_seconds": 0.0016342930030077696,
+      "run_id": "425c1ade9d5d",
+      "staging_seconds": 0.0016538749987375923,
       "validation_differences": [],
       "validation_passed": true,
-      "writing_seconds": 0.037387248001323314
+      "writing_seconds": 0.04102791699915542
     },
     {
       "checkpoint_count": 4,
-      "checksum_commit_seconds": 0.014110583997535286,
-      "elapsed_seconds": 1.9220208750011807,
+      "checksum_commit_seconds": 0.014890749003825476,
+      "elapsed_seconds": 1.9096272499991755,
       "mode": "async",
       "recomputed_steps": 0,
       "repeat": 1,
       "restart_seconds": 0.0,
-      "run_id": "89a67c13203c",
-      "staging_seconds": 0.0069304580028983764,
+      "run_id": "1616522d4d97",
+      "staging_seconds": 0.006990542999119498,
       "validation_differences": [],
       "validation_passed": true,
-      "writing_seconds": 0.037480707997019636
+      "writing_seconds": 0.04395370800193632
     },
     {
       "checkpoint_count": 4,
-      "checksum_commit_seconds": 0.014020582995726727,
-      "elapsed_seconds": 1.9093372080023983,
+      "checksum_commit_seconds": 0.014522207999107195,
+      "elapsed_seconds": 1.9164007500003208,
       "mode": "sync",
       "recomputed_steps": 0,
       "repeat": 2,
       "restart_seconds": 0.0,
-      "run_id": "725db6e65707",
-      "staging_seconds": 0.0017374589951941743,
+      "run_id": "f51e2b87cf73",
+      "staging_seconds": 0.0016839579948282335,
       "validation_differences": [],
       "validation_passed": true,
-      "writing_seconds": 0.042539082998700906
+      "writing_seconds": 0.038812750004581176
     },
     {
       "checkpoint_count": 4,
-      "checksum_commit_seconds": 0.014016374996572267,
-      "elapsed_seconds": 1.9036429170009797,
+      "checksum_commit_seconds": 0.014399332994798897,
+      "elapsed_seconds": 1.9317827919985575,
       "mode": "async",
       "recomputed_steps": 0,
       "repeat": 2,
       "restart_seconds": 0.0,
-      "run_id": "1eb80bd6f792",
-      "staging_seconds": 0.006817625002440764,
+      "run_id": "b399b3081752",
+      "staging_seconds": 0.006446499999583466,
       "validation_differences": [],
       "validation_passed": true,
-      "writing_seconds": 0.038285748993075686
+      "writing_seconds": 0.03943112499837298
     },
     {
       "checkpoint_count": 0,
       "checksum_commit_seconds": 0.0,
-      "elapsed_seconds": 1.8739955420023762,
+      "elapsed_seconds": 1.9267763339994417,
       "mode": "none",
       "recomputed_steps": 0,
       "repeat": 2,
       "restart_seconds": 0.0,
-      "run_id": "6213560c55ce",
+      "run_id": "694623755917",
       "staging_seconds": 0.0,
       "validation_differences": [],
       "validation_passed": true,
@@ -133,27 +133,27 @@
     },
     {
       "checkpoint_count": 4,
-      "checksum_commit_seconds": 0.014388374002010096,
-      "elapsed_seconds": 1.8979519589993288,
+      "checksum_commit_seconds": 0.014708623999467818,
+      "elapsed_seconds": 1.9299657499977911,
       "mode": "async",
       "recomputed_steps": 0,
       "repeat": 3,
       "restart_seconds": 0.0,
-      "run_id": "596fb9998386",
-      "staging_seconds": 0.005529374997422565,
+      "run_id": "7b91144a7316",
+      "staging_seconds": 0.006266792002861621,
       "validation_differences": [],
       "validation_passed": true,
-      "writing_seconds": 0.0398349569986749
+      "writing_seconds": 0.03898987600041437
     },
     {
       "checkpoint_count": 0,
       "checksum_commit_seconds": 0.0,
-      "elapsed_seconds": 1.6659667919993808,
+      "elapsed_seconds": 1.9274944999997388,
       "mode": "none",
       "recomputed_steps": 0,
       "repeat": 3,
       "restart_seconds": 0.0,
-      "run_id": "a23ccd8ef913",
+      "run_id": "44d1e7c75208",
       "staging_seconds": 0.0,
       "validation_differences": [],
       "validation_passed": true,
@@ -161,34 +161,34 @@
     },
     {
       "checkpoint_count": 4,
-      "checksum_commit_seconds": 0.013956999999209074,
-      "elapsed_seconds": 1.9153879580007924,
+      "checksum_commit_seconds": 0.014205500003299676,
+      "elapsed_seconds": 1.9413314999983413,
       "mode": "sync",
       "recomputed_steps": 0,
       "repeat": 3,
       "restart_seconds": 0.0,
-      "run_id": "705cf3bb64d8",
-      "staging_seconds": 0.001695832997938851,
+      "run_id": "c9f918df14bf",
+      "staging_seconds": 0.0016385839990107343,
       "validation_differences": [],
       "validation_passed": true,
-      "writing_seconds": 0.03870224899947061
+      "writing_seconds": 0.038724834004824515
     }
   ],
   "summary": {
     "async": {
-      "max_seconds": 1.9220208750011807,
-      "median_seconds": 1.9036429170009797,
-      "min_seconds": 1.8979519589993288
+      "max_seconds": 1.9317827919985575,
+      "median_seconds": 1.9299657499977911,
+      "min_seconds": 1.9096272499991755
     },
     "none": {
-      "max_seconds": 1.8881587500000023,
-      "median_seconds": 1.8739955420023762,
-      "min_seconds": 1.6659667919993808
+      "max_seconds": 1.9274944999997388,
+      "median_seconds": 1.9267763339994417,
+      "min_seconds": 1.925151832998381
     },
     "sync": {
-      "max_seconds": 1.9153879580007924,
-      "median_seconds": 1.9093372080023983,
-      "min_seconds": 1.902223082997807
+      "max_seconds": 1.9413314999983413,
+      "median_seconds": 1.9164007500003208,
+      "min_seconds": 1.9160221250022005
     }
   },
   "workload_fingerprint": "e1c2edea1b0c239d0452a7caa5cc856683f20e3357784ad565fd9bf8c75f1ee9"

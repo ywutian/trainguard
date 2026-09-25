@@ -113,6 +113,16 @@ class RunStore:
         )
         self.database.commit()
 
+    def discard_unlaunched_attempt(self, attempt_id: str) -> None:
+        self.database.execute(
+            "DELETE FROM recoveries WHERE to_attempt=?", (attempt_id,)
+        )
+        self.database.execute(
+            "DELETE FROM attempts WHERE attempt_id=? AND pid IS NULL",
+            (attempt_id,),
+        )
+        self.database.commit()
+
     def record_checkpoint(
         self, path: str, run_id: str, attempt_id: str | None,
         global_step: int | None, status: str, reason: str | None,

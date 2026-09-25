@@ -40,8 +40,39 @@ def _available_local_port() -> int:
         return listener.getsockname()[1]
 
 
-def _stop_process_group(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
+def _owned_group_members(
+    run_dir: Path, run_id: str, attempt_id: str, group_id: int | None = None
+) -> list[int]:
+    result = subprocess.run(
+        ["ps", "axww", "-o", "pid=", "-o", "pgid=", "-o", "command="],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("cannot inspect worker process ownership")
+    members = []
+    for line in result.stdout.splitlines():
+        parts = line.split(maxsplit=2)
+        if len(parts) != 3:
+            continue
+        pid_text, group_text, command = parts
+        if group_id is not None and int(group_text) != group_id:
+            continue
+        if (
+            "trainguard.trainer" in command
+            and f"--run-dir {run_dir}" in command
+            and f"--run-id {run_id}" in command
+            and f"--attempt-id {attempt_id}" in command
+        ):
+            members.append(int(pid_text))
+    return members
+
+
+def _stop_process_group(
+    process: subprocess.Popen[bytes], run_dir: Path, run_id: str, attempt_id: str
+) -> None:
+    if process.poll() is not None and not _owned_group_members(
+        run_dir, run_id, attempt_id, process.pid
+    ):
         return
     try:
         os.killpg(process.pid, signal.SIGTERM)
@@ -50,11 +81,17 @@ def _stop_process_group(process: subprocess.Popen[bytes]) -> None:
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait()
+        pass
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if not _owned_group_members(run_dir, run_id, attempt_id, process.pid):
+            return
+        time.sleep(0.1)
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
 
 
 @contextmanager
@@ -78,14 +115,18 @@ def _pid_identity(pid: int) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def _owned_process_alive(pid: int | None, identity: str | None, run_id: str) -> bool:
-    if pid is None or not identity or _pid_identity(pid) != identity:
-        return False
-    result = subprocess.run(
-        ["ps", "-p", str(pid), "-o", "command="],
-        capture_output=True, text=True, check=False,
-    )
-    return result.returncode == 0 and f"--run-id {run_id}" in result.stdout
+def _owned_process_alive(
+    pid: int | None, identity: str | None, run_id: str, attempt_id: str,
+    run_dir: Path,
+) -> bool:
+    if pid is not None and identity and _pid_identity(pid) == identity:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode == 0 and f"--run-id {run_id}" in result.stdout:
+            return True
+    return bool(_owned_group_members(run_dir, run_id, attempt_id, pid))
 
 
 def _read_events(
@@ -214,22 +255,29 @@ def _launch_attempt(
                     break
                 if time.monotonic() - started > config.run.timeout_seconds:
                     reason = f"attempt exceeded {config.run.timeout_seconds} seconds"
-                    _stop_process_group(process)
+                    _stop_process_group(process, run_dir, run_id, attempt_id)
                     exit_code = process.poll()
                     break
                 if time.monotonic() - last_progress > config.recovery.progress_timeout_seconds:
                     reason = "step progress stalled"
-                    _stop_process_group(process)
+                    _stop_process_group(process, run_dir, run_id, attempt_id)
                     exit_code = process.poll()
                     break
                 time.sleep(0.2)
         except KeyboardInterrupt:
             reason = "interrupted by user"
-            _stop_process_group(process)
+            _stop_process_group(process, run_dir, run_id, attempt_id)
             exit_code = process.poll()
+    orphaned_workers = bool(_owned_group_members(run_dir, run_id, attempt_id, process.pid))
+    if orphaned_workers:
+        _stop_process_group(process, run_dir, run_id, attempt_id)
+        reason = "launcher exited while owned workers remained"
     _read_events(run_dir, attempt_id, run_id, config.run.world_size, offsets, steps, completed)
     summary = _valid_attempt_summary(run_dir, attempt_id, config, run_id)
-    if exit_code == 0 and summary is not None and len(completed) == config.run.world_size:
+    if (
+        exit_code == 0 and not orphaned_workers and summary is not None
+        and len(completed) == config.run.world_size
+    ):
         return AttemptResult(True, "completed all training steps", 0, max(steps.values(), default=0))
     if reason == "launcher exited before completion":
         reason = f"launcher exit code {exit_code}; summary or rank completion missing"
@@ -247,19 +295,35 @@ def _drive(run_dir: Path, status: dict, store: RunStore) -> bool:
     run_id = status["run_id"]
     config = load_config(run_dir / "config.json")
     attempts = store.attempts(run_id)
-    if attempts and attempts[-1]["status"] == "RUNNING":
+    if attempts:
         last = attempts[-1]
-        if _owned_process_alive(last["pid"], last["pid_identity"], run_id):
+        if _owned_process_alive(
+            last["pid"], last["pid_identity"], run_id,
+            last["attempt_id"], run_dir,
+        ):
             raise RunActiveError(f"attempt {last['attempt_id']} still owns a worker group")
-        summary = _valid_attempt_summary(run_dir, last["attempt_id"], config, run_id)
+        summary = (
+            _valid_attempt_summary(run_dir, last["attempt_id"], config, run_id)
+            if last["status"] in {"RUNNING", "SUCCEEDED"} else None
+        )
         if summary is not None:
             write_json_atomic(run_dir / "summary.json", summary)
-            store.finish_attempt(last["attempt_id"], "SUCCEEDED", 0, "completed before controller exit")
+            if last["status"] == "RUNNING":
+                store.finish_attempt(
+                    last["attempt_id"], "SUCCEEDED", 0, "completed before controller exit"
+                )
             store.set_run_status(run_id, "SUCCEEDED")
             _set_status(run_dir, status, "SUCCEEDED", "completed before controller exit")
             return True
-        store.finish_attempt(last["attempt_id"], "INTERRUPTED", None, "controller exited")
-        attempts = store.attempts(run_id)
+        if last["status"] == "RUNNING":
+            attempt_dir = run_dir / "attempts" / last["attempt_id"]
+            if last["pid"] is None and (
+                not attempt_dir.exists() or not any(attempt_dir.iterdir())
+            ):
+                store.discard_unlaunched_attempt(last["attempt_id"])
+            else:
+                store.finish_attempt(last["attempt_id"], "INTERRUPTED", None, "controller exited")
+            attempts = store.attempts(run_id)
 
     while True:
         number = len(attempts) + 1
@@ -278,7 +342,10 @@ def _drive(run_dir: Path, status: dict, store: RunStore) -> bool:
                 return False
 
         attempt_id = f"attempt-{number:03d}"
-        (run_dir / "attempts" / attempt_id).mkdir(parents=True, exist_ok=False)
+        attempt_dir = run_dir / "attempts" / attempt_id
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        if any(attempt_dir.iterdir()):
+            raise RunActiveError(f"unrecorded attempt directory contains files: {attempt_dir}")
         status["attempt_id"] = attempt_id
         _set_status(run_dir, status, "RUNNING", "training in progress")
         store.set_run_status(run_id, "RUNNING")

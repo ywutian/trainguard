@@ -151,3 +151,61 @@ def test_explicit_resume_rejects_live_owner_then_recovers(tmp_path: Path, monkey
         process.wait(timeout=5)
     assert resume(run_dir), (run_dir / "launcher.log").read_text()
     assert json.loads((run_dir / "run.json").read_text())["status"] == "SUCCEEDED"
+
+
+def test_resume_reconciles_completed_attempt_at_retry_limit(tmp_path: Path) -> None:
+    raw = load_config(Path(__file__).parents[1] / "configs" / "cpu_demo.yaml").model_dump()
+    raw["recovery"]["max_restarts"] = 0
+    config = tmp_path / "no-restarts.json"
+    config.write_text(json.dumps(raw))
+    run_dir, succeeded = run(config, tmp_path / "runs")
+    assert succeeded
+    status = json.loads((run_dir / "run.json").read_text())
+    status["status"] = "RUNNING"
+    (run_dir / "run.json").write_text(json.dumps(status))
+    (run_dir / "summary.json").unlink()
+    with sqlite3.connect(run_dir / "run.sqlite3") as database:
+        database.execute("UPDATE runs SET status='RUNNING'")
+    assert resume(run_dir)
+    assert (run_dir / "summary.json").is_file()
+    with sqlite3.connect(run_dir / "run.sqlite3") as database:
+        assert database.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 1
+
+
+def test_resume_reuses_unrecorded_attempt_directory(tmp_path: Path, monkeypatch) -> None:
+    original = controller._drive
+
+    class SimulatedControllerExit(Exception):
+        pass
+
+    def exit_after_directory(run_dir, status, store):
+        (run_dir / "attempts" / "attempt-001").mkdir(parents=True)
+        raise SimulatedControllerExit
+
+    monkeypatch.setattr(controller, "_drive", exit_after_directory)
+    with pytest.raises(SimulatedControllerExit):
+        run(Path(__file__).parents[1] / "configs" / "cpu_demo.yaml", tmp_path / "runs")
+    monkeypatch.setattr(controller, "_drive", original)
+    run_dir = next((tmp_path / "runs").iterdir())
+    assert resume(run_dir)
+    with sqlite3.connect(run_dir / "run.sqlite3") as database:
+        assert database.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 1
+
+
+def test_resume_reuses_recorded_attempt_before_workers_launch(tmp_path: Path, monkeypatch) -> None:
+    original = controller._launch_attempt
+
+    class SimulatedControllerExit(Exception):
+        pass
+
+    def exit_before_launch(*args, **kwargs):
+        raise SimulatedControllerExit
+
+    monkeypatch.setattr(controller, "_launch_attempt", exit_before_launch)
+    with pytest.raises(SimulatedControllerExit):
+        run(Path(__file__).parents[1] / "configs" / "cpu_demo.yaml", tmp_path / "runs")
+    monkeypatch.setattr(controller, "_launch_attempt", original)
+    run_dir = next((tmp_path / "runs").iterdir())
+    assert resume(run_dir)
+    with sqlite3.connect(run_dir / "run.sqlite3") as database:
+        assert database.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 1
