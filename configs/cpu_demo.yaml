@@ -1,0 +1,18 @@
+run:
+  seed: 42
+  world_size: 2
+  backend: gloo
+  device: cpu
+
+training:
+  total_steps: 4
+  sequence_length: 16
+  batch_size_per_rank: 2
+  dataloader_workers: 0
+
+model:
+  vocab_size: 128
+  hidden_size: 64
+  num_heads: 4
+  num_layers: 1
+  dropout: 0.0

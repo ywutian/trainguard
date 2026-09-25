@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "trainguard"
+version = "0.1.0"
+description = "Verified recovery experiments for distributed PyTorch training"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = "MIT"
+authors = [{ name = "Yitian Wu" }]
+dependencies = [
+    "numpy>=2,<3",
+    "pydantic>=2.11,<3",
+    "pyyaml>=6,<7",
+    "torch==2.10.0",
+    "typer>=0.19,<1",
+]
+
+[project.scripts]
+trainguard = "trainguard.cli:app"
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "ruff>=0.14,<1"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/trainguard"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
