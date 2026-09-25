@@ -31,7 +31,7 @@ If a controller exits after a committed checkpoint, resume its run directory wit
 uv run trainguard resume runs/<run-id>
 ```
 
-Resume refuses to start while the previous owned worker group is still running. A run with no valid committed checkpoint fails clearly. Configuration is copied into the run directory so later changes to the original YAML do not alter recovery.
+Resume refuses to start while the previous owned launcher or worker group is still running, including the interval before a launcher PID is recorded. A run with no valid committed checkpoint fails clearly. Configuration is copied into the run directory so later changes to the original YAML do not alter recovery.
 
 ## Checkpoints and records
 
@@ -41,13 +41,13 @@ The run directory also contains `run.json`, a SQLite index (`run.sqlite3`), `lau
 
 ## Experiments
 
-Run three repetitions each without checkpoints, with synchronous DCP, and with native asynchronous DCP:
+Run five repetitions each without checkpoints, with synchronous DCP, and with native asynchronous DCP on the longer CPU workload:
 
 ```bash
-uv run trainguard benchmark --config configs/cpu_demo.yaml --output-root runs --repetitions 3
+uv run trainguard benchmark --config configs/cpu_benchmark.yaml --output-root runs --repetitions 5
 ```
 
-This writes raw `results.json` and a Markdown report under `runs/benchmark-<id>/`. The [recorded CPU experiment](docs/experiments/cpu-2026-09-25.md) includes raw measurements, environment, method, and limits. Asynchronous saves use a separate communication group so checkpoint traffic can overlap training without mixing collective operations.
+This writes raw `results.json` and a Markdown report under `runs/benchmark-<id>/`. Both total elapsed time and the worker training window are measured, and every run is checked against the uninterrupted reference. The [extended CPU experiment](docs/experiments/cpu-extended-2026-09-25.md) includes raw measurements, environment, method, and limits; the earlier [four-step smoke test](docs/experiments/cpu-2026-09-25.md) remains available. Asynchronous saves use a separate communication group so checkpoint traffic can overlap training without mixing collective operations.
 
 The fault configuration supports `worker_exit`, `save_interrupt`, `corrupt`, and `hang` on the first attempt. `recovery.omit_state` can deliberately omit `rng`, `optimizer`, or `cursor` restoration for negative validation experiments.
 

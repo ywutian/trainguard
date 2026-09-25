@@ -22,6 +22,8 @@ def test_two_rank_reference_run_is_repeatable(tmp_path: Path) -> None:
     assert first["world_size"] == second["world_size"] == 2
     assert first["model_sha256"] == second["model_sha256"]
     assert first["config_fingerprint"] == second["config_fingerprint"]
+    assert first["training_elapsed_seconds"] > 0
+    assert second["training_elapsed_seconds"] > 0
 
     for run_dir in (first_dir, second_dir):
         rank0 = _events(run_dir / "attempts" / "attempt-001" / "rank-0.jsonl")

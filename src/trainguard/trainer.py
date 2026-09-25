@@ -111,6 +111,7 @@ def train(
                 config.recovery.omit_state,
             )
         parameter_count = sum(p.numel() for p in model.parameters())
+        training_started = time.monotonic()
         append_event(
             event_path,
             run_id=run_id,
@@ -199,6 +200,7 @@ def train(
                 )
 
         dist.barrier()
+        training_elapsed_seconds = time.monotonic() - training_started
         if rank == 0:
             write_json_atomic(
                 run_dir / "attempts" / attempt_id / "summary.json",
@@ -215,6 +217,7 @@ def train(
                     "last_loss": last_loss,
                     "torch_version": torch.__version__,
                     "world_size": world_size,
+                    "training_elapsed_seconds": training_elapsed_seconds,
                 },
             )
         append_event(

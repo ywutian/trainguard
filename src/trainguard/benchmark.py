@@ -22,10 +22,12 @@ from trainguard.events import utc_now, write_json_atomic
 from trainguard.validation import validate_runs
 
 
-def summarize_rows(rows: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+def summarize_rows(
+    rows: list[dict[str, Any]], metric: str = "elapsed_seconds"
+) -> dict[str, dict[str, float]]:
     result = {}
     for mode in sorted({row["mode"] for row in rows}):
-        values = [row["elapsed_seconds"] for row in rows if row["mode"] == mode]
+        values = [row[metric] for row in rows if row["mode"] == mode]
         result[mode] = {
             "median_seconds": statistics.median(values),
             "min_seconds": min(values),
@@ -105,18 +107,31 @@ def _report_text(results: dict[str, Any]) -> str:
             f"{summary['min_seconds']:.3f}–{summary['max_seconds']:.3f} | {count} |"
         )
     lines.extend([
+        "", "## Worker training window", "",
+        "| Mode | Median (s) | Range (s) | Runs |",
+        "| --- | ---: | ---: | ---: |",
+    ])
+    for mode in ("none", "sync", "async"):
+        summary = results["training_summary"][mode]
+        count = sum(row["mode"] == mode for row in results["raw_runs"])
+        lines.append(
+            f"| {mode} | {summary['median_seconds']:.3f} | "
+            f"{summary['min_seconds']:.3f}–{summary['max_seconds']:.3f} | {count} |"
+        )
+    lines.extend([
         "",
         "## Raw measurements",
         "",
         (
-            "| Mode | Repeat | Elapsed (s) | Checkpoints | Staging (s) | "
+            "| Mode | Repeat | Elapsed (s) | Training (s) | Checkpoints | Staging (s) | "
             "Writing elapsed (s) | Hash + commit (s) | Restart (s) | Recomputed steps | Valid |"
         ),
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ])
     for row in results["raw_runs"]:
         lines.append(
             f"| {row['mode']} | {row['repeat']} | {row['elapsed_seconds']:.3f} | "
+            f"{row['training_seconds']:.3f} | "
             f"{row['checkpoint_count']} | {row['staging_seconds']:.3f} | "
             f"{row['writing_seconds']:.3f} | {row['checksum_commit_seconds']:.3f} | "
             f"{row['restart_seconds']:.3f} | {row['recomputed_steps']} | "
@@ -127,7 +142,8 @@ def _report_text(results: dict[str, Any]) -> str:
         (
             "Each raw row points to its run directory in `results.json`. "
             "Validation uses exact hashes and effective sample IDs (atol=0, rtol=0). "
-            "Mode order rotates across repetitions."
+            "Mode order rotates across repetitions. The exact base configuration is in "
+            "`results.json`, and mode configurations are copied beside this report."
         ),
         "",
         "## Measurement limits",
@@ -135,10 +151,11 @@ def _report_text(results: dict[str, Any]) -> str:
         (
             "Native asynchronous save can overlap writing with training. Its writing elapsed "
             "measurement includes that overlap, so phase totals must not be added to wall time. "
+            "Worker training time starts after process-group and model initialization and ends "
+            "after the final training barrier; it includes checkpoint work but excludes launch. "
             "These runs use a local CPU filesystem; they do not measure GPU, multi-node, "
-            "storage-delay, disk-loss, or host-power-failure behavior. This four-step workload "
-            "is short and includes launch overhead; three repetitions cannot establish a "
-            "general performance advantage."
+            "storage-delay, disk-loss, or host-power-failure behavior. Short workloads and "
+            "few repetitions cannot establish a general performance advantage."
         ),
         "",
     ])
@@ -180,6 +197,9 @@ def run_benchmark(
                 "repeat": repeat,
                 "run_dir": str(run_dir),
                 "elapsed_seconds": elapsed,
+                "training_seconds": json.loads(
+                    (run_dir / "summary.json").read_text(encoding="utf-8")
+                )["training_elapsed_seconds"],
                 "validation_passed": validation["passed"],
                 "validation_differences": validation["differences"],
                 **_run_metrics(run_dir),
@@ -189,6 +209,7 @@ def run_benchmark(
                 raise RuntimeError(f"benchmark correctness comparison failed: {run_dir}")
     results = {
         "created_at": utc_now(),
+        "config": base.model_dump(),
         "workload_fingerprint": base.workload_fingerprint(),
         "environment": {
             "python": sys.version.split()[0],
@@ -202,6 +223,7 @@ def run_benchmark(
         },
         "raw_runs": rows,
         "summary": summarize_rows(rows),
+        "training_summary": summarize_rows(rows, "training_seconds"),
     }
     write_json_atomic(benchmark_dir / "results.json", results)
     (benchmark_dir / "report.md").write_text(_report_text(results), encoding="utf-8")

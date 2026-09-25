@@ -58,7 +58,7 @@ def _owned_group_members(
         if group_id is not None and int(group_text) != group_id:
             continue
         if (
-            "trainguard.trainer" in command
+            ("trainguard.trainer" in command or "torch.distributed.run" in command)
             and f"--run-dir {run_dir}" in command
             and f"--run-id {run_id}" in command
             and f"--attempt-id {attempt_id}" in command

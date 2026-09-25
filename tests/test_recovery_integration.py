@@ -81,6 +81,7 @@ def test_async_save_interruption_and_stall_recover(tmp_path: Path) -> None:
     for mode, fault, step in (
         ("async", "worker_exit", 3),
         ("async", "corrupt", 2),
+        ("async", "save_interrupt", 2),
         ("sync", "save_interrupt", 2),
         ("sync", "hang", 2),
     ):
@@ -209,3 +210,41 @@ def test_resume_reuses_recorded_attempt_before_workers_launch(tmp_path: Path, mo
     assert resume(run_dir)
     with sqlite3.connect(run_dir / "run.sqlite3") as database:
         assert database.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 1
+
+
+def test_resume_rejects_unrecorded_live_launcher_before_workers_spawn(
+    tmp_path: Path, monkeypatch
+) -> None:
+    original = controller._launch_attempt
+    launcher = None
+
+    class SimulatedControllerExit(Exception):
+        pass
+
+    def exit_after_spawn(run_dir, config, run_id, attempt_id, selected, store):
+        nonlocal launcher
+        launcher = subprocess.Popen(
+            [
+                sys.executable, "-c", "import time; time.sleep(30)",
+                "-m", "torch.distributed.run", "--run-dir", str(run_dir),
+                "--run-id", run_id, "--attempt-id", attempt_id,
+            ],
+            start_new_session=True,
+        )
+        raise SimulatedControllerExit
+
+    monkeypatch.setattr(controller, "_launch_attempt", exit_after_spawn)
+    try:
+        with pytest.raises(SimulatedControllerExit):
+            run(Path(__file__).parents[1] / "configs" / "cpu_demo.yaml", tmp_path / "runs")
+        monkeypatch.setattr(controller, "_launch_attempt", original)
+        run_dir = next((tmp_path / "runs").iterdir())
+        with pytest.raises(RunActiveError, match="owns a worker group"):
+            resume(run_dir)
+    finally:
+        monkeypatch.setattr(controller, "_launch_attempt", original)
+        if launcher is not None:
+            os.killpg(launcher.pid, signal.SIGTERM)
+            launcher.wait(timeout=5)
+
+    assert resume(run_dir)

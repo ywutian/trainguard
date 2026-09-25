@@ -19,3 +19,14 @@ def test_repetition_order_rotates_modes() -> None:
     assert mode_order(1) == ("none", "sync", "async")
     assert mode_order(2) == ("sync", "async", "none")
     assert mode_order(3) == ("async", "none", "sync")
+
+
+def test_summary_can_measure_training_window_separately_from_launch() -> None:
+    rows = [
+        {"mode": "sync", "elapsed_seconds": 10.0, "training_seconds": 2.0},
+        {"mode": "sync", "elapsed_seconds": 11.0, "training_seconds": 4.0},
+        {"mode": "sync", "elapsed_seconds": 12.0, "training_seconds": 3.0},
+    ]
+    assert summarize_rows(rows, "training_seconds") == {
+        "sync": {"median_seconds": 3.0, "min_seconds": 2.0, "max_seconds": 4.0}
+    }
