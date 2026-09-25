@@ -1,20 +1,10 @@
 # TrainGuard
 
-TrainGuard is a project for testing whether distributed PyTorch training resumes **correctly** after process and checkpoint failures. A run that continues is only correct when model, optimizer, scheduler, random state, and the next data position describe the same completed update.
+TrainGuard tests whether fixed-size distributed PyTorch training resumes from a consistent update boundary. A successful recovery must restore the model, optimizer, scheduler, rank-local random state, completed update count, and next data position. The validator compares the final state and effective sample sequence with an uninterrupted run.
 
-## Current status
+## Status
 
-The repository currently contains the first runnable baseline: a fixed-size CPU DDP training attempt using two Gloo workers, deterministic synthetic token data, validated YAML configuration, per-rank JSONL events, and a bounded launcher. **Checkpoint saving, recovery, fault injection, and correctness comparison are not implemented yet.** See [the roadmap](docs/roadmap.md) for acceptance criteria.
-
-| Capability | Status |
-| --- | --- |
-| CPU DDP reference run | Implemented |
-| Deterministic sample IDs and input tokens | Implemented |
-| Config fingerprint and per-rank event logs | Implemented |
-| Complete-state checkpoint and manifest | Planned |
-| Automatic group restart and explicit resume | Planned |
-| Fault matrix and recovery validator | Planned |
-| Sync versus async DCP benchmark | Planned |
+The CPU recovery path is implemented and tested with two Gloo workers. It supports synchronous and native asynchronous Distributed Checkpoint (DCP), application-level checkpoint commits, bounded full-group restarts, explicit resume, deterministic fault injection, correctness validation, and repeated local benchmarks. GPU, FSDP, multi-node training, and host-power-loss durability remain outside this implementation.
 
 ## Quick start
 
@@ -24,16 +14,42 @@ Requires Python 3.11 or 3.12 and [uv](https://docs.astral.sh/uv/).
 uv sync
 uv run trainguard validate-config --config configs/cpu_demo.yaml
 uv run trainguard run --config configs/cpu_demo.yaml
-uv run pytest
+uv run trainguard run --config configs/recovery_demo.yaml
 ```
 
-Each run creates `runs/<run-id>/` with `run.json`, `launcher.log`, `summary.json` on success, and one JSONL event file per rank under `attempts/attempt-001/`. Generated run data is excluded from version control. The demo uses four steps to keep the first smoke test short; the config can be copied and adjusted for larger experiments.
+The first run is an uninterrupted reference. The second injects a rank-0 exit after step 2, restarts the group from a committed checkpoint, and completes. Each command prints its run directory. Compare the two directories:
 
-## Design boundaries
+```bash
+uv run trainguard validate --reference runs/<reference-id> --recovered runs/<recovered-id>
+```
 
-The target system is single-node and fixed-size for its first recovery implementation. The controller will own restart decisions while `torchrun` owns worker creation and rendezvous, with `--max-restarts=0`. Only a validated, application-level committed checkpoint will be eligible for recovery. Each checkpoint must contain model, optimizer, scheduler, global step, per-rank RNG, and per-rank data cursor state from the same update boundary.
+Validation writes `validation.json` in the recovered run directory. It checks exact SHA-256 digests for model, optimizer, and scheduler state, the completed step, and each rank's effective sample sequence after removing rolled-back work. The fixed CPU comparison tolerance is `atol=0, rtol=0`. A mismatch exits with status 1.
 
-The current launcher runs a single attempt and does **not** claim recovery correctness. The design and planned failure cases are documented in [architecture](docs/architecture.md), [recovery semantics](docs/recovery-semantics.md), and [experiment protocol](docs/experiment-protocol.md).
+If a controller exits after a committed checkpoint, resume its run directory with:
+
+```bash
+uv run trainguard resume runs/<run-id>
+```
+
+Resume refuses to start while the previous owned worker group is still running. A run with no valid committed checkpoint fails clearly. Configuration is copied into the run directory so later changes to the original YAML do not alter recovery.
+
+## Checkpoints and records
+
+Each candidate is stored under `runs/<run-id>/checkpoints/step-<step>-<attempt>/`. DCP writes model and optimizer state. Every rank writes its scheduler, Python/NumPy/CPU Torch RNG, completed step, next data step, and compatibility fingerprints. Rank 0 validates all expected files, records sizes and SHA-256 hashes in `manifest.json`, then publishes `COMMITTED`. Recovery scans these files and ignores incomplete, incompatible, or corrupted candidates, falling back to the newest valid older checkpoint.
+
+The run directory also contains `run.json`, a SQLite index (`run.sqlite3`), `launcher.log`, per-attempt rank event logs and summaries, and a final `summary.json`. The committed manifest is the checkpoint validity source if the controller stops before updating SQLite.
+
+## Experiments
+
+Run three repetitions each without checkpoints, with synchronous DCP, and with native asynchronous DCP:
+
+```bash
+uv run trainguard benchmark --config configs/cpu_demo.yaml --output-root runs --repetitions 3
+```
+
+This writes raw `results.json` and a Markdown report under `runs/benchmark-<id>/`. The [recorded CPU experiment](docs/experiments/cpu-2026-09-25.md) includes raw measurements, environment, method, and limits. Asynchronous saves use a separate communication group so checkpoint traffic can overlap training without mixing collective operations.
+
+The fault configuration supports `worker_exit`, `save_interrupt`, `corrupt`, and `hang` on the first attempt. `recovery.omit_state` can deliberately omit `rng`, `optimizer`, or `cursor` restoration for negative validation experiments.
 
 ## Development
 
@@ -42,12 +58,7 @@ uv run ruff check .
 uv run pytest
 ```
 
-The baseline is designed to run locally without a GPU or data download. GPU, multi-node, FSDP, and storage durability across host power loss are outside the first implementation scope.
-
-## References
-
-- [PyTorch torchrun documentation](https://docs.pytorch.org/docs/2.10/elastic/run.html)
-- [PyTorch distributed checkpoint documentation](https://docs.pytorch.org/docs/2.10/distributed.checkpoint.html)
+See the [roadmap](docs/roadmap.md), [architecture](docs/architecture.md), [recovery semantics](docs/recovery-semantics.md), and [experiment protocol](docs/experiment-protocol.md) for the acceptance contract and limitations.
 
 ## License
 

@@ -1,0 +1,195 @@
+{
+  "config": {
+    "checkpoint": {
+      "interval_steps": 1,
+      "mode": "none"
+    },
+    "fault": {
+      "kind": "none",
+      "rank": 0,
+      "step": null
+    },
+    "model": {
+      "dropout": 0.0,
+      "hidden_size": 64,
+      "num_heads": 4,
+      "num_layers": 1,
+      "vocab_size": 128
+    },
+    "recovery": {
+      "max_restarts": 2,
+      "omit_state": "none",
+      "progress_timeout_seconds": 120
+    },
+    "run": {
+      "backend": "gloo",
+      "device": "cpu",
+      "seed": 42,
+      "timeout_seconds": 600,
+      "world_size": 2
+    },
+    "training": {
+      "batch_size_per_rank": 2,
+      "dataloader_workers": 0,
+      "sequence_length": 16,
+      "total_steps": 4
+    }
+  },
+  "created_at": "2026-09-25T20:53:46.518056+00:00",
+  "environment": {
+    "cpu_count": 10,
+    "device": "cpu",
+    "platform": "macOS-26.5.1-arm64-arm-64bit",
+    "python": "3.12.12",
+    "storage": "local filesystem",
+    "torch": "2.10.0",
+    "worker_threads": 1,
+    "world_size": 2
+  },
+  "raw_runs": [
+    {
+      "checkpoint_count": 0,
+      "checksum_commit_seconds": 0.0,
+      "elapsed_seconds": 1.8881587500000023,
+      "mode": "none",
+      "recomputed_steps": 0,
+      "repeat": 1,
+      "restart_seconds": 0.0,
+      "run_id": "2725649552f8",
+      "staging_seconds": 0.0,
+      "validation_differences": [],
+      "validation_passed": true,
+      "writing_seconds": 0.0
+    },
+    {
+      "checkpoint_count": 4,
+      "checksum_commit_seconds": 0.014200833997165319,
+      "elapsed_seconds": 1.902223082997807,
+      "mode": "sync",
+      "recomputed_steps": 0,
+      "repeat": 1,
+      "restart_seconds": 0.0,
+      "run_id": "cd9b91f32cdf",
+      "staging_seconds": 0.0016342930030077696,
+      "validation_differences": [],
+      "validation_passed": true,
+      "writing_seconds": 0.037387248001323314
+    },
+    {
+      "checkpoint_count": 4,
+      "checksum_commit_seconds": 0.014110583997535286,
+      "elapsed_seconds": 1.9220208750011807,
+      "mode": "async",
+      "recomputed_steps": 0,
+      "repeat": 1,
+      "restart_seconds": 0.0,
+      "run_id": "89a67c13203c",
+      "staging_seconds": 0.0069304580028983764,
+      "validation_differences": [],
+      "validation_passed": true,
+      "writing_seconds": 0.037480707997019636
+    },
+    {
+      "checkpoint_count": 4,
+      "checksum_commit_seconds": 0.014020582995726727,
+      "elapsed_seconds": 1.9093372080023983,
+      "mode": "sync",
+      "recomputed_steps": 0,
+      "repeat": 2,
+      "restart_seconds": 0.0,
+      "run_id": "725db6e65707",
+      "staging_seconds": 0.0017374589951941743,
+      "validation_differences": [],
+      "validation_passed": true,
+      "writing_seconds": 0.042539082998700906
+    },
+    {
+      "checkpoint_count": 4,
+      "checksum_commit_seconds": 0.014016374996572267,
+      "elapsed_seconds": 1.9036429170009797,
+      "mode": "async",
+      "recomputed_steps": 0,
+      "repeat": 2,
+      "restart_seconds": 0.0,
+      "run_id": "1eb80bd6f792",
+      "staging_seconds": 0.006817625002440764,
+      "validation_differences": [],
+      "validation_passed": true,
+      "writing_seconds": 0.038285748993075686
+    },
+    {
+      "checkpoint_count": 0,
+      "checksum_commit_seconds": 0.0,
+      "elapsed_seconds": 1.8739955420023762,
+      "mode": "none",
+      "recomputed_steps": 0,
+      "repeat": 2,
+      "restart_seconds": 0.0,
+      "run_id": "6213560c55ce",
+      "staging_seconds": 0.0,
+      "validation_differences": [],
+      "validation_passed": true,
+      "writing_seconds": 0.0
+    },
+    {
+      "checkpoint_count": 4,
+      "checksum_commit_seconds": 0.014388374002010096,
+      "elapsed_seconds": 1.8979519589993288,
+      "mode": "async",
+      "recomputed_steps": 0,
+      "repeat": 3,
+      "restart_seconds": 0.0,
+      "run_id": "596fb9998386",
+      "staging_seconds": 0.005529374997422565,
+      "validation_differences": [],
+      "validation_passed": true,
+      "writing_seconds": 0.0398349569986749
+    },
+    {
+      "checkpoint_count": 0,
+      "checksum_commit_seconds": 0.0,
+      "elapsed_seconds": 1.6659667919993808,
+      "mode": "none",
+      "recomputed_steps": 0,
+      "repeat": 3,
+      "restart_seconds": 0.0,
+      "run_id": "a23ccd8ef913",
+      "staging_seconds": 0.0,
+      "validation_differences": [],
+      "validation_passed": true,
+      "writing_seconds": 0.0
+    },
+    {
+      "checkpoint_count": 4,
+      "checksum_commit_seconds": 0.013956999999209074,
+      "elapsed_seconds": 1.9153879580007924,
+      "mode": "sync",
+      "recomputed_steps": 0,
+      "repeat": 3,
+      "restart_seconds": 0.0,
+      "run_id": "705cf3bb64d8",
+      "staging_seconds": 0.001695832997938851,
+      "validation_differences": [],
+      "validation_passed": true,
+      "writing_seconds": 0.03870224899947061
+    }
+  ],
+  "summary": {
+    "async": {
+      "max_seconds": 1.9220208750011807,
+      "median_seconds": 1.9036429170009797,
+      "min_seconds": 1.8979519589993288
+    },
+    "none": {
+      "max_seconds": 1.8881587500000023,
+      "median_seconds": 1.8739955420023762,
+      "min_seconds": 1.6659667919993808
+    },
+    "sync": {
+      "max_seconds": 1.9153879580007924,
+      "median_seconds": 1.9093372080023983,
+      "min_seconds": 1.902223082997807
+    }
+  },
+  "workload_fingerprint": "e1c2edea1b0c239d0452a7caa5cc856683f20e3357784ad565fd9bf8c75f1ee9"
+}

@@ -1,11 +1,11 @@
 # Recovery semantics
 
-This document describes the intended recovery contract. The current baseline has no checkpoint or recovery implementation.
+`global_step` is the count of completed optimizer updates. The scheduler update for that step has also completed. `next_data_step` identifies the next deterministic sample batch each rank will consume. A valid checkpoint has equal `global_step` and `next_data_step` on every rank.
 
-`global_step` means the number of completed optimizer updates. A checkpoint is taken after the optimizer and scheduler updates for that step. A rank's data cursor identifies the next sample it would read.
+An eligible checkpoint contains DCP model parameters, buffers, and optimizer state; each rank's scheduler and Python/NumPy/CPU Torch random state; the step and next data position; configuration and data fingerprints; fixed world size; and package and PyTorch versions. Every expected rank and DCP file must exist, be a regular file, and match the size and SHA-256 digest listed in `manifest.json`. `COMMITTED` must contain that manifest's digest. An incomplete, uncommitted, incompatible, or checksum-invalid candidate is rejected before DCP load. The newest valid older candidate is selected if necessary.
 
-An eligible checkpoint must include model parameters and buffers, optimizer state, scheduler state, the step, rank-local RNG states, rank-local data cursor, configuration and data fingerprints, world size, and software version. All entries must correspond to the same logical step. The first implementation keeps `world_size` fixed and uses `num_workers=0` for data loading.
+Recovery starts a new process group at the selected completed update. It can recompute updates that were executed after the checkpoint in a failed attempt. The validator discards that rolled-back suffix, then compares the effective per-rank sample IDs for every step against an uninterrupted reference. It also requires exact final model, optimizer, scheduler, and completed-step equality on this deterministic CPU workload (`atol=0`, `rtol=0`).
 
-Recovery may recompute steps after the selected checkpoint. Validation must discard the failed attempt's rolled-back suffix before comparing the effective sample sequence with an uninterrupted reference run. Missing, uncommitted, incompatible, or checksum-invalid checkpoints must not be loaded. If no valid checkpoint remains, the run fails clearly rather than restarting silently from step zero.
+If the controller exits, explicit resume first checks that its previous launcher is no longer alive and owned by the run. A file lock blocks simultaneous controllers. The copied run configuration and committed manifests control recovery even if the original configuration file or SQLite checkpoint index has changed.
 
-The process-failure contract does not claim durability after entire-disk loss or host power failure.
+The process-failure contract does not claim durability after entire-disk loss or host power failure. The implementation fixes `world_size` and keeps data-loading workers at zero.

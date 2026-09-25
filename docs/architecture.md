@@ -1,15 +1,25 @@
 # Architecture
 
-## Runnable baseline
+## Training and control
 
-`trainguard run` validates the YAML configuration, records a run ID and configuration fingerprint, and launches one `torchrun` process group with zero framework restarts. Each rank trains the same model through DDP on disjoint, deterministic samples. Rank events are written to separate JSONL files. Rank 0 writes a final summary after all ranks complete.
+`trainguard run` validates and snapshots configuration, creates a run directory and SQLite index, then launches one `torchrun` process group at a time with `--max-restarts=0`. The controller alone selects checkpoints and decides whether to restart. Every attempt has a distinct ID and its own event files and summary. Rank events include run, attempt, rank, and completed-step IDs; the controller reads only the current attempt and rejects mismatched IDs.
 
-The launcher bounds the total attempt time and terminates its process group on timeout. The baseline does not select checkpoints or restart workers.
+The workload uses fixed-size CPU DDP with Gloo, one deterministic token batch per rank and completed update, and `num_workers=0`. Each step performs an optimizer update, then a scheduler update, then records the next data position. `global_step` counts completed optimizer updates. Model, optimizer, scheduler, RNG, step, and cursor are captured at that boundary.
 
-## Recovery architecture to implement
+## Checkpoint transaction
 
-The controller will be the only recovery decision maker. Workers will save model and optimizer state through PyTorch Distributed Checkpoint, plus rank-local scheduler, RNG, step, and data cursor state. A candidate checkpoint will be eligible for recovery only after all expected rank state is present, file hashes match a manifest, and the application-level commit marker is published.
+`checkpoint_io.py` uses PyTorch DCP to save model and optimizer state. Synchronous save finishes before training continues. Native asynchronous save stages state, allows one save in flight, and waits for its future before starting another. DCP operations use a dedicated Gloo group, separate from DDP training collectives. Every rank writes a JSON file containing scheduler, Python/NumPy/CPU Torch RNG, completed step, next data step, and compatibility data.
 
-The controller will monitor worker exit and step progress, stop the old process group, select the newest valid checkpoint, and launch a new attempt with a distinct ID. Events and completion messages must carry run, attempt, rank, and step identifiers so a late message from an older attempt cannot alter the current run.
+The candidate directory is never eligible while writing. After all ranks finish, rank 0 verifies rank-local state and DCP files, hashes every payload file, writes `manifest.json`, and publishes `COMMITTED` containing the manifest hash. `checkpoint.py` validates the marker, manifest, expected file set, sizes, hashes, fingerprints, world size, software versions, rank states, and step before returning a candidate. The controller scans every candidate and chooses the highest valid step; a corrupt newest candidate does not hide an older valid one.
 
-SQLite will index runs, attempts, checkpoints, and recoveries. Committed checkpoint manifests remain the source of truth for checkpoint validity if the controller exits between a file commit and a database update.
+## Recovery
+
+`controller.py` monitors worker exit, per-rank step progress, an attempt deadline, and a progress deadline. On failure it stops the process group, scans committed manifests, records the decision in SQLite, and starts a new full group from the selected step. Retry count is bounded. If no valid checkpoint remains, the run fails rather than starting from step zero.
+
+`trainguard resume` acquires a per-run file lock. It compares the stored launcher PID, process start identity, and run ID against the current process before starting another group. A live owned group causes an error. If the prior group has exited, the controller reconciles checkpoint files into SQLite and resumes. A per-attempt summary prevents a late prior attempt from replacing the final run summary.
+
+SQLite indexes runs, attempts, checkpoint inspections, and recoveries. The on-disk committed manifest remains the authority for checkpoint validity if a controller exits between file publication and a database update.
+
+## Scope
+
+The first implementation is single-node, fixed-world-size CPU training. It does not claim GPU or FSDP support, multi-node recovery, elastic world-size changes, or durability after host power failure or complete disk loss.

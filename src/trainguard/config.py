@@ -30,6 +30,29 @@ class TrainingSettings(StrictModel):
     dataloader_workers: Literal[0] = 0
 
 
+class CheckpointSettings(StrictModel):
+    mode: Literal["none", "sync", "async"] = "none"
+    interval_steps: int = Field(default=1, ge=1)
+
+
+class RecoverySettings(StrictModel):
+    max_restarts: int = Field(default=2, ge=0)
+    progress_timeout_seconds: int = Field(default=120, ge=1)
+    omit_state: Literal["none", "rng", "optimizer", "cursor"] = "none"
+
+
+class FaultSettings(StrictModel):
+    kind: Literal["none", "worker_exit", "save_interrupt", "corrupt", "hang"] = "none"
+    step: int | None = Field(default=None, ge=1)
+    rank: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_trigger(self) -> FaultSettings:
+        if (self.kind == "none") != (self.step is None):
+            raise ValueError("fault step must be set exactly when a fault kind is selected")
+        return self
+
+
 class ModelSettings(StrictModel):
     vocab_size: int = Field(default=128, ge=4)
     hidden_size: int = Field(default=64, ge=4)
@@ -48,10 +71,45 @@ class ProjectConfig(StrictModel):
     run: RunSettings
     training: TrainingSettings
     model: ModelSettings = Field(default_factory=ModelSettings)
+    checkpoint: CheckpointSettings = Field(default_factory=CheckpointSettings)
+    recovery: RecoverySettings = Field(default_factory=RecoverySettings)
+    fault: FaultSettings = Field(default_factory=FaultSettings)
+
+    @model_validator(mode="after")
+    def validate_fault(self) -> ProjectConfig:
+        if self.fault.rank >= self.run.world_size:
+            raise ValueError("fault rank must be within world size")
+        if self.fault.step is not None and self.fault.step > self.training.total_steps:
+            raise ValueError("fault step must not exceed total steps")
+        if self.fault.kind in {"save_interrupt", "corrupt"} and (
+            self.checkpoint.mode == "none"
+            or (self.fault.step % self.checkpoint.interval_steps != 0
+                and self.fault.step != self.training.total_steps)
+        ):
+            raise ValueError("save fault must target an enabled checkpoint boundary")
+        return self
+
+    @staticmethod
+    def _digest(value: dict) -> str:
+        payload = json.dumps(value, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def fingerprint(self) -> str:
-        payload = json.dumps(self.model_dump(), sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        return self._digest(self.model_dump())
+
+    def workload_fingerprint(self) -> str:
+        return self._digest(
+            {"seed": self.run.seed, "world_size": self.run.world_size,
+             "training": self.training.model_dump(), "model": self.model.model_dump()}
+        )
+
+    def data_fingerprint(self) -> str:
+        return self._digest(
+            {"seed": self.run.seed, "world_size": self.run.world_size,
+             "sequence_length": self.training.sequence_length,
+             "batch_size_per_rank": self.training.batch_size_per_rank,
+             "vocab_size": self.model.vocab_size, "generator": "sample-id-v1"}
+        )
 
 
 def load_config(path: Path) -> ProjectConfig:
