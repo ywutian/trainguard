@@ -120,3 +120,25 @@ def test_rng_state_round_trip() -> None:
     restore_rng(state)
     actual = (random.random(), float(np.random.random()), float(torch.rand(())))
     assert actual == expected
+
+
+def test_checkpoint_rejects_different_rank_consumed_boundaries(tmp_path):
+    path, config = _candidate(tmp_path, 1)
+    state_path = path / 'rank-1.json'
+    state = json.loads(state_path.read_text())
+    state.update(consumed_batches=2, next_data_step=2)
+    write_json_atomic(state_path, state)
+    with pytest.raises(CheckpointInvalid, match='consumed'):
+        commit_checkpoint(path, config, 'run-one', 'attempt-001', 1)
+
+
+def test_checkpoint_rejects_different_source_identity(tmp_path):
+    path, config = _candidate(tmp_path, 1)
+    commit_checkpoint(path, config, 'run-one', 'attempt-001', 1)
+    manifest_path = path / 'manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    manifest['source_sha256'] = '0' * 64
+    write_json_atomic(manifest_path, manifest)
+    (path / 'COMMITTED').write_text(hashlib.sha256(manifest_path.read_bytes()).hexdigest() + '\n')
+    with pytest.raises(CheckpointInvalid, match='source_sha256'):
+        validate_checkpoint(path, config, 'run-one')

@@ -1,0 +1,46 @@
+run:
+  seed: 42
+  world_size: 2
+  backend: gloo
+  device: cpu
+  strategy: ddp
+  deterministic: true
+  timeout_seconds: 600
+training:
+  total_steps: 6
+  sequence_length: 16
+  batch_size_per_rank: 2
+  dataloader_workers: 2
+  prefetch_factor: 2
+  gradient_accumulation_steps: 2
+  precision: fp32
+  max_consecutive_skips: 10
+  loss_log_interval: 10
+model:
+  vocab_size: 128
+  hidden_size: 64
+  num_heads: 4
+  num_layers: 1
+  dropout: 0.2
+checkpoint:
+  mode: async
+  interval_steps: 1
+  poll_interval_steps: 5
+  save_timeout_seconds: 120
+  keep_last_k: null
+  max_retained_bytes: null
+recovery:
+  max_restarts: 2
+  progress_timeout_seconds: 120
+  omit_state: none
+fault:
+  kind: none
+  step: null
+  rank: 0
+  require_committed_step: null
+data:
+  kind: jsonl
+  path: ../examples/tokens.jsonl
+  sha256: 0b98e77cf92a545e36530be75b45e0cfa1a66bb4b06f3c881938c28bf84129ab
+  shuffle: true
+  random_crop: true

@@ -74,3 +74,20 @@ def test_exception_after_spawn_cleans_actual_process(tmp_path, monkeypatch, fail
         for child in spawned:
             controller._stop_process_group(child, tmp_path, "run", "attempt-001")
         store.close()
+
+
+def test_controller_failure_diagnostic_is_not_replaced_by_retry_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        controller,
+        "_launch_attempt",
+        lambda *a: controller.AttemptResult(
+            False, "controller ValueError: invalid current event", 1, 0
+        ),
+    )
+    source = Path(__file__).parents[1] / "configs/cpu_demo.yaml"
+    directory, ok = controller.run(source, tmp_path)
+    assert not ok
+    assert (
+        json.loads((directory / "run.json").read_text())["reason"]
+        == "controller ValueError: invalid current event"
+    )

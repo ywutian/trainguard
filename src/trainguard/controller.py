@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -23,10 +24,12 @@ from trainguard.checkpoint import (
     validate_checkpoint,
 )
 from trainguard.config import ProjectConfig, load_config
+from trainguard.environment import environment_snapshot
 from trainguard.events import append_event, utc_now, write_json_atomic
 from trainguard.lifecycle import prune_checkpoints
 from trainguard.records import parse_event
 from trainguard.run_store import RunStore
+from trainguard.strategy import preflight
 from trainguard.validation import completion_errors
 
 
@@ -68,10 +71,10 @@ def _owned_group_members(
         if group_id is not None and int(group_text) != group_id:
             continue
         if (
-            ("trainguard.trainer" in command or "torch.distributed.run" in command)
-            and f"--run-dir {run_dir}" in command
-            and f"--run-id {run_id}" in command
-            and f"--attempt-id {attempt_id}" in command
+            re.search(r"(?:^|\s)(?:trainguard.trainer|torch.distributed.run)(?:\s|$)", command)
+            and re.search(r"--run-dir " + re.escape(str(run_dir)) + r"(?=\s--|$)", command)
+            and re.search(r"--run-id " + re.escape(run_id) + r"(?=\s|$)", command)
+            and re.search(r"--attempt-id " + re.escape(attempt_id) + r"(?=\s|$)", command)
         ):
             members.append(int(pid_text))
     return members
@@ -141,7 +144,9 @@ def _owned_process_alive(
             text=True,
             check=False,
         )
-        if result.returncode == 0 and f"--run-id {run_id}" in result.stdout:
+        if result.returncode == 0 and re.search(
+            r"--run-id " + re.escape(run_id) + r"(?=\s|$)", result.stdout
+        ):
             return True
     return bool(_owned_group_members(run_dir, run_id, attempt_id, pid))
 
@@ -261,6 +266,7 @@ def _launch_attempt(
     environment = os.environ.copy()
     environment["OMP_NUM_THREADS"] = "1"
     environment["PYTHONUNBUFFERED"] = "1"
+    environment.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     offsets: dict[int, int] = {}
     steps: dict[int, int] = {}
     completed: set[int] = set()
@@ -448,6 +454,9 @@ def _drive(run_dir: Path, status: dict, store: RunStore) -> bool:
             number,
             str(selected.path) if selected else None,
             selected.global_step if selected else 0,
+            json.loads((selected.path / "rank-0.json").read_text())["consumed_batches"]
+            if selected
+            else 0,
         )
         if selected is not None:
             previous = attempts[-1]
@@ -476,6 +485,10 @@ def _drive(run_dir: Path, status: dict, store: RunStore) -> bool:
             store.set_run_status(run_id, "SUCCEEDED")
             _set_status(run_dir, status, "SUCCEEDED", result.reason)
             return True
+        if result.reason.startswith("controller "):
+            store.set_run_status(run_id, "FAILED")
+            _set_status(run_dir, status, "FAILED", result.reason)
+            return False
         if result.reason == "interrupted by user":
             store.set_run_status(run_id, "INTERRUPTED")
             _set_status(run_dir, status, "INTERRUPTED", result.reason)
@@ -485,6 +498,7 @@ def _drive(run_dir: Path, status: dict, store: RunStore) -> bool:
 
 def run(config_path: Path, output_root: Path) -> tuple[Path, bool]:
     config = load_config(config_path.resolve())
+    preflight(config)
     run_id = uuid.uuid4().hex[:12]
     run_dir = (output_root / run_id).resolve()
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -497,6 +511,8 @@ def run(config_path: Path, output_root: Path) -> tuple[Path, bool]:
         "config_fingerprint": config.fingerprint(),
         "started_at": started_at,
         "config": config.model_dump(),
+        "run_schema_version": 2,
+        "environment": environment_snapshot(config.run.world_size, config.run.device, run_dir),
     }
     write_json_atomic(run_dir / "run.json", status)
     store = RunStore(run_dir / "run.sqlite3")
@@ -513,6 +529,13 @@ def resume(run_dir: Path) -> bool:
     run_dir = run_dir.resolve()
     status = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
     config = load_config(run_dir / "config.json")
+    if status.get("run_schema_version") != 2:
+        raise ValueError("run schema is unsupported; use its original source and runtime")
+    current = environment_snapshot(config.run.world_size, config.run.device, run_dir)
+    for field in ("source_sha256", "python", "torch", "versions"):
+        if current[field] != status["environment"].get(field):
+            raise ValueError(f"saved run source or runtime {field} differs")
+    preflight(config)
     if config.fingerprint() != status["config_fingerprint"]:
         raise ValueError("saved config fingerprint differs from run metadata")
     store = RunStore(run_dir / "run.sqlite3")

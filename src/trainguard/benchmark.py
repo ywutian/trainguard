@@ -150,7 +150,7 @@ def _run_metrics(run_dir: Path) -> dict[str, float | int]:
 
 def _report_text(results: dict[str, Any]) -> str:
     lines = [
-        "# CPU checkpoint benchmark",
+        "# Checkpoint benchmark",
         "",
         f"Recorded: {results['created_at']}",
         f"Workload fingerprint: `{results['workload_fingerprint']}`",
@@ -234,8 +234,8 @@ def _report_text(results: dict[str, Any]) -> str:
     for row in results["raw_runs"]:
         lines.append(
             f"| {row['mode']} | {row['repeat']} | {row['staging_seconds']:.3f} | "
-            f"{row['writing_seconds']:.3f} | {row['checksum_commit_seconds']:.3f} | "
-            f"{row['restart_seconds']:.3f} | {row['recomputed_steps']} |"
+            f"{row.get('upload_seconds', 0):.3f} | {row['checksum_commit_seconds']:.3f} | "
+            f"{row.get('recovery_rto_seconds', 0):.3f} | {row['recomputed_steps']} |"
         )
     lines.extend(
         [
@@ -253,13 +253,13 @@ def _report_text(results: dict[str, Any]) -> str:
             "## Measurement limits",
             "",
             (
-                "Completion lag (the raw writing_seconds field) is elapsed time after staging until "
+                "The legacy writing_seconds field is elapsed time after staging until "
                 "the trainer observes completion at the rank barrier. It includes rank-state writes; "
                 "for asynchronous save it also includes overlapping "
                 "training and may exceed actual I/O time, so phase totals must not be added to wall time. "
                 "Worker training time starts after process-group and model initialization and ends "
                 "after the final training barrier; it includes checkpoint work but excludes launch. "
-                "These runs use a local CPU filesystem; they do not measure GPU, multi-node, "
+                "Each report applies only to its recorded device and local filesystem; it does not measure multi-node, "
                 "storage-delay, disk-loss, or host-power-failure behavior. Short workloads and "
                 "few repetitions cannot establish a general performance advantage. "
                 "The host is not isolated; load snapshots do not control other workloads, "
@@ -331,6 +331,8 @@ def _execute_benchmark(directory: Path, results: dict) -> Path:
             )
             reusable = candidates[0].parent if candidates and not slot.get("history") else None
             if reusable is not None:
+                if load_config(reusable / "config.json").fingerprint() != load_config(config_copy).fingerprint():
+                    raise ValueError("benchmark slot configuration differs")
                 run_dir, succeeded = reusable, resume(reusable)
             else:
                 run_dir, succeeded = run(config_copy, root)
@@ -346,6 +348,8 @@ def _execute_benchmark(directory: Path, results: dict) -> Path:
                 raise RuntimeError(
                     f"benchmark correctness comparison failed: {validation['differences']}"
                 )
+            summary = json.loads((run_dir / "summary.json").read_text())
+            rank_states = summary.get("rank_states", [])
             slot["row"] = {
                 "mode": mode,
                 "repeat": repeat,
@@ -355,6 +359,18 @@ def _execute_benchmark(directory: Path, results: dict) -> Path:
                 "training_seconds": json.loads((run_dir / "summary.json").read_text())[
                     "training_elapsed_seconds"
                 ],
+                "rss_peak_bytes": max(
+                    (item["rss_peak_bytes"] for item in rank_states), default=None
+                ),
+                "gpu_peak_allocated_bytes": max(
+                    (
+                        item["gpu_peak_allocated_bytes"]
+                        for item in rank_states
+                        if item.get("gpu_peak_allocated_bytes") is not None
+                    ),
+                    default=None,
+                ),
+                "rank_training_seconds": [item["training_seconds"] for item in rank_states],
                 "load_average_before": load_before,
                 "load_average_after": list(os.getloadavg()),
                 "validation_passed": validation["passed"],

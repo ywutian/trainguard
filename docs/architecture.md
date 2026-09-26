@@ -1,25 +1,40 @@
 # Architecture
 
-## Training and control
+## Ownership and evidence
 
-`trainguard run` validates and snapshots configuration, creates a run directory and SQLite index, then launches one `torchrun` process group at a time with `--max-restarts=0`. The controller alone selects checkpoints and decides whether to restart. Every attempt has a distinct ID and its own event files and summary. Rank events include run, attempt, rank, and completed-step IDs; the controller reads only the current attempt and rejects mismatched IDs.
+One local controller owns a run under `flock`, launches fixed-size `torchrun` with internal retries disabled, and records attempts/checkpoint selections in SQLite. An attempt is identified by run/attempt/rank IDs and a distinct directory. PID start identity and complete run argument values protect against PID reuse, prefix matches and orphan launchers. All post-spawn exception paths stop the owned group before returning. A controller error is preserved in the status and diagnostic file.
 
-The workload uses fixed-size CPU DDP with Gloo, one deterministic token batch per rank and completed update, and `num_workers=0`. Each step performs an optimizer update, then a scheduler update, then records the next data position. `global_step` counts completed optimizer updates. Model, optimizer, scheduler, RNG, step, and cursor are captured at that boundary.
+`records.py` shares strict parsing and summary checks. `validation.py` reconstructs effective update and batch evidence, including rollback. The controller uses this same completion audit for ordinary exit, controller restart reconciliation and already-successful resume. State hashes describe recorded rank states; they do not independently prove the contents of an unsaved final tensor.
 
-## Checkpoint transaction
+## Training state and devices
 
-`checkpoint_io.py` uses PyTorch DCP to save model and optimizer state. Synchronous save finishes before training continues. Native asynchronous save stages state, allows one save in flight, and waits for its future before starting another. DCP operations use a dedicated Gloo group, separate from DDP training collectives. Every rank writes a JSON file containing scheduler, Python/NumPy/CPU Torch RNG, completed step, next data step, and compatibility data.
+`TrainingState` owns successful update count, consumed microbatches and optional GradScaler state. `data.py` supplies deterministic synthetic batches or immutable JSONL rows with reproducible shuffle/crop. A dedicated DataLoader generator prevents worker creation from perturbing training RNG. Consumption is logged separately from prefetch and successful optimizer updates. Accumulation checkpoints exclude partial gradient windows. Nonfinite scaled gradients are coordinated across ranks; skipped updates do not advance scheduler or update count.
 
-The candidate directory is never eligible while writing. After all ranks finish, rank 0 verifies rank-local state and DCP files, hashes every payload file, writes `manifest.json`, and publishes `COMMITTED` containing the manifest hash. `checkpoint.py` validates the marker, manifest, expected file set, sizes, hashes, fingerprints, world size, software versions, rank states, and step before returning a candidate. The controller scans every candidate and chooses the highest valid step; a corrupt newest candidate does not hide an older valid one.
+`strategy.py` binds CUDA local rank, wraps DDP or applies FSDP2 bottom-up before optimizer construction, and hashes only local DTensor shards. Final summary combines ordered per-rank digests over Gloo, avoiding full model gathering. CUDA execution disables TF32 and nondeterministic attention alternatives for the initial exact contract; unsupported deterministic operators fail rather than switching tolerance silently.
 
-## Recovery
+## Save lifecycle
 
-`controller.py` monitors worker exit, per-rank step progress, an attempt deadline, and a progress deadline. On failure it stops the process group, scans committed manifests, records the decision in SQLite, and starts a new full group from the selected step. Retry count is bounded. If no valid checkpoint remains, the run fails rather than starting from step zero.
+```mermaid
+flowchart LR
+    U[Complete accumulation window] --> S[Prepare and stage snapshot]
+    S --> F[One background DCP upload]
+    S --> T[Continue updates]
+    F --> C[Common control boundary]
+    T --> C
+    C --> V[All ranks ready without error]
+    V --> H[Verify payload and rank states]
+    H --> M[Publish manifest and COMMITTED]
+    M --> R[Newest valid recovery candidate]
+```
 
-`trainguard resume` acquires a per-run file lock. It checks the stored launcher PID and process start identity, then scans for a launcher or workers matching the run directory, run ID, and attempt ID. A live owned process causes an error, including the interval after process creation but before its PID is recorded, or after the launcher exits while workers remain. The controller also stops orphaned workers before an automatic retry. If the prior group has exited, it reconciles completed attempts and reserved attempt directories, scans checkpoint files into SQLite, and resumes. A per-attempt summary prevents a late prior attempt from replacing the final run summary.
+Training communication uses Gloo on CPU or NCCL on CUDA. Save and control each have a dedicated Gloo group. A Future callback records only monotonic completion time; it performs no distributed operation or log write. Main threads coordinate readiness, deadlines and errors, then publish the application transaction. Forced/final waits follow the same coordination rule. Atomic JSON/marker replacement includes file and parent directory synchronization.
 
-SQLite indexes runs, attempts, checkpoint inspections, and recoveries. The on-disk committed manifest remains the authority for checkpoint validity if a controller exits between file publication and a database update.
+Selection uses descending candidate order with full integrity verification until a valid version is found; full-history audit is explicit. `lifecycle.py` applies optional retention under controller ownership, with persisted deletion intent, loading protection, two fallback versions and a reported soft capacity budget. SQLite inspection updates are batched per scan. The save commit still verifies the payload twice; optimization of this read path needs a measured benefit and an independent integrity proof.
 
-## Scope
+## Measurement and experiments
 
-The first implementation is single-node, fixed-world-size CPU training. It does not claim GPU or FSDP support, multi-node recovery, elastic world-size changes, or durability after host power failure or complete disk loss.
+`controller.jsonl` records launch, fault observation, group stopped and selected checkpoint phases. Rank events record initialization, state loaded and first resumed update. RTO spans controller fault observation to all ranks completing their first resumed update; attempt allocation gap remains a separate compatibility metric.
+
+`benchmark.py` persists slot state before/after each run, retains failures, checks source/runtime/configuration identity, reuses completed runs after coordinator interruption and resumes missing slots. Six mode permutations balance order; warm-ups are excluded, raw measurements and paired differences retained. `campaign.py` closes reference/recovery/negative-control acceptance with persistent case evidence. `storage_benchmark.py` measures payload save/hash/load independently of training. `policy.py` computes an explicit budget-constrained interval estimate without automatically changing training.
+
+See [recovery semantics](recovery-semantics.md), [experiment protocol](experiment-protocol.md) and [upgrade acceptance](experiments/full-upgrade-2026-09-26.md) for scope and current evidence.

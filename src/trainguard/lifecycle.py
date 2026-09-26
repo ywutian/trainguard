@@ -39,6 +39,16 @@ def prune_checkpoints(
     protected_paths.update(item.path.resolve() for item in retained)
     journal_path = run_dir / "retention.json"
     previous = json.loads(journal_path.read_text()) if journal_path.exists() else {}
+    if previous and (
+        not isinstance(previous, dict)
+        or previous.get("run_id") != run_id
+        or not isinstance(previous.get("pending"), list)
+    ):
+        raise ValueError("retention intent identity or schema is invalid")
+    if previous.get("pending") and len(valid) < 2:
+        previous["reason"] = "deletion paused until two valid fallback checkpoints exist"
+        write_json_atomic(journal_path, previous)
+        return previous
     targets = {
         str(item.path.resolve()) for item in valid if item.path.resolve() not in protected_paths
     }

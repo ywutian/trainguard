@@ -73,3 +73,22 @@ def test_async_commit_is_observed_before_next_save_interval(tmp_path):
     ):
         assert field in saved
         assert saved[field] >= 0
+
+
+def test_pending_upload_expires_at_coordinated_boundary(single_group, tmp_path):
+    import time
+    pending = checkpoint_io.PendingSave(tmp_path, 1, 0, 0, Future())
+    pending.deadline = time.monotonic() - 1
+    with pytest.raises(TimeoutError, match='deadline'):
+        checkpoint_io.save_ready(pending, single_group)
+
+
+def test_final_flush_coordinates_upload_failure(single_group, tmp_path):
+    settings = load_config(Path(__file__).parents[1] / 'configs/cpu_demo.yaml')
+    future = Future()
+    future.set_exception(ValueError('bad storage'))
+    pending = checkpoint_io.PendingSave(tmp_path, 1, 0, 0, future)
+    with pytest.raises(RuntimeError, match='upload'):
+        checkpoint_io.finish_save(pending, settings, 'run', 'attempt-001', 0,
+                                  tmp_path / 'events.jsonl', control_group=single_group)
+    assert not (tmp_path / 'COMMITTED').exists()

@@ -13,7 +13,10 @@ from trainguard.records import parse_event, summary_errors
 
 
 def _read_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise TypeError(f"{path.name} is not a mapping")
+    return value
 
 
 def _effective_samples(
@@ -80,9 +83,20 @@ def _effective_samples(
                 previous_step = step
                 if (
                     not isinstance(ids, list)
-                    or len(ids) != config.training.batch_size_per_rank
+                    or not config.training.gradient_accumulation_steps
+                    <= len(ids)
+                    <= (
+                        config.training.batch_size_per_rank
+                        * config.training.gradient_accumulation_steps
+                    )
+                    or (
+                        config.data.kind == "synthetic"
+                        and len(ids)
+                        != config.training.batch_size_per_rank
+                        * config.training.gradient_accumulation_steps
+                    )
                     or any(type(sample) is not int or sample < 0 for sample in ids)
-                    or len(set(ids)) != len(ids)
+                    or (config.data.kind == "synthetic" and len(set(ids)) != len(ids))
                 ):
                     errors.append(f"{location}: invalid sample IDs")
                     continue
@@ -98,12 +112,25 @@ def _sequence_digest(sequence: list[tuple[int, list[int]]]) -> str:
 def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
     reference_dir = reference_dir.resolve()
     recovered_dir = recovered_dir.resolve()
-    reference_status = _read_json(reference_dir / "run.json")
-    recovered_status = _read_json(recovered_dir / "run.json")
-    reference_config = load_config(reference_dir / "config.json")
-    recovered_config = load_config(recovered_dir / "config.json")
-    reference_summary = _read_json(reference_dir / "summary.json")
-    recovered_summary = _read_json(recovered_dir / "summary.json")
+    try:
+        reference_status = _read_json(reference_dir / "run.json")
+        recovered_status = _read_json(recovered_dir / "run.json")
+        reference_config = load_config(reference_dir / "config.json")
+        recovered_config = load_config(recovered_dir / "config.json")
+        reference_summary = _read_json(reference_dir / "summary.json")
+        recovered_summary = _read_json(recovered_dir / "summary.json")
+        for status in (reference_status, recovered_status):
+            if not isinstance(status.get("run_id"), str) or not isinstance(
+                status.get("status"), str
+            ):
+                raise TypeError("run identity or status is invalid")
+    except (OSError, ValueError, UnicodeError, TypeError) as exc:
+        return {
+            "passed": False,
+            "differences": [f"run metadata or summary is unreadable: {exc}"],
+            "reference_run_id": None,
+            "recovered_run_id": None,
+        }
     differences = []
     if reference_status["status"] != "SUCCEEDED":
         differences.append("reference run did not succeed")
@@ -116,7 +143,30 @@ def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
         ("recovered", recovered_summary, recovered_config),
     ):
         differences.extend(f"{name} {error}" for error in summary_errors(summary, config))
-    for field in ("model_sha256", "optimizer_sha256", "scheduler_sha256", "global_step"):
+    for directory, status, config, summary, name in (
+        (reference_dir, reference_status, reference_config, reference_summary, "reference"),
+        (recovered_dir, recovered_status, recovered_config, recovered_summary, "recovered"),
+    ):
+        if summary.get("state_schema_version") == 2:
+            attempt_id = status.get("attempt_id")
+            if not isinstance(attempt_id, str):
+                differences.append(f"{name} final attempt identity is invalid")
+            else:
+                differences.extend(
+                    f"{name} {error}"
+                    for error in completion_errors(
+                        directory, attempt_id, config, status["run_id"], summary
+                    )
+                )
+    for field in (
+        "model_sha256",
+        "optimizer_sha256",
+        "scheduler_sha256",
+        "global_step",
+        "scaler_sha256",
+        "consumed_batches",
+        "optimizer_updates",
+    ):
         if reference_summary.get(field) != recovered_summary.get(field):
             differences.append(f"final {field} differs")
 
@@ -147,6 +197,26 @@ def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
             "reference_sha256": _sequence_digest(expected),
             "recovered_sha256": _sequence_digest(actual),
         }
+    batch_comparison = {}
+    if (
+        reference_summary.get("state_schema_version") == 2
+        or recovered_summary.get("state_schema_version") == 2
+    ):
+        reference_batches, errors = _effective_batches(
+            reference_dir, reference_status["run_id"], reference_config
+        )
+        differences.extend(f"reference {error}" for error in errors)
+        recovered_batches, errors = _effective_batches(
+            recovered_dir, recovered_status["run_id"], recovered_config
+        )
+        differences.extend(f"recovered {error}" for error in errors)
+        for rank in range(reference_config.run.world_size):
+            if reference_batches[rank] != recovered_batches.get(rank):
+                differences.append(f"rank {rank} consumed batch sequence differs")
+            batch_comparison[str(rank)] = {
+                "reference_batches": len(reference_batches[rank]),
+                "recovered_batches": len(recovered_batches.get(rank, [])),
+            }
     return {
         "passed": not differences,
         "differences": differences,
@@ -155,9 +225,10 @@ def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
         "comparison": {
             "tensor_atol": 0.0,
             "tensor_rtol": 0.0,
-            "method": "exact SHA-256 of CPU state and effective sample IDs",
+            "method": "exact SHA-256 of rank states and effective sample/batch IDs",
         },
         "effective_samples": sample_counts,
+        "effective_batches": batch_comparison,
     }
 
 
@@ -170,6 +241,14 @@ def completion_errors(
     samples, audit = _effective_samples(run_dir, run_id, config)
     errors.extend(audit)
     expected_steps = list(range(1, config.training.total_steps + 1))
+    if summary.get("state_schema_version") == 2:
+        batches, batch_errors = _effective_batches(run_dir, run_id, config)
+        errors.extend(batch_errors)
+        for rank in range(config.run.world_size):
+            if [index for index, _ in batches[rank]] != list(
+                range(1, summary["consumed_batches"] + 1)
+            ):
+                errors.append(f"rank {rank}: consumed batch evidence is incomplete")
     for rank in range(config.run.world_size):
         if [step for step, _ in samples[rank]] != expected_steps:
             errors.append(f"rank {rank}: effective sample steps are incomplete")
@@ -185,3 +264,49 @@ def completion_errors(
         if completed != [config.training.total_steps]:
             errors.append(f"rank {rank}: final completion missing or invalid")
     return errors
+
+
+def _effective_batches(run_dir: Path, run_id: str, config: ProjectConfig):
+    effective = {rank: {} for rank in range(config.run.world_size)}
+    errors = []
+    try:
+        with sqlite3.connect(
+            (run_dir / "run.sqlite3").resolve().as_uri() + "?mode=ro", uri=True
+        ) as database:
+            attempts = database.execute(
+                "SELECT attempt_id, status, resume_consumed_batches FROM attempts WHERE run_id=? ORDER BY number",
+                (run_id,),
+            ).fetchall()
+    except sqlite3.Error as exc:
+        return {rank: [] for rank in effective}, [f"attempt index is unreadable: {exc}"]
+    for attempt_id, status, cursor in attempts:
+        for rank, prior in effective.items():
+            effective[rank] = {index: ids for index, ids in prior.items() if index <= cursor}
+            path = run_dir / "attempts" / attempt_id / f"rank-{rank}.jsonl"
+            if not path.exists():
+                continue
+            previous = cursor
+            for line in path.read_text().splitlines(keepends=True):
+                if not line.endswith("\n") and status != "SUCCEEDED":
+                    continue
+                try:
+                    event = parse_event(line, run_id, attempt_id, rank)
+                except ValueError as exc:
+                    errors.append(str(exc))
+                    continue
+                if not event or event["event_type"] != "batch_consumed":
+                    continue
+                index, ids = event.get("consumed_batches"), event.get("sample_ids")
+                if type(index) is not int or index != previous + 1:
+                    errors.append(f"{attempt_id} rank {rank}: consumed batch order is invalid")
+                    continue
+                if (
+                    not isinstance(ids, list)
+                    or not 1 <= len(ids) <= config.training.batch_size_per_rank
+                    or any(type(item) is not int or item < 0 for item in ids)
+                ):
+                    errors.append(f"{attempt_id} rank {rank}: invalid batch sample IDs")
+                    continue
+                effective[rank][index] = ids
+                previous = index
+    return {rank: sorted(rows.items()) for rank, rows in effective.items()}, errors

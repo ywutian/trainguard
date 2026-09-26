@@ -48,6 +48,8 @@ def summary_errors(
     if not isinstance(summary, dict):
         return ["final summary is not a mapping"]
     errors = []
+    if type(summary.get("state_schema_version")) is not int or summary["state_schema_version"] != 2:
+        errors.append("final summary state schema is unsupported or missing")
     for field in HASH_FIELDS:
         value = summary.get(field)
         if (
@@ -68,4 +70,34 @@ def summary_errors(
     for key, value in expected.items():
         if summary.get(key) != value or (type(value) is int and type(summary.get(key)) is not int):
             errors.append(f"final {key} differs from configured total or identity")
+    if summary.get("state_schema_version") == 2:
+        updates, consumed = summary.get("optimizer_updates"), summary.get("consumed_batches")
+        if type(updates) is not int or updates != config.training.total_steps:
+            errors.append("final optimizer update count differs")
+        if (
+            type(consumed) is not int
+            or consumed < config.training.total_steps * config.training.gradient_accumulation_steps
+        ):
+            errors.append("final consumed batch count differs")
+        rank_states = summary.get("rank_states")
+        if not isinstance(rank_states, list) or len(rank_states) != config.run.world_size:
+            errors.append("final rank states are incomplete")
+        else:
+            from trainguard.strategy import state_digest
+
+            for field in (*HASH_FIELDS, "scaler_sha256"):
+                values = [
+                    item.get(field) if isinstance(item, dict) else None for item in rank_states
+                ]
+                if any(
+                    not isinstance(value, str) or len(value) != 64 for value in values
+                ) or state_digest(values) != summary.get(field):
+                    errors.append(f"final combined rank {field} differs")
+            for item in rank_states:
+                if (
+                    not isinstance(item, dict)
+                    or item.get("optimizer_updates") != updates
+                    or item.get("consumed_batches") != consumed
+                ):
+                    errors.append("final rank counters differ")
     return errors

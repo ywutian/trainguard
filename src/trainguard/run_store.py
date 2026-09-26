@@ -58,6 +58,12 @@ class RunStore:
             );
             """
         )
+        columns = {row[1] for row in self.database.execute("PRAGMA table_info(attempts)")}
+        if "resume_consumed_batches" not in columns:
+            self.database.execute(
+                "ALTER TABLE attempts ADD COLUMN resume_consumed_batches INTEGER NOT NULL DEFAULT 0"
+            )
+            self.database.execute("UPDATE attempts SET resume_consumed_batches=resume_step")
         self.database.commit()
 
     def close(self) -> None:
@@ -91,12 +97,14 @@ class RunStore:
         number: int,
         resume_checkpoint: str | None,
         resume_step: int,
+        resume_consumed_batches: int | None = None,
     ) -> None:
         self.database.execute(
             """INSERT INTO attempts
-            (attempt_id, run_id, number, status, resume_checkpoint, resume_step, started_at)
-            VALUES (?, ?, ?, 'RUNNING', ?, ?, ?)""",
-            (attempt_id, run_id, number, resume_checkpoint, resume_step, utc_now()),
+            (attempt_id, run_id, number, status, resume_checkpoint, resume_step, started_at, resume_consumed_batches)
+            VALUES (?, ?, ?, 'RUNNING', ?, ?, ?, ?)""",
+            (attempt_id, run_id, number, resume_checkpoint, resume_step, utc_now(),
+             resume_step if resume_consumed_batches is None else resume_consumed_batches),
         )
         self.database.commit()
 

@@ -109,3 +109,18 @@ def test_boolean_step_is_rejected(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="invalid step"):
         _read_events(tmp_path, "attempt-001", "run", 1, {}, {}, set())
+
+
+def test_process_ownership_requires_complete_argument_values(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from trainguard import controller
+    directory = tmp_path / 'run with spaces'
+    command = f'trainguard.trainer --run-dir {directory} --run-id run --attempt-id attempt-001'
+    output = '\n'.join([
+        f'11 1 {command.replace("--run-id run", "--run-id run-extra")}',
+        f'22 1 {command.replace(str(directory), str(directory) + "-other")}',
+        f'33 1 {command}',
+    ])
+    monkeypatch.setattr(controller.subprocess, 'run', lambda *a, **k: SimpleNamespace(returncode=0, stdout=output))
+    assert controller._owned_group_members(directory, 'run', 'attempt-001') == [33]

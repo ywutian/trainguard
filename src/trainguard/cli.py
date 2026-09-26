@@ -9,6 +9,7 @@ import typer
 
 from trainguard import __version__
 from trainguard.benchmark import resume_benchmark, run_benchmark
+from trainguard.campaign import resume_campaign, run_campaign
 from trainguard.config import load_config
 from trainguard.controller import RunActiveError
 from trainguard.controller import resume as resume_run
@@ -28,23 +29,19 @@ def version() -> None:
 
 @app.command("validate-config")
 def validate_config(
-    config: Annotated[
-        Path, typer.Option("--config", exists=True, file_okay=True, dir_okay=False)
-    ],
+    config: Annotated[Path, typer.Option("--config", exists=True, file_okay=True, dir_okay=False)],
 ) -> None:
-    """Check a CPU training configuration and print its fingerprint."""
+    """Check a fixed-topology training configuration and print its fingerprint."""
     settings = load_config(config)
     typer.echo(settings.fingerprint())
 
 
 @app.command("run")
 def run(
-    config: Annotated[
-        Path, typer.Option("--config", exists=True, file_okay=True, dir_okay=False)
-    ],
+    config: Annotated[Path, typer.Option("--config", exists=True, file_okay=True, dir_okay=False)],
     output_root: Annotated[Path, typer.Option("--output-root")] = DEFAULT_OUTPUT_ROOT,
 ) -> None:
-    """Run a fixed-size CPU DDP workload with bounded recovery."""
+    """Run a fixed-size training workload with bounded recovery."""
     run_dir, succeeded = launch_run(config, output_root)
     typer.echo(f"Run directory: {run_dir}")
     if not succeeded:
@@ -88,9 +85,7 @@ def validate(
 
 @app.command("benchmark")
 def benchmark(
-    config: Annotated[
-        Path, typer.Option("--config", exists=True, file_okay=True, dir_okay=False)
-    ],
+    config: Annotated[Path, typer.Option("--config", exists=True, file_okay=True, dir_okay=False)],
     output_root: Annotated[Path, typer.Option("--output-root")] = DEFAULT_OUTPUT_ROOT,
     repetitions: Annotated[int, typer.Option("--repetitions", min=3)] = 3,
     warmups: Annotated[int, typer.Option("--warmups", min=0)] = 1,
@@ -101,7 +96,97 @@ def benchmark(
 
 
 @app.command("benchmark-resume")
-def benchmark_resume(directory: Annotated[Path, typer.Argument(exists=True, file_okay=False)]) -> None:
+def benchmark_resume(
+    directory: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+) -> None:
     """Continue missing experiment slots with the original source and workload."""
     result = resume_benchmark(directory)
     typer.echo(f"Benchmark report: {result / 'report.md'}")
+
+
+@app.command("acceptance")
+def acceptance(
+    config: Annotated[Path, typer.Option("--config", exists=True, dir_okay=False)],
+    output_root: Annotated[Path, typer.Option("--output-root")] = DEFAULT_OUTPUT_ROOT,
+) -> None:
+    """Run reference, recovery faults and omitted-state negative controls."""
+    import json
+
+    directory = run_campaign(config, output_root)
+    typer.echo(f"Acceptance report: {directory / 'report.md'}")
+    result = json.loads((directory / "acceptance.json").read_text())
+    if result["status"] != "SUCCEEDED":
+        raise typer.Exit(2 if result["status"] == "BLOCKED" else 1)
+
+
+@app.command("acceptance-resume")
+def acceptance_resume(
+    directory: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+) -> None:
+    """Continue a stopped acceptance campaign and recheck completed evidence."""
+    import json
+
+    resume_campaign(directory)
+    typer.echo(f"Acceptance report: {directory / 'report.md'}")
+    if json.loads((directory / "acceptance.json").read_text())["status"] != "SUCCEEDED":
+        raise typer.Exit(1)
+
+
+@app.command("checkpoint-budget")
+def checkpoint_budget(
+    overhead_seconds: Annotated[float, typer.Option(min=0)],
+    mtbf_seconds: Annotated[float, typer.Option(min=0)],
+    commit_lag_seconds: Annotated[float, typer.Option(min=0)],
+    rto_seconds: Annotated[float, typer.Option(min=0)],
+    rollback_budget_seconds: Annotated[float, typer.Option(min=0)],
+    upload_seconds: Annotated[float, typer.Option(min=0)],
+) -> None:
+    """Estimate an interval using measured costs and an explicit job MTBF assumption."""
+    import json
+
+    from trainguard.policy import suggest_interval
+
+    result = suggest_interval(
+        overhead_seconds=overhead_seconds,
+        mtbf_seconds=mtbf_seconds,
+        commit_lag_seconds=commit_lag_seconds,
+        rto_seconds=rto_seconds,
+        rollback_budget_seconds=rollback_budget_seconds,
+        upload_seconds=upload_seconds,
+    )
+    typer.echo(json.dumps(result, indent=2))
+    if not result["feasible"]:
+        raise typer.Exit(1)
+
+
+@app.command("audit-checkpoints")
+def audit_checkpoints(
+    run_dir: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+) -> None:
+    """Fully inspect checkpoint history and index all outcomes."""
+    import json
+
+    from trainguard.controller import _controller_lock, _scan_checkpoints
+    from trainguard.run_store import RunStore
+
+    status = json.loads((run_dir / "run.json").read_text())
+    config = load_config(run_dir / "config.json")
+    with _controller_lock(run_dir):
+        store = RunStore(run_dir / "run.sqlite3")
+        try:
+            selected = _scan_checkpoints(run_dir, config, status["run_id"], store, audit=True)
+        finally:
+            store.close()
+    typer.echo(str(selected.path) if selected else "No valid committed checkpoint")
+
+
+@app.command("storage-benchmark")
+def storage_benchmark(
+    output_root: Annotated[Path, typer.Option("--output-root")] = DEFAULT_OUTPUT_ROOT,
+    repetitions: Annotated[int, typer.Option("--repetitions", min=1)] = 3,
+) -> None:
+    """Measure 64/256 MiB local DCP payloads separately from training."""
+    from trainguard.storage_benchmark import run_storage_benchmark
+
+    directory = run_storage_benchmark(output_root, repetitions=repetitions)
+    typer.echo(f"Storage report: {directory / 'report.md'}")

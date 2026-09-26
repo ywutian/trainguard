@@ -16,6 +16,7 @@ import torch
 
 from trainguard import __version__
 from trainguard.config import ProjectConfig
+from trainguard.environment import source_sha256
 from trainguard.events import sync_directory, write_json_atomic
 
 
@@ -58,17 +59,32 @@ def capture_rank_state(
         "attempt_id": attempt_id,
         "rank": rank,
         "global_step": global_step,
-        "next_data_step": global_step if next_data_step is None else next_data_step,
+        "next_data_step": global_step * config.training.gradient_accumulation_steps
+        if next_data_step is None
+        else next_data_step,
+        "state_schema_version": 2,
+        "optimizer_updates": global_step,
+        "consumed_batches": global_step * config.training.gradient_accumulation_steps
+        if next_data_step is None
+        else next_data_step,
+        "accumulation_phase": 0,
+        "scaler": None,
         "config_fingerprint": config.fingerprint(),
         "data_fingerprint": config.data_fingerprint(),
         "world_size": config.run.world_size,
         "software_version": __version__,
+        "source_sha256": source_sha256(),
         "torch_version": torch.__version__,
         "scheduler": scheduler_state,
         "rng": {
             "python": random.getstate(),
             "numpy": [numpy_state[0], numpy_state[1].tolist(), *numpy_state[2:]],
             "torch_cpu": torch.get_rng_state().tolist(),
+            **(
+                {"torch_cuda": torch.cuda.get_rng_state().tolist()}
+                if config.run.device == "cuda"
+                else {}
+            ),
         },
     }
 
@@ -87,6 +103,8 @@ def restore_rng(state: dict[str, Any]) -> None:
         (numpy[0], np.array(numpy[1], dtype=np.uint32), numpy[2], numpy[3], numpy[4])
     )
     torch.set_rng_state(torch.tensor(rng["torch_cpu"], dtype=torch.uint8))
+    if "torch_cuda" in rng:
+        torch.cuda.set_rng_state(torch.tensor(rng["torch_cuda"], dtype=torch.uint8))
 
 
 def _files(path: Path) -> list[Path]:
@@ -107,6 +125,7 @@ def _files(path: Path) -> list[Path]:
 def _check_rank_states(
     path: Path, config: ProjectConfig, run_id: str, attempt_id: str, step: int
 ) -> None:
+    consumed = []
     for rank in range(config.run.world_size):
         rank_path = path / f"rank-{rank}.json"
         if not rank_path.is_file():
@@ -122,20 +141,39 @@ def _check_rank_states(
             "attempt_id": attempt_id,
             "rank": rank,
             "global_step": step,
-            "next_data_step": step,
+            "state_schema_version": 2,
+            "optimizer_updates": step,
+            "accumulation_phase": 0,
             "config_fingerprint": config.fingerprint(),
             "data_fingerprint": config.data_fingerprint(),
             "world_size": config.run.world_size,
             "software_version": __version__,
+            "source_sha256": source_sha256(),
             "torch_version": torch.__version__,
         }
         for key, value in expected.items():
-            if state.get(key) != value:
+            if state.get(key) != value or (type(value) is int and type(state.get(key)) is not int):
                 raise CheckpointInvalid(f"rank {rank} {key} differs at checkpoint step {step}")
         if not isinstance(state.get("scheduler"), dict) or not isinstance(state.get("rng"), dict):
             raise CheckpointInvalid(f"rank {rank} scheduler or RNG state is missing")
-        if set(state["rng"]) != {"python", "numpy", "torch_cpu"}:
+        cursor = state.get("consumed_batches")
+        if (
+            type(cursor) is not int
+            or cursor < step * config.training.gradient_accumulation_steps
+            or state.get("next_data_step") != cursor
+            or cursor % config.training.gradient_accumulation_steps
+        ):
+            raise CheckpointInvalid(f"rank {rank} consumed batch boundary is invalid")
+        consumed.append(cursor)
+        if config.training.precision == "fp16" and not isinstance(state.get("scaler"), dict):
+            raise CheckpointInvalid(f"rank {rank} scaler state is missing")
+        expected_rng = {"python", "numpy", "torch_cpu"}
+        if config.run.device == "cuda":
+            expected_rng.add("torch_cuda")
+        if set(state["rng"]) != expected_rng:
             raise CheckpointInvalid(f"rank {rank} RNG state is incomplete")
+    if len(set(consumed)) != 1:
+        raise CheckpointInvalid("rank consumed batch boundaries differ at checkpoint")
 
 
 def _check_dcp_files(path: Path, config: ProjectConfig) -> None:
@@ -175,7 +213,7 @@ def commit_checkpoint(
         for entry in _files(path)
     ]
     manifest = {
-        "format_version": 1,
+        "format_version": 2,
         "run_id": run_id,
         "attempt_id": attempt_id,
         "global_step": step,
@@ -183,6 +221,7 @@ def commit_checkpoint(
         "data_fingerprint": config.data_fingerprint(),
         "world_size": config.run.world_size,
         "software_version": __version__,
+        "source_sha256": source_sha256(),
         "torch_version": torch.__version__,
         "files": files,
     }
@@ -217,20 +256,27 @@ def validate_checkpoint(path: Path, config: ProjectConfig, run_id: str) -> Check
     if not isinstance(manifest, dict):
         raise CheckpointInvalid("checkpoint manifest is not a mapping")
     expected = {
-        "format_version": 1,
+        "format_version": 2,
         "run_id": run_id,
         "config_fingerprint": config.fingerprint(),
         "data_fingerprint": config.data_fingerprint(),
         "world_size": config.run.world_size,
         "software_version": __version__,
+        "source_sha256": source_sha256(),
         "torch_version": torch.__version__,
     }
     for key, value in expected.items():
-        if manifest.get(key) != value:
+        if manifest.get(key) != value or (
+            type(value) is int and type(manifest.get(key)) is not int
+        ):
             raise CheckpointInvalid(f"checkpoint {key} differs from requested run or config")
     step = manifest.get("global_step")
     attempt_id = manifest.get("attempt_id")
-    if not isinstance(step, int) or step < 1 or not isinstance(attempt_id, str):
+    if (
+        type(step) is not int
+        or not 1 <= step <= config.training.total_steps
+        or not isinstance(attempt_id, str)
+    ):
         raise CheckpointInvalid("checkpoint step or attempt is invalid")
     if path.name != candidate_path(Path(), attempt_id, step).name:
         raise CheckpointInvalid("checkpoint directory name differs from manifest")

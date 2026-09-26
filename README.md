@@ -4,7 +4,7 @@ TrainGuard tests whether fixed-size distributed PyTorch training resumes from a 
 
 ## Status
 
-The CPU recovery path is implemented and tested with two Gloo workers. It supports synchronous and native asynchronous Distributed Checkpoint (DCP), application-level checkpoint commits, bounded full-group restarts, explicit resume, deterministic fault injection, correctness validation, and repeated local benchmarks. GPU, FSDP, multi-node training, and host-power-loss durability remain outside this implementation.
+The CPU recovery path is implemented and tested with two Gloo workers. It supports synchronous and native asynchronous Distributed Checkpoint (DCP), application-level checkpoint commits, bounded full-group restarts, explicit resume, deterministic fault injection, correctness validation, and repeated local benchmarks. CUDA DDP and FSDP2 adapters are implemented but require real-device acceptance. Multi-node/object-storage recovery and host-power-loss durability remain open gates.
 
 ## Quick start
 
@@ -35,7 +35,7 @@ Resume refuses to start while the previous owned launcher or worker group is sti
 
 ## Checkpoints and records
 
-Each candidate is stored under `runs/<run-id>/checkpoints/step-<step>-<attempt>/`. DCP writes model and optimizer state. Every rank writes its scheduler, Python/NumPy/CPU Torch RNG, completed step, next data step, and compatibility fingerprints. Rank 0 validates all expected files, records sizes and SHA-256 hashes in `manifest.json`, then publishes `COMMITTED`. Recovery scans these files and ignores incomplete, incompatible, or corrupted candidates, falling back to the newest valid older checkpoint.
+Each candidate is stored under `runs/<run-id>/checkpoints/step-<step>-<attempt>/`. DCP writes model and optimizer state. Every rank writes its scheduler, Python/NumPy/Torch CPU and optional CUDA RNG, scaler, update and consumed-batch counters, and compatibility fingerprints. Rank 0 validates all expected files, records sizes and SHA-256 hashes in `manifest.json`, then publishes `COMMITTED`. Recovery scans these files and ignores incomplete, incompatible, or corrupted candidates, falling back to the newest valid older checkpoint.
 
 The run directory also contains `run.json`, a SQLite index (`run.sqlite3`), `launcher.log`, per-attempt rank event logs and summaries, and a final `summary.json`. The committed manifest is the checkpoint validity source if the controller stops before updating SQLite.
 
@@ -64,3 +64,26 @@ See the [roadmap](docs/roadmap.md), [architecture](docs/architecture.md), [recov
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Upgrade workflow
+
+Version 0.2 adds strict completion evidence and cleanup, early async commit, upload deadlines and stage metrics, retryable retention, resumable benchmarks, JSONL data with deterministic shuffle/crop and prefetch, gradient accumulation, CPU BF16, optional CUDA FP16 scaler, and CUDA DDP/FSDP2 adapters. The default dependency is PyTorch 2.14. GPU adapters require actual-device acceptance; multi-node/object-storage control and power-loss durability remain open infrastructure gates. Format 2 rejects older schemas, source changes and runtime changes; historical evidence remains intact.
+
+```bash
+uv run trainguard acceptance --config configs/cpu_demo.yaml
+uv run trainguard acceptance-resume runs/acceptance-<id>
+uv run trainguard run --config configs/cpu_data_demo.yaml
+uv run trainguard benchmark-resume runs/benchmark-<id>
+uv run trainguard audit-checkpoints runs/<id>
+uv run trainguard storage-benchmark --repetitions 3
+```
+
+On a host with two CUDA GPUs:
+
+```bash
+uv run trainguard acceptance --config configs/cuda_ddp.yaml
+uv run trainguard acceptance --config configs/cuda_fsdp2.yaml
+uv run pytest tests/test_gpu_acceptance.py
+```
+
+The JSONL example contains illustrative token rows, not a real-corpus performance claim. Supply an immutable token file and its SHA-256 for real training. See [current acceptance and remaining gates](docs/experiments/full-upgrade-2026-09-26.md).

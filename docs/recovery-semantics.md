@@ -1,11 +1,33 @@
 # Recovery semantics
 
-`global_step` is the count of completed optimizer updates. The scheduler update for that step has also completed. `next_data_step` identifies the next deterministic sample batch each rank will consume. A valid checkpoint has equal `global_step` and `next_data_step` on every rank.
+## Completed update boundary
 
-An eligible checkpoint contains DCP model parameters, buffers, and optimizer state; each rank's scheduler and Python/NumPy/CPU Torch random state; the step and next data position; configuration and data fingerprints; fixed world size; and package and PyTorch versions. Every expected rank and DCP file must exist, be a regular file, and match the size and SHA-256 digest listed in `manifest.json`. `COMMITTED` must contain that manifest's digest. An incomplete, uncommitted, incompatible, or checksum-invalid candidate is rejected before DCP load. The newest valid older candidate is selected if necessary.
+`global_step` and `optimizer_updates` count successful optimizer updates. The scheduler advances only after an update succeeds. `consumed_batches` counts microbatches already used, including batches from an AMP update skipped for nonfinite gradients. Checkpoints are taken only after a complete gradient accumulation window (`accumulation_phase=0`). `next_data_step` equals consumed batches, which can differ from optimizer updates. All ranks must agree on both counters.
 
-Recovery starts a new process group at the selected completed update. It can recompute updates that were executed after the checkpoint in a failed attempt. The validator discards that rolled-back suffix, then compares the effective per-rank sample IDs for every step against an uninterrupted reference. It also requires exact final model, optimizer, scheduler, and completed-step equality on this deterministic CPU workload (`atol=0`, `rtol=0`).
+Format 2 records model and optimizer DCP state, scheduler, optional FP16 scaler, Python/NumPy/Torch CPU RNG and the bound CUDA device RNG, counters, data/configuration fingerprints, source digest, package and PyTorch versions. CPU BF16 has no scaler. CUDA binds `LOCAL_RANK`; fixed logical rank/device topology is part of this contract.
 
-If the controller exits, explicit resume first checks for live launchers and workers owned by the run, including an unrecorded launcher and orphaned workers whose launcher has exited. A file lock blocks simultaneous controllers. The copied run configuration and committed manifests control recovery even if the original configuration file or SQLite checkpoint index has changed. A completed attempt is reconciled from its matching final attempt summary before another attempt or retry is allocated. Event evidence is audited separately by `validate`.
+## Eligible transaction
 
-The process-failure contract does not claim durability after entire-disk loss or host power failure. The implementation fixes `world_size` and keeps data-loading workers at zero.
+Every expected rank and DCP file must be regular, with the listed size and SHA-256. `COMMITTED` contains the manifest digest. Each candidate is fully verified before load; an uncommitted, corrupted, incompatible or mixed-boundary candidate is rejected. Selection validates candidates from newest to oldest and stops at the first valid version. `audit-checkpoints` explicitly checks full history. The file transaction remains authoritative if publication precedes SQLite indexing.
+
+Async save permits one request in flight. Default CPU staging is synchronous; a separate staging response is awaited before optimizer mutation. A dedicated Gloo save group and independent Gloo control group separate checkpoint traffic from training. At identical update boundaries, all ranks coordinate Future completion, error and deadline status. Ready uploads commit before the next scheduled save point. Forced waits and final flush use the same collective failure rule. Commit publication synchronizes files and parent directories; actual host power-loss behavior remains untested.
+
+Retention is disabled by default. `keep_last_k >= 2` keeps verified fallback versions, protects a loading candidate, and excludes unfinished candidates. Optional `max_retained_bytes` is a soft budget: protected versions take precedence and unmet budgets are reported. Durable deletion intent is retried after interruption, but deletion pauses when fewer than two valid fallbacks remain. Lifecycle operations run under the controller's exclusive ownership.
+
+## Data contract
+
+Synthetic IDs remain deterministic and disjoint per batch. JSONL input consists of `{"tokens": [integer, ...]}` rows, at least `sequence_length+1` tokens each. The configuration fixes the content SHA-256. Epoch permutations and optional random crop depend on seed/epoch/row, independent of worker scheduling. Distributed sampling pads to equal rank lengths, so real-data padding may repeat a row; a final batch can be smaller. Prefetch is reconstructed from the consumed position; no global worker RNG or arbitrary third-party augmentation state is supported. Changing dataset contents is rejected before launch.
+
+This implementation supports this explicit map-style data adapter with 0–16 workers. General iterable datasets, stateful third-party transforms, tokenizers and their worker queues require separate state providers and acceptance.
+
+## Completion and recovery
+
+A fresh full process group restores the selected boundary. Every attempt has its own identity and logs. The controller checks a strict final summary, rank state digests/counters, all rank completion records and complete effective update/batch evidence before success. Explicit resume rechecks completed runs under a lock, refuses live launchers/orphan workers, and rejects source/runtime/configuration changes. All exceptions after spawn enter group cleanup; controller errors remain terminal diagnostics rather than becoming an unrelated retry error.
+
+Validation reconstructs effective update and consumed-batch sequences after each recorded rollback. Final rank state digests, counters and scaler must match the uninterrupted reference exactly (`atol=0`, `rtol=0`), in the same device/runtime/topology. Bad records and missing evidence fail with diagnostics. Only an incomplete trailing line from a failed attempt can be ignored. Omission controls deliberately use a wrong RNG, optimizer or sample position and must be detected.
+
+## Compatibility and infrastructure gates
+
+Format 1 and earlier run schemas are explicitly rejected by this release. Historical files remain unchanged; replay requires their recorded source and runtime in a separate checkout. DCP cross-version compatibility is not assumed and checkpoints are never silently relabeled or migrated.
+
+This is a single-host controller. Multi-node retry ownership/fencing, scheduler restart, remote immutable object transactions, elastic world sizes, full disk loss and host power-loss durability are separate implementation and infrastructure gates. CUDA DDP/FSDP2 code requires successful acceptance on actual devices before a tested-support claim.

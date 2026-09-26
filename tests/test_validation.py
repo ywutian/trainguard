@@ -6,6 +6,7 @@ import pytest
 from trainguard.config import load_config
 from trainguard.data import sample_ids_for_step
 from trainguard.run_store import RunStore
+from trainguard.strategy import state_digest
 from trainguard.validation import validate_runs
 
 
@@ -14,14 +15,45 @@ def _run(root: Path, name: str) -> Path:
     directory.mkdir()
     config = load_config(Path(__file__).parents[1] / "configs" / "cpu_demo.yaml")
     (directory / "config.json").write_text(json.dumps(config.model_dump()))
-    (directory / "run.json").write_text(json.dumps({"run_id": name, "status": "SUCCEEDED"}))
-    (directory / "summary.json").write_text(json.dumps({
-        "run_id": name, "attempt_id": "attempt-001",
-        "workload_fingerprint": config.workload_fingerprint(),
-        "world_size": config.run.world_size, "global_step": config.training.total_steps,
-        "model_sha256": "a" * 64, "optimizer_sha256": "b" * 64,
-        "scheduler_sha256": "c" * 64,
-    }))
+    (directory / "run.json").write_text(
+        json.dumps({"run_id": name, "status": "SUCCEEDED", "attempt_id": "attempt-001"})
+    )
+    rank_states = [
+        {
+            "model_sha256": "a" * 64,
+            "optimizer_sha256": "b" * 64,
+            "scheduler_sha256": "c" * 64,
+            "scaler_sha256": "d" * 64,
+            "optimizer_updates": 4,
+            "consumed_batches": 4,
+        }
+        for _ in range(2)
+    ]
+    (directory / "summary.json").write_text(
+        json.dumps(
+            {
+                "run_id": name,
+                "attempt_id": "attempt-001",
+                "config_fingerprint": config.fingerprint(),
+                "workload_fingerprint": config.workload_fingerprint(),
+                "world_size": 2,
+                "global_step": 4,
+                "state_schema_version": 2,
+                "optimizer_updates": 4,
+                "consumed_batches": 4,
+                "rank_states": rank_states,
+                **{
+                    field: state_digest([item[field] for item in rank_states])
+                    for field in (
+                        "model_sha256",
+                        "optimizer_sha256",
+                        "scheduler_sha256",
+                        "scaler_sha256",
+                    )
+                },
+            }
+        )
+    )
     store = RunStore(directory / "run.sqlite3")
     try:
         store.create_run(name, config.fingerprint(), "2026-09-25T00:00:00+00:00")
@@ -30,13 +62,39 @@ def _run(root: Path, name: str) -> Path:
     finally:
         store.close()
     for rank in range(config.run.world_size):
-        events = [{
-            "run_id": name, "attempt_id": "attempt-001", "rank": rank,
-            "event_type": "step_completed", "global_step": step,
-            "sample_ids": sample_ids_for_step(
-                step - 1, rank, config.run.world_size, config.training.batch_size_per_rank
-            ),
-        } for step in range(1, config.training.total_steps + 1)]
+        events = [
+            {
+                "run_id": name,
+                "attempt_id": "attempt-001",
+                "rank": rank,
+                "event_type": "step_completed",
+                "global_step": step,
+                "sample_ids": sample_ids_for_step(
+                    step - 1, rank, config.run.world_size, config.training.batch_size_per_rank
+                ),
+            }
+            for step in range(1, config.training.total_steps + 1)
+        ]
+        events.extend(
+            {
+                "run_id": name,
+                "attempt_id": "attempt-001",
+                "rank": rank,
+                "event_type": "batch_consumed",
+                "consumed_batches": step,
+                "sample_ids": [rank * 2 + (step - 1) * 4, rank * 2 + (step - 1) * 4 + 1],
+            }
+            for step in range(1, 5)
+        )
+        events.append(
+            {
+                "run_id": name,
+                "attempt_id": "attempt-001",
+                "rank": rank,
+                "event_type": "training_completed",
+                "global_step": 4,
+            }
+        )
         _write_events(directory, rank, events)
     return directory
 
@@ -52,13 +110,16 @@ def _write_events(directory: Path, rank: int, events: list[dict]) -> None:
     path.write_text("".join(json.dumps(event) + "\n" for event in events))
 
 
-@pytest.mark.parametrize("fault,reason", [
-    ("duplicate", "duplicate step"),
-    ("order", "step order"),
-    ("sample_type", "sample IDs"),
-    ("step_type", "invalid step"),
-    ("json", "invalid JSON"),
-])
+@pytest.mark.parametrize(
+    "fault,reason",
+    [
+        ("duplicate", "duplicate step"),
+        ("order", "step order"),
+        ("sample_type", "sample IDs"),
+        ("step_type", "invalid step"),
+        ("json", "invalid JSON"),
+    ],
+)
 def test_invalid_event_evidence_cannot_pass(tmp_path: Path, fault: str, reason: str) -> None:
     reference = _run(tmp_path, "reference")
     recovered = _run(tmp_path, "recovered")
@@ -128,16 +189,27 @@ def test_rollback_and_truncated_failed_attempt_tail_remain_valid(tmp_path: Path)
             stream.write('{"partial"')
         destination = recovered / "attempts/attempt-002" / f"rank-{rank}.jsonl"
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text("".join(
-            json.dumps(event | {"attempt_id": "attempt-002"}) + "\n"
-            for event in _events_from_complete_lines(source)[2:]
-        ))
+        destination.write_text(
+            "".join(
+                json.dumps(event | {"attempt_id": "attempt-002"}) + "\n"
+                for event in _events_from_complete_lines(source)
+                if (event.get("global_step", 0) > 2 or event.get("consumed_batches", 0) > 2)
+            )
+        )
+    for filename in ("summary.json", "run.json"):
+        path = recovered / filename
+        record = json.loads(path.read_text())
+        record["attempt_id"] = "attempt-002"
+        path.write_text(json.dumps(record))
     assert validate_runs(reference, recovered)["passed"]
 
 
 def _events_from_complete_lines(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text().splitlines(keepends=True)
-            if line.endswith("\n")]
+    return [
+        json.loads(line)
+        for line in path.read_text().splitlines(keepends=True)
+        if line.endswith("\n")
+    ]
 
 
 def test_missing_attempt_index_returns_failed_report(tmp_path: Path) -> None:
@@ -147,3 +219,12 @@ def test_missing_attempt_index_returns_failed_report(tmp_path: Path) -> None:
     result = validate_runs(reference, recovered)
     assert not result["passed"]
     assert any("attempt index is unreadable" in value for value in result["differences"])
+
+
+def test_nonmapping_summary_returns_failed_report(tmp_path):
+    reference = _run(tmp_path, "reference")
+    recovered = _run(tmp_path, "recovered")
+    (recovered / "summary.json").write_text("[]")
+    result = validate_runs(reference, recovered)
+    assert not result["passed"]
+    assert any("summary" in item for item in result["differences"])

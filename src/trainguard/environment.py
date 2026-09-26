@@ -14,7 +14,7 @@ from pathlib import Path
 import torch
 
 
-def environment_snapshot(world_size: int, device: str, storage_path: Path) -> dict:
+def source_sha256() -> str:
     source = Path(__file__).resolve().parent
     repository = source.parents[1]
     digest = hashlib.sha256()
@@ -25,6 +25,12 @@ def environment_snapshot(world_size: int, device: str, storage_path: Path) -> di
         if path.is_file():
             digest.update(path.relative_to(repository).as_posix().encode())
             digest.update(path.read_bytes())
+
+    return digest.hexdigest()
+
+
+def environment_snapshot(world_size: int, device: str, storage_path: Path) -> dict:
+    repository = Path(__file__).resolve().parents[2]
 
     def git(*arguments):
         result = subprocess.run(
@@ -59,7 +65,7 @@ def environment_snapshot(world_size: int, device: str, storage_path: Path) -> di
         "storage_device": storage_path.stat().st_dev,
         "disk_free_bytes": disk.free,
         "versions": versions,
-        "source_sha256": digest.hexdigest(),
+        "source_sha256": source_sha256(),
         "git_commit": git("rev-parse", "HEAD"),
         "git_dirty": bool(git("status", "--porcelain")),
         "environment_options": {

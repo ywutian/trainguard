@@ -39,3 +39,24 @@
 - [x] Produce a reproducible report with environment and limitations.
 
 GPU and FSDP experiments are independent extensions after the CPU recovery path passes.
+
+## 5. Version 0.2 upgrade
+
+- [x] Share strict event/final evidence audit between controller and validator.
+- [x] Recheck successful resume and clean every post-spawn controller exception.
+- [x] Commit ready async snapshots at common update boundaries, including coordinated failure/deadline handling on final flush.
+- [x] Measure preparation, staging, upload, waiting, commit lag, rank training/resource peaks and fault-to-first-update RTO.
+- [x] Add default-disabled retention, retryable deletion intent, loading protection and descending recovery scan.
+- [x] Persist benchmark slots/failures, resume missing runs, balance six orders and retain paired differences/source/runtime.
+- [x] Add immutable JSONL data, deterministic shuffle/crop, worker prefetch, tails/epochs and gradient accumulation.
+- [x] Verify CPU BF16 and scaler skipped-update boundary behavior.
+- [x] Implement CUDA DDP/FSDP2 bindings, rank-local CUDA RNG and shard-only state digests.
+- [x] Add persistent acceptance campaigns, storage microbenchmarks and interval budget estimates.
+- [x] Evaluate PyTorch 2.14 in isolation, update the dependency and explicitly version/reject incompatible evidence.
+- [ ] Run CUDA FP32/BF16/FP16 and FSDP2 campaigns on at least two actual GPUs.
+- [ ] Implement and accept scheduler/node lifecycle, fencing epoch and fixed multi-node recovery in the selected infrastructure.
+- [ ] Implement and accept remote object-generation uploads/conditional manifest commit in the selected storage.
+- [ ] Accept Linux filesystem power-loss behavior with an independent crash/reboot rig.
+- [ ] Establish stable performance differences on a dedicated host with two batches of at least 12 repetitions per mode.
+
+The last five gates remain open; local CPU results are not substituted for them. See [upgrade acceptance](experiments/full-upgrade-2026-09-26.md).

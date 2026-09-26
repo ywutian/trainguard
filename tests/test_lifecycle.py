@@ -96,3 +96,24 @@ def test_atomic_publication_syncs_parent_directory(tmp_path, monkeypatch):
     monkeypatch.setattr(events.os, "fsync", sync)
     events.write_json_atomic(tmp_path / "state.json", {"state": 1})
     assert calls == [False, True]
+
+
+def test_deletion_intent_survives_loss_of_fallbacks(tmp_path, monkeypatch):
+    from trainguard import lifecycle
+
+    config = settings(2)
+    paths = [candidate(tmp_path, config, step) for step in range(1, 4)]
+    original = lifecycle.shutil.rmtree
+
+    def interrupted(path):
+        (path / "rank-0.json").unlink()
+        raise OSError("interrupted")
+
+    monkeypatch.setattr(lifecycle.shutil, "rmtree", interrupted)
+    with pytest.raises(OSError):
+        lifecycle.prune_checkpoints(tmp_path, config, "run")
+    (paths[1] / "COMMITTED").unlink()
+    monkeypatch.setattr(lifecycle.shutil, "rmtree", original)
+    lifecycle.prune_checkpoints(tmp_path, config, "run")
+    assert paths[0].exists()
+    assert json.loads((tmp_path / "retention.json").read_text())["pending"]
