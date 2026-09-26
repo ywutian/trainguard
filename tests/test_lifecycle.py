@@ -117,3 +117,22 @@ def test_deletion_intent_survives_loss_of_fallbacks(tmp_path, monkeypatch):
     lifecycle.prune_checkpoints(tmp_path, config, "run")
     assert paths[0].exists()
     assert json.loads((tmp_path / "retention.json").read_text())["pending"]
+
+
+def test_retention_refuses_linked_checkpoint_root(tmp_path):
+    from trainguard import lifecycle
+
+    config = settings(2)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    checkpoint = candidate(outside, config, 1)
+    marker = outside / "preserve.txt"
+    marker.write_text("keep")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "checkpoints").symlink_to(outside / "checkpoints", target_is_directory=True)
+    with pytest.raises(ValueError, match="symbolic link"):
+        lifecycle.prune_checkpoints(run_dir, config, "run")
+    assert checkpoint.exists()
+    assert marker.read_text() == "keep"
+    assert not (run_dir / "retention.json").exists()

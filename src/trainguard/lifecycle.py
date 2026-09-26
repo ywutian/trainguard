@@ -7,7 +7,12 @@ import re
 import shutil
 from pathlib import Path
 
-from trainguard.checkpoint import CheckpointInvalid, ordered_candidates, validate_checkpoint
+from trainguard.checkpoint import (
+    CheckpointInvalid,
+    _check_checkpoint_root,
+    ordered_candidates,
+    validate_checkpoint,
+)
 from trainguard.config import ProjectConfig
 from trainguard.events import sync_directory, write_json_atomic
 
@@ -18,6 +23,7 @@ def prune_checkpoints(
     keep = config.checkpoint.keep_last_k
     if keep is None:
         return {"enabled": False}
+    _check_checkpoint_root(run_dir)
     root = (run_dir / "checkpoints").resolve()
     protected_paths = {path.resolve() for path in (protected or set())}
     valid = []

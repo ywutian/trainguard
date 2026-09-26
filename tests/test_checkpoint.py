@@ -142,3 +142,59 @@ def test_checkpoint_rejects_different_source_identity(tmp_path):
     (path / 'COMMITTED').write_text(hashlib.sha256(manifest_path.read_bytes()).hexdigest() + '\n')
     with pytest.raises(CheckpointInvalid, match='source_sha256'):
         validate_checkpoint(path, config, 'run-one')
+
+
+def test_checkpoint_selection_and_new_candidate_refuse_linked_root(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    checkpoint, config = _candidate(outside, 1)
+    commit_checkpoint(checkpoint, config, "run-one", "attempt-001", 1)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "checkpoints").symlink_to(outside / "checkpoints", target_is_directory=True)
+    with pytest.raises(CheckpointInvalid, match="symbolic link"):
+        latest_valid_checkpoint(run_dir, config, "run-one")
+    with pytest.raises(CheckpointInvalid, match="symbolic link"):
+        candidate_path(run_dir, "attempt-002", 2)
+
+
+def test_commit_reads_payload_once_and_later_validation_rechecks_it(tmp_path, monkeypatch):
+    from trainguard import checkpoint as checkpoint_module
+
+    path, config = _candidate(tmp_path, 1)
+    original = checkpoint_module._sha256
+    payload_reads = []
+
+    def measured(entry):
+        if entry.suffix == ".distcp":
+            payload_reads.append(entry)
+        return original(entry)
+
+    monkeypatch.setattr(checkpoint_module, "_sha256", measured)
+    committed = commit_checkpoint(path, config, "run-one", "attempt-001", 1)
+    assert committed.global_step == 1
+    assert len(payload_reads) == config.run.world_size
+    payload_reads.clear()
+    assert validate_checkpoint(path, config, "run-one").global_step == 1
+    assert len(payload_reads) == config.run.world_size
+    (path / "dcp" / "__0_0.distcp").write_bytes(b"corrupt")
+    with pytest.raises(CheckpointInvalid, match="hash"):
+        validate_checkpoint(path, config, "run-one")
+
+
+def test_payload_change_during_publication_cannot_report_success(tmp_path, monkeypatch):
+    from trainguard import checkpoint as checkpoint_module
+
+    path, config = _candidate(tmp_path, 1)
+    original = checkpoint_module._write_marker_atomic
+
+    def mutate_after_marker(marker_path, value):
+        original(marker_path, value)
+        payload = path / "dcp" / "__0_0.distcp"
+        payload.write_bytes(b"changed")
+
+    monkeypatch.setattr(checkpoint_module, "_write_marker_atomic", mutate_after_marker)
+    with pytest.raises(CheckpointInvalid, match="changed during publication"):
+        commit_checkpoint(path, config, "run-one", "attempt-001", 1)
+    with pytest.raises(CheckpointInvalid, match="hash"):
+        validate_checkpoint(path, config, "run-one")

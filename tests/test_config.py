@@ -61,3 +61,11 @@ def test_save_fault_must_target_a_checkpoint_boundary() -> None:
     raw["checkpoint"] = {"mode": "sync", "interval_steps": 2}
     with pytest.raises(ValidationError, match="checkpoint boundary"):
         ProjectConfig.model_validate(raw)
+
+
+def test_retention_budget_requires_enabled_retention() -> None:
+    valid = load_config(Path(__file__).parents[1] / "configs" / "cpu_demo.yaml")
+    raw = valid.model_dump()
+    raw["checkpoint"]["max_retained_bytes"] = 1024
+    with pytest.raises(ValidationError, match="keep_last_k"):
+        ProjectConfig.model_validate(raw)

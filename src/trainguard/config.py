@@ -45,6 +45,12 @@ class CheckpointSettings(StrictModel):
     keep_last_k: int | None = Field(default=None, ge=2)
     max_retained_bytes: int | None = Field(default=None, ge=1)
 
+    @model_validator(mode="after")
+    def validate_retention(self) -> CheckpointSettings:
+        if self.max_retained_bytes is not None and self.keep_last_k is None:
+            raise ValueError("max_retained_bytes requires keep_last_k")
+        return self
+
 
 class RecoverySettings(StrictModel):
     max_restarts: int = Field(default=2, ge=0)

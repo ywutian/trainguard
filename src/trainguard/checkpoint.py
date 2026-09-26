@@ -33,7 +33,13 @@ class CheckpointRecord:
 
 
 def candidate_path(run_dir: Path, attempt_id: str, step: int) -> Path:
+    _check_checkpoint_root(run_dir)
     return run_dir / "checkpoints" / f"step-{step:06d}-{attempt_id}"
+
+
+def _check_checkpoint_root(run_dir: Path) -> None:
+    if (run_dir / "checkpoints").is_symlink():
+        raise CheckpointInvalid("checkpoint root is a symbolic link")
 
 
 def _sha256(path: Path) -> str:
@@ -42,6 +48,32 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _file_identity(state: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        state.st_dev,
+        state.st_ino,
+        state.st_size,
+        state.st_mtime_ns,
+        state.st_ctime_ns,
+    )
+
+
+def _file_record(root: Path, entry: Path) -> tuple[dict[str, Any], tuple[int, ...]]:
+    before = entry.stat()
+    digest = _sha256(entry)
+    after = entry.stat()
+    if _file_identity(before) != _file_identity(after):
+        raise CheckpointInvalid(f"checkpoint file changed while hashing: {entry.name}")
+    return (
+        {
+            "path": entry.relative_to(root).as_posix(),
+            "size": after.st_size,
+            "sha256": digest,
+        },
+        _file_identity(after),
+    )
 
 
 def capture_rank_state(
@@ -200,18 +232,15 @@ def _write_marker_atomic(path: Path, value: str) -> None:
 def commit_checkpoint(
     path: Path, config: ProjectConfig, run_id: str, attempt_id: str, step: int
 ) -> CheckpointRecord:
+    if path.parent.is_symlink():
+        raise CheckpointInvalid("checkpoint root is a symbolic link")
     if (path / "COMMITTED").exists():
         raise CheckpointInvalid("checkpoint is already committed")
     _check_rank_states(path, config, run_id, attempt_id, step)
     _check_dcp_files(path, config)
-    files = [
-        {
-            "path": entry.relative_to(path).as_posix(),
-            "size": entry.stat().st_size,
-            "sha256": _sha256(entry),
-        }
-        for entry in _files(path)
-    ]
+    recorded = [_file_record(path, entry) for entry in _files(path)]
+    files = [item for item, _ in recorded]
+    identities = {item["path"]: identity for item, identity in recorded}
     manifest = {
         "format_version": 2,
         "run_id": run_id,
@@ -230,14 +259,32 @@ def commit_checkpoint(
     sync_directory(path)
     sync_directory(path.parent)
     write_json_atomic(path / "manifest.json", manifest)
-    marker = _sha256(path / "manifest.json") + "\n"
+    manifest_path = path / "manifest.json"
+    marker = _sha256(manifest_path) + "\n"
     _write_marker_atomic(path / "COMMITTED", marker)
-    return validate_checkpoint(path, config, run_id)
+    if (
+        path.parent.is_symlink()
+        or path.is_symlink()
+        or manifest_path.is_symlink()
+        or (path / "COMMITTED").is_symlink()
+        or (path / "COMMITTED").read_bytes() != marker.encode("ascii")
+        or _sha256(manifest_path) + "\n" != marker
+    ):
+        raise CheckpointInvalid("checkpoint publication differs from the verified manifest")
+    current_identities = {
+        entry.relative_to(path).as_posix(): _file_identity(entry.stat()) for entry in _files(path)
+    }
+    if current_identities != identities:
+        raise CheckpointInvalid("checkpoint payload changed during publication")
+    # The payload was already hashed and identity-checked before publication.
+    # Recovery independently rereads every payload before loading it.
+    return CheckpointRecord(path, step, attempt_id, manifest)
 
 
 def validate_checkpoint(path: Path, config: ProjectConfig, run_id: str) -> CheckpointRecord:
     if (
-        path.is_symlink()
+        path.parent.is_symlink()
+        or path.is_symlink()
         or (path / "COMMITTED").is_symlink()
         or (path / "manifest.json").is_symlink()
     ):
@@ -278,7 +325,7 @@ def validate_checkpoint(path: Path, config: ProjectConfig, run_id: str) -> Check
         or not isinstance(attempt_id, str)
     ):
         raise CheckpointInvalid("checkpoint step or attempt is invalid")
-    if path.name != candidate_path(Path(), attempt_id, step).name:
+    if path.name != f"step-{step:06d}-{attempt_id}":
         raise CheckpointInvalid("checkpoint directory name differs from manifest")
     _check_rank_states(path, config, run_id, attempt_id, step)
     _check_dcp_files(path, config)
@@ -319,6 +366,7 @@ def latest_valid_checkpoint(
 
 
 def ordered_candidates(run_dir: Path) -> list[Path]:
+    _check_checkpoint_root(run_dir)
     root = run_dir / "checkpoints"
     if not root.is_dir():
         return []
