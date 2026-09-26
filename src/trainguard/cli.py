@@ -93,7 +93,8 @@ def benchmark(
     ],
     output_root: Annotated[Path, typer.Option("--output-root")] = DEFAULT_OUTPUT_ROOT,
     repetitions: Annotated[int, typer.Option("--repetitions", min=3)] = 3,
+    warmups: Annotated[int, typer.Option("--warmups", min=0)] = 1,
 ) -> None:
     """Measure no checkpoint, synchronous DCP, and native asynchronous DCP."""
-    directory = run_benchmark(config, output_root, repetitions)
+    directory = run_benchmark(config, output_root, repetitions, warmups=warmups)
     typer.echo(f"Benchmark report: {directory / 'report.md'}")

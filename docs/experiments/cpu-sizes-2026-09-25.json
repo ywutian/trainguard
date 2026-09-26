@@ -1,0 +1,957 @@
+{
+  "format_version": 1,
+  "local_date": "2026-09-25",
+  "timezone": "America/Los_Angeles",
+  "experiments": {
+    "small": {
+      "config": {
+        "checkpoint": {
+          "interval_steps": 100,
+          "mode": "none"
+        },
+        "fault": {
+          "kind": "none",
+          "rank": 0,
+          "step": null
+        },
+        "model": {
+          "dropout": 0.0,
+          "hidden_size": 64,
+          "num_heads": 4,
+          "num_layers": 1,
+          "vocab_size": 128
+        },
+        "recovery": {
+          "max_restarts": 2,
+          "omit_state": "none",
+          "progress_timeout_seconds": 120
+        },
+        "run": {
+          "backend": "gloo",
+          "device": "cpu",
+          "seed": 42,
+          "timeout_seconds": 600,
+          "world_size": 2
+        },
+        "training": {
+          "batch_size_per_rank": 2,
+          "dataloader_workers": 0,
+          "sequence_length": 16,
+          "total_steps": 3000
+        }
+      },
+      "created_at": "2026-09-26T06:13:42.496538+00:00",
+      "environment": {
+        "cpu_count": 10,
+        "device": "cpu",
+        "platform": "macOS-26.5.1-arm64-arm-64bit",
+        "python": "3.12.12",
+        "storage": "local filesystem",
+        "torch": "2.10.0",
+        "worker_threads": 1,
+        "world_size": 2
+      },
+      "raw_runs": [
+        {
+          "checkpoint_bytes": 0,
+          "checkpoint_count": 0,
+          "checksum_commit_seconds": 0.0,
+          "elapsed_seconds": 5.396403250000731,
+          "load_average_after": [
+            2.650390625,
+            2.62548828125,
+            2.54833984375
+          ],
+          "load_average_before": [
+            2.6201171875,
+            2.61962890625,
+            2.5458984375
+          ],
+          "mode": "none",
+          "recomputed_steps": 0,
+          "repeat": 1,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.0,
+          "training_seconds": 3.39138549999916,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 0.0,
+          "run_id": "aa9a5228db99",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "cbfd5c2f77cdaf615813379f13b4bba9b10d92d8ab7e5f1aa70c07605c581fe4",
+            "optimizer_sha256": "ca4eadfaa54d54525148f56e38afc35c5bf691009275cda6dd9bfff5927f01c5",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        },
+        {
+          "checkpoint_bytes": 44475200,
+          "checkpoint_count": 30,
+          "checksum_commit_seconds": 0.1091684970233473,
+          "elapsed_seconds": 5.861973166000098,
+          "load_average_after": [
+            2.67822265625,
+            2.63134765625,
+            2.55078125
+          ],
+          "load_average_before": [
+            2.650390625,
+            2.62548828125,
+            2.54833984375
+          ],
+          "mode": "sync",
+          "recomputed_steps": 0,
+          "repeat": 1,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.012989087008463684,
+          "training_seconds": 3.835301791994425,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 0.286437750015466,
+          "run_id": "697bdba0766d",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "cbfd5c2f77cdaf615813379f13b4bba9b10d92d8ab7e5f1aa70c07605c581fe4",
+            "optimizer_sha256": "ca4eadfaa54d54525148f56e38afc35c5bf691009275cda6dd9bfff5927f01c5",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        },
+        {
+          "checkpoint_bytes": 44475140,
+          "checkpoint_count": 30,
+          "checksum_commit_seconds": 0.10802691598655656,
+          "elapsed_seconds": 5.840041875002498,
+          "load_average_after": [
+            2.70361328125,
+            2.63720703125,
+            2.55322265625
+          ],
+          "load_average_before": [
+            2.67822265625,
+            2.63134765625,
+            2.55078125
+          ],
+          "mode": "async",
+          "recomputed_steps": 0,
+          "repeat": 1,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.07022629198036157,
+          "training_seconds": 3.9181282080025994,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 3.6039712439960567,
+          "run_id": "cd3b89b06f57",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "cbfd5c2f77cdaf615813379f13b4bba9b10d92d8ab7e5f1aa70c07605c581fe4",
+            "optimizer_sha256": "ca4eadfaa54d54525148f56e38afc35c5bf691009275cda6dd9bfff5927f01c5",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        },
+        {
+          "checkpoint_bytes": 44475470,
+          "checkpoint_count": 30,
+          "checksum_commit_seconds": 0.1090612060361309,
+          "elapsed_seconds": 5.84583633299917,
+          "load_average_after": [
+            2.80712890625,
+            2.65966796875,
+            2.5615234375
+          ],
+          "load_average_before": [
+            2.70361328125,
+            2.63720703125,
+            2.55322265625
+          ],
+          "mode": "sync",
+          "recomputed_steps": 0,
+          "repeat": 2,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.01269312701333547,
+          "training_seconds": 3.8618713339965325,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 0.27724991800641874,
+          "run_id": "0feb9428906e",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "cbfd5c2f77cdaf615813379f13b4bba9b10d92d8ab7e5f1aa70c07605c581fe4",
+            "optimizer_sha256": "ca4eadfaa54d54525148f56e38afc35c5bf691009275cda6dd9bfff5927f01c5",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        },
+        {
+          "checkpoint_bytes": 44474270,
+          "checkpoint_count": 30,
+          "checksum_commit_seconds": 0.1077669169899309,
+          "elapsed_seconds": 5.629609040996002,
+          "load_average_after": [
+            2.90234375,
+            2.681640625,
+            2.56982421875
+          ],
+          "load_average_before": [
+            2.80712890625,
+            2.65966796875,
+            2.5615234375
+          ],
+          "mode": "async",
+          "recomputed_steps": 0,
+          "repeat": 2,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.0483575439939159,
+          "training_seconds": 3.820333292002033,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 3.5223074999885284,
+          "run_id": "eca5770dbbf4",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "cbfd5c2f77cdaf615813379f13b4bba9b10d92d8ab7e5f1aa70c07605c581fe4",
+            "optimizer_sha256": "ca4eadfaa54d54525148f56e38afc35c5bf691009275cda6dd9bfff5927f01c5",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        },
+        {
+          "checkpoint_bytes": 0,
+          "checkpoint_count": 0,
+          "checksum_commit_seconds": 0.0,
+          "elapsed_seconds": 5.376227291999385,
+          "load_average_after": [
+            2.91015625,
+            2.6865234375,
+            2.572265625
+          ],
+          "load_average_before": [
+            2.90234375,
+            2.681640625,
+            2.56982421875
+          ],
+          "mode": "none",
+          "recomputed_steps": 0,
+          "repeat": 2,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.0,
+          "training_seconds": 3.617198375002772,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 0.0,
+          "run_id": "9d381045aea5",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "cbfd5c2f77cdaf615813379f13b4bba9b10d92d8ab7e5f1aa70c07605c581fe4",
+            "optimizer_sha256": "ca4eadfaa54d54525148f56e38afc35c5bf691009275cda6dd9bfff5927f01c5",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        },
+        {
+          "checkpoint_bytes": 44475230,
+          "checkpoint_count": 30,
+          "checksum_commit_seconds": 0.10836287301935954,
+          "elapsed_seconds": 5.855855083005736,
+          "load_average_after": [
+            2.77587890625,
+            2.66357421875,
+            2.5654296875
+          ],
+          "load_average_before": [
+            2.91015625,
+            2.6865234375,
+            2.572265625
+          ],
+          "mode": "async",
+          "recomputed_steps": 0,
+          "repeat": 3,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.047525044006761163,
+          "training_seconds": 3.8272312920016702,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 3.5354569149785675,
+          "run_id": "ed5f984be554",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "cbfd5c2f77cdaf615813379f13b4bba9b10d92d8ab7e5f1aa70c07605c581fe4",
+            "optimizer_sha256": "ca4eadfaa54d54525148f56e38afc35c5bf691009275cda6dd9bfff5927f01c5",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        },
+        {
+          "checkpoint_bytes": 0,
+          "checkpoint_count": 0,
+          "checksum_commit_seconds": 0.0,
+          "elapsed_seconds": 5.390212500002235,
+          "load_average_after": [
+            2.95361328125,
+            2.7021484375,
+            2.57958984375
+          ],
+          "load_average_before": [
+            2.77587890625,
+            2.66357421875,
+            2.5654296875
+          ],
+          "mode": "none",
+          "recomputed_steps": 0,
+          "repeat": 3,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.0,
+          "training_seconds": 3.4824274580023484,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 0.0,
+          "run_id": "f50bea3de986",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "cbfd5c2f77cdaf615813379f13b4bba9b10d92d8ab7e5f1aa70c07605c581fe4",
+            "optimizer_sha256": "ca4eadfaa54d54525148f56e38afc35c5bf691009275cda6dd9bfff5927f01c5",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        },
+        {
+          "checkpoint_bytes": 44475560,
+          "checkpoint_count": 30,
+          "checksum_commit_seconds": 0.10798362399509642,
+          "elapsed_seconds": 5.831862041995919,
+          "load_average_after": [
+            3.197265625,
+            2.7568359375,
+            2.599609375
+          ],
+          "load_average_before": [
+            2.95361328125,
+            2.7021484375,
+            2.57958984375
+          ],
+          "mode": "sync",
+          "recomputed_steps": 0,
+          "repeat": 3,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.01248104200931266,
+          "training_seconds": 4.015142542004469,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 0.2789394180144882,
+          "run_id": "d98744b09ff5",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "cbfd5c2f77cdaf615813379f13b4bba9b10d92d8ab7e5f1aa70c07605c581fe4",
+            "optimizer_sha256": "ca4eadfaa54d54525148f56e38afc35c5bf691009275cda6dd9bfff5927f01c5",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        }
+      ],
+      "repetitions": 3,
+      "summary": {
+        "async": {
+          "max_seconds": 5.855855083005736,
+          "median_seconds": 5.840041875002498,
+          "min_seconds": 5.629609040996002
+        },
+        "none": {
+          "max_seconds": 5.396403250000731,
+          "median_seconds": 5.390212500002235,
+          "min_seconds": 5.376227291999385
+        },
+        "sync": {
+          "max_seconds": 5.861973166000098,
+          "median_seconds": 5.84583633299917,
+          "min_seconds": 5.831862041995919
+        }
+      },
+      "training_summary": {
+        "async": {
+          "max_seconds": 3.9181282080025994,
+          "median_seconds": 3.8272312920016702,
+          "min_seconds": 3.820333292002033
+        },
+        "none": {
+          "max_seconds": 3.617198375002772,
+          "median_seconds": 3.4824274580023484,
+          "min_seconds": 3.39138549999916
+        },
+        "sync": {
+          "max_seconds": 4.015142542004469,
+          "median_seconds": 3.8618713339965325,
+          "min_seconds": 3.835301791994425
+        }
+      },
+      "warmup_runs": [
+        {
+          "checkpoint_bytes": 0,
+          "checkpoint_count": 0,
+          "checksum_commit_seconds": 0.0,
+          "elapsed_seconds": 5.589728625003772,
+          "load_average_after": [
+            2.50439453125,
+            2.6005859375,
+            2.53857421875
+          ],
+          "load_average_before": [
+            2.37451171875,
+            2.5771484375,
+            2.5302734375
+          ],
+          "mode": "none",
+          "recomputed_steps": 0,
+          "repeat": 1,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.0,
+          "training_seconds": 3.549188958997547,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 0.0,
+          "run_id": "57295ecf8e1e",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "cbfd5c2f77cdaf615813379f13b4bba9b10d92d8ab7e5f1aa70c07605c581fe4",
+            "optimizer_sha256": "ca4eadfaa54d54525148f56e38afc35c5bf691009275cda6dd9bfff5927f01c5",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        },
+        {
+          "checkpoint_bytes": 44474930,
+          "checkpoint_count": 30,
+          "checksum_commit_seconds": 0.1071695449645631,
+          "elapsed_seconds": 5.86257916699833,
+          "load_average_after": [
+            2.5439453125,
+            2.60693359375,
+            2.541015625
+          ],
+          "load_average_before": [
+            2.50439453125,
+            2.6005859375,
+            2.53857421875
+          ],
+          "mode": "sync",
+          "recomputed_steps": 0,
+          "repeat": 1,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.012341290988842957,
+          "training_seconds": 3.8815514579982846,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 0.27484129001095425,
+          "run_id": "b58a67cdae69",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "cbfd5c2f77cdaf615813379f13b4bba9b10d92d8ab7e5f1aa70c07605c581fe4",
+            "optimizer_sha256": "ca4eadfaa54d54525148f56e38afc35c5bf691009275cda6dd9bfff5927f01c5",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        },
+        {
+          "checkpoint_bytes": 44474810,
+          "checkpoint_count": 30,
+          "checksum_commit_seconds": 0.10768504100269638,
+          "elapsed_seconds": 5.872901874994568,
+          "load_average_after": [
+            2.6201171875,
+            2.61962890625,
+            2.5458984375
+          ],
+          "load_average_before": [
+            2.5439453125,
+            2.60693359375,
+            2.541015625
+          ],
+          "mode": "async",
+          "recomputed_steps": 0,
+          "repeat": 1,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.04836120801337529,
+          "training_seconds": 3.8639084169990383,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 3.569333873994765,
+          "run_id": "094a5e1dcdaf",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "cbfd5c2f77cdaf615813379f13b4bba9b10d92d8ab7e5f1aa70c07605c581fe4",
+            "optimizer_sha256": "ca4eadfaa54d54525148f56e38afc35c5bf691009275cda6dd9bfff5927f01c5",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        }
+      ],
+      "warmups": 1,
+      "workload_fingerprint": "43b8e203e17c69a06949b12d09d946b96cd69222431a259bc01ba8dfea10d14d",
+      "benchmark_id": "benchmark-93dd8af6d346"
+    },
+    "large": {
+      "config": {
+        "checkpoint": {
+          "interval_steps": 100,
+          "mode": "none"
+        },
+        "fault": {
+          "kind": "none",
+          "rank": 0,
+          "step": null
+        },
+        "model": {
+          "dropout": 0.0,
+          "hidden_size": 128,
+          "num_heads": 4,
+          "num_layers": 2,
+          "vocab_size": 128
+        },
+        "recovery": {
+          "max_restarts": 2,
+          "omit_state": "none",
+          "progress_timeout_seconds": 120
+        },
+        "run": {
+          "backend": "gloo",
+          "device": "cpu",
+          "seed": 42,
+          "timeout_seconds": 600,
+          "world_size": 2
+        },
+        "training": {
+          "batch_size_per_rank": 2,
+          "dataloader_workers": 0,
+          "sequence_length": 16,
+          "total_steps": 3000
+        }
+      },
+      "created_at": "2026-09-26T06:16:45.463030+00:00",
+      "environment": {
+        "cpu_count": 10,
+        "device": "cpu",
+        "platform": "macOS-26.5.1-arm64-arm-64bit",
+        "python": "3.12.12",
+        "storage": "local filesystem",
+        "torch": "2.10.0",
+        "worker_threads": 1,
+        "world_size": 2
+      },
+      "raw_runs": [
+        {
+          "checkpoint_bytes": 0,
+          "checkpoint_count": 0,
+          "checksum_commit_seconds": 0.0,
+          "elapsed_seconds": 10.715146374997857,
+          "load_average_after": [
+            3.6787109375,
+            3.01806640625,
+            2.71142578125
+          ],
+          "load_average_before": [
+            3.5107421875,
+            2.96728515625,
+            2.69091796875
+          ],
+          "mode": "none",
+          "recomputed_steps": 0,
+          "repeat": 1,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.0,
+          "training_seconds": 8.861782708001556,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 0.0,
+          "run_id": "4349647f9bce",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "77fc0996555c8a3d37ecfa69d6d5f4b02029a0a6088e7e9a4d4a8b9b67b64be0",
+            "optimizer_sha256": "d76c32105514fa60472b52693cc2ed5dfeffa7a712d088af0aa391a0a00e9e71",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        },
+        {
+          "checkpoint_bytes": 189688010,
+          "checkpoint_count": 30,
+          "checksum_commit_seconds": 0.2158191260023159,
+          "elapsed_seconds": 11.409768624995195,
+          "load_average_after": [
+            3.4599609375,
+            3.0,
+            2.7099609375
+          ],
+          "load_average_before": [
+            3.6787109375,
+            3.01806640625,
+            2.71142578125
+          ],
+          "mode": "sync",
+          "recomputed_steps": 0,
+          "repeat": 1,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.02113050199841382,
+          "training_seconds": 9.503727083996637,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 0.4401242099920637,
+          "run_id": "cadf0659e19e",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "77fc0996555c8a3d37ecfa69d6d5f4b02029a0a6088e7e9a4d4a8b9b67b64be0",
+            "optimizer_sha256": "d76c32105514fa60472b52693cc2ed5dfeffa7a712d088af0aa391a0a00e9e71",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        },
+        {
+          "checkpoint_bytes": 189686960,
+          "checkpoint_count": 30,
+          "checksum_commit_seconds": 0.220770876017923,
+          "elapsed_seconds": 11.838916792003147,
+          "load_average_after": [
+            3.9169921875,
+            3.11474609375,
+            2.75390625
+          ],
+          "load_average_before": [
+            3.4599609375,
+            3.0,
+            2.7099609375
+          ],
+          "mode": "async",
+          "recomputed_steps": 0,
+          "repeat": 1,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.07542554297833703,
+          "training_seconds": 9.86302279100346,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 9.218882372006192,
+          "run_id": "af6161f0d6f3",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "77fc0996555c8a3d37ecfa69d6d5f4b02029a0a6088e7e9a4d4a8b9b67b64be0",
+            "optimizer_sha256": "d76c32105514fa60472b52693cc2ed5dfeffa7a712d088af0aa391a0a00e9e71",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        },
+        {
+          "checkpoint_bytes": 189687440,
+          "checkpoint_count": 30,
+          "checksum_commit_seconds": 0.22049428900209023,
+          "elapsed_seconds": 11.84948749999603,
+          "load_average_after": [
+            4.13720703125,
+            3.19189453125,
+            2.78515625
+          ],
+          "load_average_before": [
+            3.9169921875,
+            3.11474609375,
+            2.75390625
+          ],
+          "mode": "sync",
+          "recomputed_steps": 0,
+          "repeat": 2,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.020850544031418394,
+          "training_seconds": 9.857659166998928,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 0.47644870500516845,
+          "run_id": "2f56efce4098",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "77fc0996555c8a3d37ecfa69d6d5f4b02029a0a6088e7e9a4d4a8b9b67b64be0",
+            "optimizer_sha256": "d76c32105514fa60472b52693cc2ed5dfeffa7a712d088af0aa391a0a00e9e71",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        },
+        {
+          "checkpoint_bytes": 189688670,
+          "checkpoint_count": 30,
+          "checksum_commit_seconds": 0.24458724797295872,
+          "elapsed_seconds": 12.45250604100147,
+          "load_average_after": [
+            3.87841796875,
+            3.181640625,
+            2.7880859375
+          ],
+          "load_average_before": [
+            4.13720703125,
+            3.19189453125,
+            2.78515625
+          ],
+          "mode": "async",
+          "recomputed_steps": 0,
+          "repeat": 2,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.08241145699867047,
+          "training_seconds": 10.086372915997345,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 9.310349296007189,
+          "run_id": "1acd4cd7e5c4",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "77fc0996555c8a3d37ecfa69d6d5f4b02029a0a6088e7e9a4d4a8b9b67b64be0",
+            "optimizer_sha256": "d76c32105514fa60472b52693cc2ed5dfeffa7a712d088af0aa391a0a00e9e71",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        },
+        {
+          "checkpoint_bytes": 0,
+          "checkpoint_count": 0,
+          "checksum_commit_seconds": 0.0,
+          "elapsed_seconds": 11.511147791999974,
+          "load_average_after": [
+            3.81640625,
+            3.19140625,
+            2.7958984375
+          ],
+          "load_average_before": [
+            3.87841796875,
+            3.181640625,
+            2.7880859375
+          ],
+          "mode": "none",
+          "recomputed_steps": 0,
+          "repeat": 2,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.0,
+          "training_seconds": 9.57953195799928,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 0.0,
+          "run_id": "b81453b97646",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "77fc0996555c8a3d37ecfa69d6d5f4b02029a0a6088e7e9a4d4a8b9b67b64be0",
+            "optimizer_sha256": "d76c32105514fa60472b52693cc2ed5dfeffa7a712d088af0aa391a0a00e9e71",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        },
+        {
+          "checkpoint_bytes": 189688460,
+          "checkpoint_count": 30,
+          "checksum_commit_seconds": 0.2226845800105366,
+          "elapsed_seconds": 12.253159792002407,
+          "load_average_after": [
+            3.4931640625,
+            3.14892578125,
+            2.787109375
+          ],
+          "load_average_before": [
+            3.81640625,
+            3.19140625,
+            2.7958984375
+          ],
+          "mode": "async",
+          "recomputed_steps": 0,
+          "repeat": 3,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.07952216199191753,
+          "training_seconds": 10.208795041995472,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 9.576175880014489,
+          "run_id": "cf0cbb09e18b",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "77fc0996555c8a3d37ecfa69d6d5f4b02029a0a6088e7e9a4d4a8b9b67b64be0",
+            "optimizer_sha256": "d76c32105514fa60472b52693cc2ed5dfeffa7a712d088af0aa391a0a00e9e71",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        },
+        {
+          "checkpoint_bytes": 0,
+          "checkpoint_count": 0,
+          "checksum_commit_seconds": 0.0,
+          "elapsed_seconds": 11.341096707998076,
+          "load_average_after": [
+            3.4970703125,
+            3.16015625,
+            2.794921875
+          ],
+          "load_average_before": [
+            3.4931640625,
+            3.14892578125,
+            2.787109375
+          ],
+          "mode": "none",
+          "recomputed_steps": 0,
+          "repeat": 3,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.0,
+          "training_seconds": 9.607095708000998,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 0.0,
+          "run_id": "c8bf53f83aa6",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "77fc0996555c8a3d37ecfa69d6d5f4b02029a0a6088e7e9a4d4a8b9b67b64be0",
+            "optimizer_sha256": "d76c32105514fa60472b52693cc2ed5dfeffa7a712d088af0aa391a0a00e9e71",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        },
+        {
+          "checkpoint_bytes": 189688730,
+          "checkpoint_count": 30,
+          "checksum_commit_seconds": 0.22678012299729744,
+          "elapsed_seconds": 12.061750166998536,
+          "load_average_after": [
+            3.57373046875,
+            3.1875,
+            2.80859375
+          ],
+          "load_average_before": [
+            3.4970703125,
+            3.16015625,
+            2.794921875
+          ],
+          "mode": "sync",
+          "recomputed_steps": 0,
+          "repeat": 3,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.0209775849871221,
+          "training_seconds": 9.950517916004173,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 0.44178916401870083,
+          "run_id": "67e8ffbe236c",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "77fc0996555c8a3d37ecfa69d6d5f4b02029a0a6088e7e9a4d4a8b9b67b64be0",
+            "optimizer_sha256": "d76c32105514fa60472b52693cc2ed5dfeffa7a712d088af0aa391a0a00e9e71",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        }
+      ],
+      "repetitions": 3,
+      "summary": {
+        "async": {
+          "max_seconds": 12.45250604100147,
+          "median_seconds": 12.253159792002407,
+          "min_seconds": 11.838916792003147
+        },
+        "none": {
+          "max_seconds": 11.511147791999974,
+          "median_seconds": 11.341096707998076,
+          "min_seconds": 10.715146374997857
+        },
+        "sync": {
+          "max_seconds": 12.061750166998536,
+          "median_seconds": 11.84948749999603,
+          "min_seconds": 11.409768624995195
+        }
+      },
+      "training_summary": {
+        "async": {
+          "max_seconds": 10.208795041995472,
+          "median_seconds": 10.086372915997345,
+          "min_seconds": 9.86302279100346
+        },
+        "none": {
+          "max_seconds": 9.607095708000998,
+          "median_seconds": 9.57953195799928,
+          "min_seconds": 8.861782708001556
+        },
+        "sync": {
+          "max_seconds": 9.950517916004173,
+          "median_seconds": 9.857659166998928,
+          "min_seconds": 9.503727083996637
+        }
+      },
+      "warmup_runs": [
+        {
+          "checkpoint_bytes": 0,
+          "checkpoint_count": 0,
+          "checksum_commit_seconds": 0.0,
+          "elapsed_seconds": 11.103935375002038,
+          "load_average_after": [
+            3.73193359375,
+            2.96630859375,
+            2.68505859375
+          ],
+          "load_average_before": [
+            3.35693359375,
+            2.86181640625,
+            2.64453125
+          ],
+          "mode": "none",
+          "recomputed_steps": 0,
+          "repeat": 1,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.0,
+          "training_seconds": 9.115940292002051,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 0.0,
+          "run_id": "91e517c04aab",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "77fc0996555c8a3d37ecfa69d6d5f4b02029a0a6088e7e9a4d4a8b9b67b64be0",
+            "optimizer_sha256": "d76c32105514fa60472b52693cc2ed5dfeffa7a712d088af0aa391a0a00e9e71",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        },
+        {
+          "checkpoint_bytes": 189688610,
+          "checkpoint_count": 30,
+          "checksum_commit_seconds": 0.21990207901399117,
+          "elapsed_seconds": 11.643787249995512,
+          "load_average_after": [
+            3.69873046875,
+            2.98388671875,
+            2.69384765625
+          ],
+          "load_average_before": [
+            3.73193359375,
+            2.96630859375,
+            2.68505859375
+          ],
+          "mode": "sync",
+          "recomputed_steps": 0,
+          "repeat": 1,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.020630291000998113,
+          "training_seconds": 9.64363774999947,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 0.4479256240229006,
+          "run_id": "3a956202b266",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "77fc0996555c8a3d37ecfa69d6d5f4b02029a0a6088e7e9a4d4a8b9b67b64be0",
+            "optimizer_sha256": "d76c32105514fa60472b52693cc2ed5dfeffa7a712d088af0aa391a0a00e9e71",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        },
+        {
+          "checkpoint_bytes": 189687020,
+          "checkpoint_count": 30,
+          "checksum_commit_seconds": 0.219003791018622,
+          "elapsed_seconds": 11.618817583002965,
+          "load_average_after": [
+            3.5107421875,
+            2.96728515625,
+            2.69091796875
+          ],
+          "load_average_before": [
+            3.69873046875,
+            2.98388671875,
+            2.69384765625
+          ],
+          "mode": "async",
+          "recomputed_steps": 0,
+          "repeat": 1,
+          "restart_seconds": 0.0,
+          "staging_seconds": 0.07537737699021818,
+          "training_seconds": 9.701086749999376,
+          "validation_differences": [],
+          "validation_passed": true,
+          "writing_seconds": 9.07633103900298,
+          "run_id": "fbef7c117677",
+          "final_state": {
+            "global_step": 3000,
+            "model_sha256": "77fc0996555c8a3d37ecfa69d6d5f4b02029a0a6088e7e9a4d4a8b9b67b64be0",
+            "optimizer_sha256": "d76c32105514fa60472b52693cc2ed5dfeffa7a712d088af0aa391a0a00e9e71",
+            "scheduler_sha256": "819f24dce8335ac4542889e323ffc2a67a290aaaf94c982fd8ef90fca592e159"
+          }
+        }
+      ],
+      "warmups": 1,
+      "workload_fingerprint": "1010393bd0c9963d7e336da327bb15ece91a0baf8563a046ed8b8dc970cc3efe",
+      "benchmark_id": "benchmark-955ac13b4ba0"
+    }
+  }
+}

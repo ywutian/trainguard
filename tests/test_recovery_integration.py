@@ -114,6 +114,10 @@ def test_validator_detects_omitted_recovery_state(tmp_path: Path) -> None:
 
 
 def test_explicit_resume_rejects_live_owner_then_recovers(tmp_path: Path, monkeypatch) -> None:
+    reference, reference_ok = run(
+        _config(tmp_path, checkpoint="none"), tmp_path / "reference-runs"
+    )
+    assert reference_ok
     original = controller._launch_attempt
 
     class SimulatedControllerExit(Exception):
@@ -134,6 +138,9 @@ def test_explicit_resume_rejects_live_owner_then_recovers(tmp_path: Path, monkey
     monkeypatch.setattr(controller, "_launch_attempt", original)
     run_dir = next((tmp_path / "runs").iterdir())
     run_id = json.loads((run_dir / "run.json").read_text())["run_id"]
+    assert list((run_dir / "checkpoints").glob("*/COMMITTED"))
+    with sqlite3.connect(run_dir / "run.sqlite3") as database:
+        assert database.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 0
     process = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(30)", "--run-id", run_id],
         start_new_session=True,
@@ -151,6 +158,50 @@ def test_explicit_resume_rejects_live_owner_then_recovers(tmp_path: Path, monkey
         os.killpg(process.pid, signal.SIGTERM)
         process.wait(timeout=5)
     assert resume(run_dir), (run_dir / "launcher.log").read_text()
+    assert json.loads((run_dir / "run.json").read_text())["status"] == "SUCCEEDED"
+    assert validate_runs(reference, run_dir)["passed"]
+    with sqlite3.connect(run_dir / "run.sqlite3") as database:
+        assert database.execute("SELECT resume_step FROM attempts WHERE number=2").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("exit_at", ["attempt_return", "status_publication"])
+def test_resume_reconciles_real_completion_before_controller_publication(
+    tmp_path: Path, monkeypatch, exit_at: str
+) -> None:
+    class SimulatedControllerExit(Exception):
+        pass
+
+    raw = load_config(Path(__file__).parents[1] / "configs" / "cpu_demo.yaml").model_dump()
+    raw["recovery"]["max_restarts"] = 0
+    config = tmp_path / "completion.json"
+    config.write_text(json.dumps(raw))
+    original_launch = controller._launch_attempt
+    original_status = controller._set_status
+
+    def exit_after_completion(*args, **kwargs):
+        result = original_launch(*args, **kwargs)
+        assert result.succeeded
+        raise SimulatedControllerExit
+
+    def exit_before_status(run_dir, status, value, reason):
+        if value == "SUCCEEDED":
+            raise SimulatedControllerExit
+        return original_status(run_dir, status, value, reason)
+
+    with monkeypatch.context() as patch:
+        if exit_at == "attempt_return":
+            patch.setattr(controller, "_launch_attempt", exit_after_completion)
+        else:
+            patch.setattr(controller, "_set_status", exit_before_status)
+        with pytest.raises(SimulatedControllerExit):
+            run(config, tmp_path / "runs")
+    run_dir = next((tmp_path / "runs").iterdir())
+    assert (run_dir / "attempts/attempt-001/summary.json").is_file()
+    assert json.loads((run_dir / "run.json").read_text())["status"] == "RUNNING"
+    assert resume(run_dir)
+    with sqlite3.connect(run_dir / "run.sqlite3") as database:
+        assert database.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 1
+        assert database.execute("SELECT status FROM attempts").fetchone()[0] == "SUCCEEDED"
     assert json.loads((run_dir / "run.json").read_text())["status"] == "SUCCEEDED"
 
 
@@ -212,8 +263,9 @@ def test_resume_reuses_recorded_attempt_before_workers_launch(tmp_path: Path, mo
         assert database.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 1
 
 
-def test_resume_rejects_unrecorded_live_launcher_before_workers_spawn(
-    tmp_path: Path, monkeypatch
+@pytest.mark.parametrize("owner_kind", ["launcher", "orphan"])
+def test_resume_rejects_unrecorded_live_owner(
+    tmp_path: Path, monkeypatch, owner_kind: str
 ) -> None:
     original = controller._launch_attempt
     launcher = None
@@ -223,14 +275,23 @@ def test_resume_rejects_unrecorded_live_launcher_before_workers_spawn(
 
     def exit_after_spawn(run_dir, config, run_id, attempt_id, selected, store):
         nonlocal launcher
-        launcher = subprocess.Popen(
-            [
+        if owner_kind == "launcher":
+            command = [
                 sys.executable, "-c", "import time; time.sleep(30)",
                 "-m", "torch.distributed.run", "--run-dir", str(run_dir),
                 "--run-id", run_id, "--attempt-id", attempt_id,
-            ],
-            start_new_session=True,
-        )
+            ]
+        else:
+            script = (
+                "import subprocess,sys; "
+                "subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)',"
+                "'trainguard.trainer','--run-dir',sys.argv[1],"
+                "'--run-id',sys.argv[2],'--attempt-id',sys.argv[3]])"
+            )
+            command = [sys.executable, "-c", script, str(run_dir), run_id, attempt_id]
+        launcher = subprocess.Popen(command, start_new_session=True)
+        if owner_kind == "orphan":
+            assert launcher.wait(timeout=5) == 0
         raise SimulatedControllerExit
 
     monkeypatch.setattr(controller, "_launch_attempt", exit_after_spawn)
@@ -244,7 +305,8 @@ def test_resume_rejects_unrecorded_live_launcher_before_workers_spawn(
     finally:
         monkeypatch.setattr(controller, "_launch_attempt", original)
         if launcher is not None:
-            os.killpg(launcher.pid, signal.SIGTERM)
-            launcher.wait(timeout=5)
+            controller._stop_process_group(
+                launcher, run_dir, run_dir.name, "attempt-001"
+            )
 
     assert resume(run_dir)

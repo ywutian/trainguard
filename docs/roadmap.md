@@ -22,15 +22,20 @@
 - [x] Restart the full group with a new attempt ID and limited retries.
 - [x] Support explicit resume after controller exit with process ownership checks.
 - [x] Detect a live launcher even if its PID has not yet been recorded.
+- [x] Cover file-commit/index-update and worker-completion/status-publication exit windows.
+- [x] Refuse resume while orphaned owned workers are alive.
 - [x] Reject stale messages from earlier attempts.
 
 ## 4. Validation and experiments
 
 - [x] Add deterministic fault hooks for worker exit, save interruption, corruption, and hang.
 - [x] Compare recovered final state and effective sample sequence with a reference.
+- [x] Independently reject duplicate, missing, invalid, and out-of-order event evidence.
 - [x] Add negative tests for omitted RNG, optimizer, and data cursor state.
 - [x] Benchmark sync and native async DCP with repeated runs and raw results.
 - [x] Separate worker training time from launch overhead in a longer CPU experiment.
+- [x] Exclude separately recorded warm-up runs from performance statistics.
+- [x] Record checkpoint payload bytes and host load for two CPU model sizes.
 - [x] Produce a reproducible report with environment and limitations.
 
 GPU and FSDP experiments are independent extensions after the CPU recovery path passes.

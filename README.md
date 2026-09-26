@@ -23,7 +23,7 @@ The first run is an uninterrupted reference. The second injects a rank-0 exit af
 uv run trainguard validate --reference runs/<reference-id> --recovered runs/<recovered-id>
 ```
 
-Validation writes `validation.json` in the recovered run directory. It checks exact SHA-256 digests for model, optimizer, and scheduler state, the completed step, and each rank's effective sample sequence after removing rolled-back work. The fixed CPU comparison tolerance is `atol=0, rtol=0`. A mismatch exits with status 1.
+Validation writes `validation.json` in the recovered run directory. It checks exact SHA-256 digests for model, optimizer, and scheduler state, the completed step, and each rank's effective sample sequence after removing rolled-back work. It also rejects duplicate or out-of-order steps, invalid sample IDs, missing successful-rank logs, and invalid final summaries in either run. A failed attempt may end with a truncated final log line. The fixed CPU comparison tolerance is `atol=0, rtol=0`. A mismatch exits with status 1.
 
 If a controller exits after a committed checkpoint, resume its run directory with:
 
@@ -44,10 +44,11 @@ The run directory also contains `run.json`, a SQLite index (`run.sqlite3`), `lau
 Run five repetitions each without checkpoints, with synchronous DCP, and with native asynchronous DCP on the longer CPU workload:
 
 ```bash
-uv run trainguard benchmark --config configs/cpu_benchmark.yaml --output-root runs --repetitions 5
+uv run trainguard benchmark --config configs/cpu_benchmark.yaml --output-root runs --repetitions 5 --warmups 1
+uv run trainguard benchmark --config configs/cpu_benchmark_large.yaml --output-root runs --repetitions 5 --warmups 1
 ```
 
-This writes raw `results.json` and a Markdown report under `runs/benchmark-<id>/`. Both total elapsed time and the worker training window are measured, and every run is checked against the uninterrupted reference. The [extended CPU experiment](docs/experiments/cpu-extended-2026-09-25.md) includes raw measurements, environment, method, and limits; the earlier [four-step smoke test](docs/experiments/cpu-2026-09-25.md) remains available. Asynchronous saves use a separate communication group so checkpoint traffic can overlap training without mixing collective operations.
+This writes raw `results.json` and a Markdown report under `runs/benchmark-<id>/`. Warm-up runs are validated and stored separately from measured runs; `--warmups 0` disables them. Both total elapsed time and the worker training window are measured, with committed checkpoint payload bytes and host load snapshots. Every run is checked against the uninterrupted reference. The two configurations vary model and checkpoint size while keeping steps and save frequency fixed; the [two-size CPU report](docs/experiments/cpu-sizes-2026-09-25.md) records 18 measured runs and 6 warm-ups. The [extended CPU experiment](docs/experiments/cpu-extended-2026-09-25.md) includes earlier raw measurements, environment, method, and limits; the [four-step smoke test](docs/experiments/cpu-2026-09-25.md) remains available. Asynchronous saves use a separate communication group so checkpoint traffic can overlap training without mixing collective operations.
 
 The fault configuration supports `worker_exit`, `save_interrupt`, `corrupt`, and `hang` on the first attempt. `recovery.omit_state` can deliberately omit `rng`, `optimizer`, or `cursor` restoration for negative validation experiments.
 

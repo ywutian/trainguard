@@ -9,3 +9,9 @@ def test_recovery_and_experiment_commands_are_available() -> None:
     assert "resume" in result.stdout
     assert "validate" in result.stdout
     assert "benchmark" in result.stdout
+
+
+def test_benchmark_exposes_optional_warmup_rounds() -> None:
+    result = CliRunner().invoke(app, ["benchmark", "--help"])
+    assert result.exit_code == 0
+    assert "--warmups" in result.stdout

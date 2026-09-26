@@ -6,6 +6,6 @@ An eligible checkpoint contains DCP model parameters, buffers, and optimizer sta
 
 Recovery starts a new process group at the selected completed update. It can recompute updates that were executed after the checkpoint in a failed attempt. The validator discards that rolled-back suffix, then compares the effective per-rank sample IDs for every step against an uninterrupted reference. It also requires exact final model, optimizer, scheduler, and completed-step equality on this deterministic CPU workload (`atol=0`, `rtol=0`).
 
-If the controller exits, explicit resume first checks that its previous launcher is no longer alive and owned by the run. A file lock blocks simultaneous controllers. The copied run configuration and committed manifests control recovery even if the original configuration file or SQLite checkpoint index has changed.
+If the controller exits, explicit resume first checks for live launchers and workers owned by the run, including an unrecorded launcher and orphaned workers whose launcher has exited. A file lock blocks simultaneous controllers. The copied run configuration and committed manifests control recovery even if the original configuration file or SQLite checkpoint index has changed. A completed attempt is reconciled from its matching final attempt summary before another attempt or retry is allocated. Event evidence is audited separately by `validate`.
 
 The process-failure contract does not claim durability after entire-disk loss or host power failure. The implementation fixes `world_size` and keeps data-loading workers at zero.
