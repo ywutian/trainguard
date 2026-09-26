@@ -4,20 +4,17 @@ from __future__ import annotations
 
 import json
 import os
-import platform
 import sqlite3
 import statistics
-import sys
 import time
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import torch
-
 from trainguard.config import ProjectConfig, load_config
-from trainguard.controller import run
+from trainguard.controller import _controller_lock, resume, run
+from trainguard.environment import environment_snapshot
 from trainguard.events import utc_now, write_json_atomic
 from trainguard.validation import validate_runs
 
@@ -37,9 +34,15 @@ def summarize_rows(
 
 
 def mode_order(repeat: int) -> tuple[str, str, str]:
-    modes = ("none", "sync", "async")
-    offset = (repeat - 1) % len(modes)
-    return modes[offset:] + modes[:offset]
+    orders = (
+        ("none", "sync", "async"),
+        ("sync", "async", "none"),
+        ("async", "none", "sync"),
+        ("none", "async", "sync"),
+        ("async", "sync", "none"),
+        ("sync", "none", "async"),
+    )
+    return orders[(repeat - 1) % 6]
 
 
 def _run_metrics(run_dir: Path) -> dict[str, float | int]:
@@ -51,6 +54,11 @@ def _run_metrics(run_dir: Path) -> dict[str, float | int]:
         "checksum_commit_seconds": 0.0,
         "restart_seconds": 0.0,
         "recomputed_steps": 0,
+        "preparation_seconds": 0.0,
+        "upload_seconds": 0.0,
+        "main_thread_wait_seconds": 0.0,
+        "eligibility_lag_seconds": 0.0,
+        "recovery_rto_seconds": 0.0,
     }
     for path in (run_dir / "attempts").glob("*/rank-0.jsonl"):
         for line in path.read_text(encoding="utf-8").splitlines():
@@ -58,27 +66,85 @@ def _run_metrics(run_dir: Path) -> dict[str, float | int]:
             if event.get("event_type") != "checkpoint_committed":
                 continue
             metrics["checkpoint_count"] += 1
-            manifest = json.loads(
-                (Path(event["checkpoint_path"]) / "manifest.json").read_text(encoding="utf-8")
-            )
-            metrics["checkpoint_bytes"] += sum(entry["size"] for entry in manifest["files"])
-            for key in ("staging_seconds", "writing_seconds", "checksum_commit_seconds"):
-                metrics[key] += float(event[key])
+            if "checkpoint_bytes" in event:
+                metrics["checkpoint_bytes"] += event["checkpoint_bytes"]
+            else:
+                manifest = json.loads(
+                    (Path(event["checkpoint_path"]) / "manifest.json").read_text()
+                )
+                metrics["checkpoint_bytes"] += sum(entry["size"] for entry in manifest["files"])
+            for key in (
+                "staging_seconds",
+                "writing_seconds",
+                "checksum_commit_seconds",
+                "preparation_seconds",
+                "upload_seconds",
+                "main_thread_wait_seconds",
+                "eligibility_lag_seconds",
+            ):
+                metrics[key] += float(event.get(key, 0.0))
     with sqlite3.connect(run_dir / "run.sqlite3") as database:
         rows = database.execute(
-            """SELECT old.finished_at, new.started_at, recovery.recomputed_steps
+            """SELECT old.finished_at, new.started_at, recovery.recomputed_steps,
+                   recovery.from_attempt, recovery.to_attempt
             FROM recoveries AS recovery
             JOIN attempts AS old ON old.attempt_id=recovery.from_attempt
             JOIN attempts AS new ON new.attempt_id=recovery.to_attempt"""
         ).fetchall()
-    for old_finished, new_started, recomputed in rows:
+    controller_path = run_dir / "controller.jsonl"
+    controller_events = (
+        [json.loads(line) for line in controller_path.read_text().splitlines()]
+        if controller_path.exists()
+        else []
+    )
+    phases = []
+    for old_finished, new_started, recomputed, from_attempt, to_attempt in rows:
         metrics["recomputed_steps"] += recomputed
         if old_finished:
             metrics["restart_seconds"] += max(
                 0.0,
-                (datetime.fromisoformat(new_started) - datetime.fromisoformat(old_finished))
-                .total_seconds(),
+                (
+                    datetime.fromisoformat(new_started) - datetime.fromisoformat(old_finished)
+                ).total_seconds(),
             )
+        observed = next(
+            (
+                event["time"]
+                for event in controller_events
+                if event["attempt_id"] == from_attempt and event["event_type"] == "fault_observed"
+            ),
+            None,
+        )
+        resumed = []
+        for log in (run_dir / "attempts" / to_attempt).glob("rank-*.jsonl"):
+            resumed.extend(
+                event["time"]
+                for event in map(json.loads, log.read_text().splitlines())
+                if event.get("event_type") == "first_resumed_update"
+            )
+        config = (
+            load_config(run_dir / "config.json") if (run_dir / "config.json").exists() else None
+        )
+        rto = None
+        if observed and config and len(resumed) == config.run.world_size:
+            rto = max(
+                0.0,
+                (
+                    datetime.fromisoformat(max(resumed)) - datetime.fromisoformat(observed)
+                ).total_seconds(),
+            )
+            metrics["recovery_rto_seconds"] += rto
+        phases.append(
+            {
+                "from_attempt": from_attempt,
+                "to_attempt": to_attempt,
+                "fault_observed_at": observed,
+                "all_ranks_first_update_at": max(resumed) if resumed else None,
+                "rto_seconds": rto,
+            }
+        )
+    metrics["attempt_gap_seconds"] = metrics["restart_seconds"]
+    metrics["recovery_phases"] = phases
     return metrics
 
 
@@ -113,11 +179,15 @@ def _report_text(results: dict[str, Any]) -> str:
             f"| {mode} | {summary['median_seconds']:.3f} | "
             f"{summary['min_seconds']:.3f}–{summary['max_seconds']:.3f} | {count} |"
         )
-    lines.extend([
-        "", "## Worker training window", "",
-        "| Mode | Median (s) | Range (s) | Runs |",
-        "| --- | ---: | ---: | ---: |",
-    ])
+    lines.extend(
+        [
+            "",
+            "## Worker training window",
+            "",
+            "| Mode | Median (s) | Range (s) | Runs |",
+            "| --- | ---: | ---: | ---: |",
+        ]
+    )
     for mode in ("none", "sync", "async"):
         summary = results["training_summary"][mode]
         count = sum(row["mode"] == mode for row in results["raw_runs"])
@@ -129,12 +199,18 @@ def _report_text(results: dict[str, Any]) -> str:
         ("Raw measurements", results["raw_runs"]),
         ("Warm-up measurements (excluded)", results["warmup_runs"]),
     ):
-        lines.extend([
-            "", f"## {title}", "",
-            ("| Mode | Repeat | Elapsed (s) | Training (s) | Checkpoints | Payload (MiB) | "
-             "Load 1m before / after | Valid |"),
-            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
-        ])
+        lines.extend(
+            [
+                "",
+                f"## {title}",
+                "",
+                (
+                    "| Mode | Repeat | Elapsed (s) | Training (s) | Checkpoints | Payload (MiB) | "
+                    "Load 1m before / after | Valid |"
+                ),
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+            ]
+        )
         for row in rows:
             lines.append(
                 f"| {row['mode']} | {row['repeat']} | {row['elapsed_seconds']:.3f} | "
@@ -143,49 +219,162 @@ def _report_text(results: dict[str, Any]) -> str:
                 f"{row['load_average_before'][0]:.2f} / {row['load_average_after'][0]:.2f} | "
                 f"{'yes' if row['validation_passed'] else 'no'} |"
             )
-    lines.extend([
-        "", "## Measured save and recovery phases", "",
-        ("| Mode | Repeat | Staging (s) | Completion lag (s) | Hash + commit (s) | "
-         "Restart (s) | Recomputed steps |"),
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
-    ])
+    lines.extend(
+        [
+            "",
+            "## Measured save and recovery phases",
+            "",
+            (
+                "| Mode | Repeat | Staging (s) | Completion lag (s) | Hash + commit (s) | "
+                "Attempt gap (s) | Recomputed steps |"
+            ),
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
     for row in results["raw_runs"]:
         lines.append(
             f"| {row['mode']} | {row['repeat']} | {row['staging_seconds']:.3f} | "
             f"{row['writing_seconds']:.3f} | {row['checksum_commit_seconds']:.3f} | "
             f"{row['restart_seconds']:.3f} | {row['recomputed_steps']} |"
         )
-    lines.extend([
-        "",
-        (
-            "Each raw row points to its run directory in `results.json`. "
-            "Validation uses exact hashes and effective sample IDs (atol=0, rtol=0). "
-            "Mode order rotates across repetitions. The exact base configuration is in "
-            "`results.json`, and mode configurations are copied beside this report. "
-            "Payload bytes sum committed manifest files across all checkpoints in a run, "
-            "excluding the manifest and commit marker. Load averages record host activity "
-            "over 1, 5 and 15 minutes before and after each run."
-        ),
-        "",
-        "## Measurement limits",
-        "",
-        (
-            "Completion lag (the raw writing_seconds field) is elapsed time after staging until "
-            "the trainer observes completion at the rank barrier. It includes rank-state writes; "
-            "for asynchronous save it also includes overlapping "
-            "training and may exceed actual I/O time, so phase totals must not be added to wall time. "
-            "Worker training time starts after process-group and model initialization and ends "
-            "after the final training barrier; it includes checkpoint work but excludes launch. "
-            "These runs use a local CPU filesystem; they do not measure GPU, multi-node, "
-            "storage-delay, disk-loss, or host-power-failure behavior. Short workloads and "
-            "few repetitions cannot establish a general performance advantage. "
-            "The host is not isolated; load snapshots do not control other workloads, "
-            "filesystem cache, or thermal effects. Warm-up rounds prepare the host and cache; "
-            "each measured run still launches new workers."
-        ),
-        "",
-    ])
+    lines.extend(
+        [
+            "",
+            (
+                "Each raw row points to its run directory in `results.json`. "
+                "Validation uses exact hashes and effective sample IDs (atol=0, rtol=0). "
+                "Mode order balances six permutations across repetitions. The exact base configuration is in "
+                "`results.json`, and mode configurations are copied beside this report. "
+                "Payload bytes sum committed manifest files across all checkpoints in a run, "
+                "excluding the manifest and commit marker. Load averages record host activity "
+                "over 1, 5 and 15 minutes before and after each run."
+            ),
+            "",
+            "## Measurement limits",
+            "",
+            (
+                "Completion lag (the raw writing_seconds field) is elapsed time after staging until "
+                "the trainer observes completion at the rank barrier. It includes rank-state writes; "
+                "for asynchronous save it also includes overlapping "
+                "training and may exceed actual I/O time, so phase totals must not be added to wall time. "
+                "Worker training time starts after process-group and model initialization and ends "
+                "after the final training barrier; it includes checkpoint work but excludes launch. "
+                "These runs use a local CPU filesystem; they do not measure GPU, multi-node, "
+                "storage-delay, disk-loss, or host-power-failure behavior. Short workloads and "
+                "few repetitions cannot establish a general performance advantage. "
+                "The host is not isolated; load snapshots do not control other workloads, "
+                "filesystem cache, or thermal effects. Warm-up rounds prepare the host and cache; "
+                "each measured run still launches new workers."
+            ),
+            "",
+        ]
+    )
     return "\n".join(lines)
+
+
+def _persist(directory: Path, results: dict) -> None:
+    results["raw_runs"] = [
+        slot["row"]
+        for slot in results["slots"]
+        if slot["phase"] == "measured" and slot["status"] == "VALIDATED"
+    ]
+    results["warmup_runs"] = [
+        slot["row"]
+        for slot in results["slots"]
+        if slot["phase"] == "warmup" and slot["status"] == "VALIDATED"
+    ]
+    results["summary"] = summarize_rows(results["raw_runs"])
+    results["training_summary"] = summarize_rows(results["raw_runs"], "training_seconds")
+    paired = []
+    for repeat in range(1, results["repetitions"] + 1):
+        batch = {row["mode"]: row for row in results["raw_runs"] if row["repeat"] == repeat}
+        if len(batch) == 3:
+            paired.append(
+                {
+                    "repeat": repeat,
+                    "sync_minus_none_seconds": batch["sync"]["training_seconds"]
+                    - batch["none"]["training_seconds"],
+                    "async_minus_sync_seconds": batch["async"]["training_seconds"]
+                    - batch["sync"]["training_seconds"],
+                }
+            )
+    results["paired_differences"] = paired
+    write_json_atomic(directory / "results.json", results)
+    if results["status"] == "SUCCEEDED":
+        (directory / "report.md").write_text(_report_text(results), encoding="utf-8")
+
+
+def _execute_benchmark(directory: Path, results: dict) -> Path:
+    reference = Path(results["reference_dir"]) if results.get("reference_dir") else None
+    if reference is not None and not validate_runs(reference, reference)["passed"]:
+        raise ValueError("benchmark reference evidence is invalid")
+    results["status"] = "RUNNING"
+    _persist(directory, results)
+    for slot in results["slots"]:
+        if slot["status"] == "VALIDATED":
+            if not validate_runs(reference, Path(slot["row"]["run_dir"]))["passed"]:
+                raise ValueError("completed benchmark evidence is invalid")
+            continue
+        mode, repeat, phase = slot["mode"], slot["repeat"], slot["phase"]
+        root = directory / "runs" / f"{phase}-{repeat}-{mode}"
+        slot["status"] = "RUNNING"
+        slot["reason"] = None
+        slot["started_at"] = utc_now()
+        _persist(directory, results)
+        load_before = list(os.getloadavg())
+        started = time.monotonic()
+        try:
+            config_copy = directory / f"{mode}-config.json"
+            # A completed worker run may have outlived an interrupted experiment coordinator.
+            candidates = sorted(
+                root.glob("*/run.json"), key=lambda path: path.stat().st_mtime, reverse=True
+            )
+            reusable = candidates[0].parent if candidates and not slot.get("history") else None
+            if reusable is not None:
+                run_dir, succeeded = reusable, resume(reusable)
+            else:
+                run_dir, succeeded = run(config_copy, root)
+            slot["run_dir"] = str(run_dir)
+            _persist(directory, results)
+            if not succeeded:
+                raise RuntimeError(f"benchmark run failed: {run_dir}")
+            if reference is None:
+                reference = run_dir
+                results["reference_dir"] = str(reference)
+            validation = validate_runs(reference, run_dir)
+            if not validation["passed"]:
+                raise RuntimeError(
+                    f"benchmark correctness comparison failed: {validation['differences']}"
+                )
+            slot["row"] = {
+                "mode": mode,
+                "repeat": repeat,
+                "phase": phase,
+                "run_dir": str(run_dir),
+                "elapsed_seconds": time.monotonic() - started,
+                "training_seconds": json.loads((run_dir / "summary.json").read_text())[
+                    "training_elapsed_seconds"
+                ],
+                "load_average_before": load_before,
+                "load_average_after": list(os.getloadavg()),
+                "validation_passed": validation["passed"],
+                "validation_differences": validation["differences"],
+                **_run_metrics(run_dir),
+            }
+            slot["status"] = "VALIDATED"
+        except BaseException as exc:
+            slot["status"] = "FAILED"
+            slot["reason"] = f"{type(exc).__name__}: {exc}"
+            slot.setdefault("history", []).append(
+                {"reason": slot["reason"], "run_dir": slot.get("run_dir"), "time": utc_now()}
+            )
+            results["status"] = "FAILED"
+            _persist(directory, results)
+            raise
+        _persist(directory, results)
+    results["status"] = "SUCCEEDED"
+    _persist(directory, results)
+    return directory
 
 
 def run_benchmark(
@@ -196,72 +385,55 @@ def run_benchmark(
     if warmups < 0:
         raise ValueError("warmups must be non-negative")
     base = load_config(config_path.resolve())
-    benchmark_dir = (output_root / f"benchmark-{uuid.uuid4().hex[:12]}").resolve()
-    benchmark_dir.mkdir(parents=True, exist_ok=False)
-    rows: list[dict[str, Any]] = []
-    warmup_rows: list[dict[str, Any]] = []
-    reference_dir = None
-    configs = {}
+    directory = (output_root / f"benchmark-{uuid.uuid4().hex[:12]}").resolve()
+    directory.mkdir(parents=True, exist_ok=False)
     for mode in ("none", "sync", "async"):
         raw = base.model_dump()
         raw["checkpoint"]["mode"] = mode
         raw["fault"] = {"kind": "none", "step": None, "rank": 0}
         raw["recovery"]["omit_state"] = "none"
-        mode_config = ProjectConfig.model_validate(raw)
-        config_copy = benchmark_dir / f"{mode}-config.json"
-        write_json_atomic(config_copy, mode_config.model_dump())
-        configs[mode] = config_copy
-    for phase_rows, count in ((warmup_rows, warmups), (rows, repetitions)):
-        for repeat in range(1, count + 1):
-            for mode in mode_order(repeat):
-                load_before = list(os.getloadavg())
-                started = time.monotonic()
-                run_dir, succeeded = run(configs[mode], benchmark_dir / "runs")
-                elapsed = time.monotonic() - started
-                load_after = list(os.getloadavg())
-                if not succeeded:
-                    raise RuntimeError(f"benchmark run failed: {run_dir}")
-                if reference_dir is None:
-                    reference_dir = run_dir
-                validation = validate_runs(reference_dir, run_dir)
-                row = {
-                    "mode": mode,
-                    "repeat": repeat,
-                    "run_dir": str(run_dir),
-                    "elapsed_seconds": elapsed,
-                    "training_seconds": json.loads(
-                        (run_dir / "summary.json").read_text(encoding="utf-8")
-                    )["training_elapsed_seconds"],
-                    "load_average_before": load_before,
-                    "load_average_after": load_after,
-                    "validation_passed": validation["passed"],
-                    "validation_differences": validation["differences"],
-                    **_run_metrics(run_dir),
-                }
-                phase_rows.append(row)
-                if not validation["passed"]:
-                    raise RuntimeError(f"benchmark correctness comparison failed: {run_dir}")
+        write_json_atomic(
+            directory / f"{mode}-config.json", ProjectConfig.model_validate(raw).model_dump()
+        )
+    slots = [
+        {"phase": phase, "repeat": repeat, "mode": mode, "status": "PENDING"}
+        for phase, count in (("warmup", warmups), ("measured", repetitions))
+        for repeat in range(1, count + 1)
+        for mode in mode_order(repeat)
+    ]
     results = {
+        "schema_version": 2,
         "created_at": utc_now(),
         "config": base.model_dump(),
         "repetitions": repetitions,
         "warmups": warmups,
         "workload_fingerprint": base.workload_fingerprint(),
-        "environment": {
-            "python": sys.version.split()[0],
-            "torch": torch.__version__,
-            "platform": platform.platform(),
-            "cpu_count": os.cpu_count(),
-            "world_size": base.run.world_size,
-            "worker_threads": 1,
-            "device": "cpu",
-            "storage": "local filesystem",
-        },
-        "raw_runs": rows,
-        "warmup_runs": warmup_rows,
-        "summary": summarize_rows(rows),
-        "training_summary": summarize_rows(rows, "training_seconds"),
+        "environment": environment_snapshot(base.run.world_size, base.run.device, directory),
+        "slots": slots,
+        "status": "PENDING",
+        "reference_dir": None,
     }
-    write_json_atomic(benchmark_dir / "results.json", results)
-    (benchmark_dir / "report.md").write_text(_report_text(results), encoding="utf-8")
-    return benchmark_dir
+    with _controller_lock(directory):
+        return _execute_benchmark(directory, results)
+
+
+def resume_benchmark(directory: Path) -> Path:
+    directory = directory.resolve()
+    with _controller_lock(directory):
+        results = json.loads((directory / "results.json").read_text())
+        if results.get("schema_version") != 2:
+            raise ValueError("benchmark schema is not resumable")
+        base = ProjectConfig.model_validate(results["config"])
+        current = environment_snapshot(base.run.world_size, base.run.device, directory)
+        for field in ("source_sha256", "torch", "python", "versions", "world_size", "device"):
+            if current[field] != results["environment"][field]:
+                raise ValueError(f"benchmark source or runtime {field} differs")
+        for mode in ("none", "sync", "async"):
+            actual = load_config(directory / f"{mode}-config.json")
+            expected = base.model_dump()
+            expected["checkpoint"]["mode"] = mode
+            expected["fault"] = {"kind": "none", "step": None, "rank": 0}
+            expected["recovery"]["omit_state"] = "none"
+            if actual.fingerprint() != ProjectConfig.model_validate(expected).fingerprint():
+                raise ValueError("benchmark configuration differs")
+        return _execute_benchmark(directory, results)

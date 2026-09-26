@@ -1,0 +1,75 @@
+import json
+from concurrent.futures import Future
+from pathlib import Path
+
+import pytest
+import torch.distributed as dist
+
+from trainguard import checkpoint_io
+from trainguard.config import load_config
+from trainguard.controller import run
+
+
+@pytest.fixture
+def single_group(tmp_path):
+    dist.init_process_group("gloo", init_method=f"file://{tmp_path}/group", rank=0, world_size=1)
+    yield dist.group.WORLD
+    dist.destroy_process_group()
+
+
+def test_future_ready_and_failure_are_collective(single_group, tmp_path):
+    ready = getattr(checkpoint_io, "save_ready", None)
+    assert callable(ready), "save_ready must coordinate pending futures"
+    future = Future()
+    pending = checkpoint_io.PendingSave(tmp_path, 1, 0, 0, future)
+    assert not ready(pending, single_group)
+    future.set_result(None)
+    assert ready(pending, single_group)
+    failed = Future()
+    failed.set_exception(RuntimeError("upload failed"))
+    pending.future = failed
+    with pytest.raises(RuntimeError, match="upload"):
+        ready(pending, single_group)
+    assert not (tmp_path / "COMMITTED").exists()
+
+
+def test_one_slow_rank_blocks_commit(single_group, tmp_path, monkeypatch):
+    ready = getattr(checkpoint_io, "save_ready", None)
+    assert callable(ready), "save_ready must coordinate pending futures"
+    future = Future()
+    future.set_result(None)
+    pending = checkpoint_io.PendingSave(tmp_path, 1, 0, 0, future)
+    original = dist.all_reduce
+
+    def remote_pending(tensor, *args, **kwargs):
+        original(tensor, *args, **kwargs)
+        tensor[0] += 1
+
+    monkeypatch.setattr(dist, "all_reduce", remote_pending)
+    assert not ready(pending, single_group)
+    assert not (tmp_path / "COMMITTED").exists()
+
+
+def test_async_commit_is_observed_before_next_save_interval(tmp_path):
+    source = load_config(Path(__file__).parents[1] / "configs/cpu_demo.yaml").model_dump()
+    source["training"]["total_steps"] = 300
+    source["checkpoint"] = {"mode": "async", "interval_steps": 100}
+    config = tmp_path / "async.json"
+    config.write_text(json.dumps(source))
+    directory, succeeded = run(config, tmp_path / "runs")
+    assert succeeded, (directory / "launcher.log").read_text()
+    events = [
+        json.loads(line)
+        for line in (directory / "attempts/attempt-001/rank-0.jsonl").read_text().splitlines()
+    ]
+    saved = next(event for event in events if event["event_type"] == "checkpoint_committed")
+    assert saved.get("committed_at_step", 200) < 200
+    for field in (
+        "preparation_seconds",
+        "upload_seconds",
+        "main_thread_wait_seconds",
+        "eligibility_lag_seconds",
+        "recoverable_step_lag",
+    ):
+        assert field in saved
+        assert saved[field] >= 0

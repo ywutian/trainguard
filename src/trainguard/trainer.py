@@ -15,7 +15,7 @@ import torch.distributed as dist
 from torch import nn
 from torch.nn.parallel import DistributedDataParallel
 
-from trainguard.checkpoint_io import finish_save, load_training_state, start_save
+from trainguard.checkpoint_io import finish_save, load_training_state, save_ready, start_save
 from trainguard.config import load_config
 from trainguard.data import sample_ids_for_step, token_batch
 from trainguard.events import append_event, write_json_atomic
@@ -43,7 +43,9 @@ def _inject_fault(kind: str, active: bool, checkpoint_path: Path | None = None) 
         os._exit(72)
 
 
-def _fault_active(attempt_id: str, rank: int, fault_rank: int, step: int, fault_step: int | None) -> bool:
+def _fault_active(
+    attempt_id: str, rank: int, fault_rank: int, step: int, fault_step: int | None
+) -> bool:
     return attempt_id == "attempt-001" and rank == fault_rank and step == fault_step
 
 
@@ -81,7 +83,10 @@ def state_digest(value: object) -> str:
 
 
 def train(
-    config_path: Path, run_dir: Path, run_id: str, attempt_id: str,
+    config_path: Path,
+    run_dir: Path,
+    run_id: str,
+    attempt_id: str,
     resume_checkpoint: Path | None = None,
 ) -> None:
     config = load_config(config_path)
@@ -93,7 +98,8 @@ def train(
     torch.set_num_threads(1)
     torch.manual_seed(config.run.seed)
     dist.init_process_group(backend=config.run.backend, timeout=timedelta(seconds=120))
-    checkpoint_group = dist.new_group(backend=config.run.backend)
+    checkpoint_group = dist.new_group(backend="gloo")
+    control_group = dist.new_group(backend="gloo")
     event_path = run_dir / "attempts" / attempt_id / f"rank-{rank}.jsonl"
     try:
         model = TinyTransformer(config.model)
@@ -104,11 +110,33 @@ def train(
         )
         global_step = 0
         cursor = 0
+        append_event(
+            event_path,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            rank=rank,
+            event_type="group_initialized",
+            global_step=0,
+        )
         if resume_checkpoint is not None:
+            load_started = time.monotonic()
             global_step, cursor = load_training_state(
-                resume_checkpoint, rank, wrapped, optimizer, scheduler,
+                resume_checkpoint,
+                rank,
+                wrapped,
+                optimizer,
+                scheduler,
                 checkpoint_group,
                 config.recovery.omit_state,
+            )
+            append_event(
+                event_path,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                rank=rank,
+                event_type="state_loaded",
+                global_step=global_step,
+                load_seconds=time.monotonic() - load_started,
             )
         parameter_count = sum(p.numel() for p in model.parameters())
         training_started = time.monotonic()
@@ -127,9 +155,7 @@ def train(
         last_loss = 0.0
         pending = None
         for step in range(global_step, config.training.total_steps):
-            ids = sample_ids_for_step(
-                cursor, rank, world_size, config.training.batch_size_per_rank
-            )
+            ids = sample_ids_for_step(cursor, rank, world_size, config.training.batch_size_per_rank)
             tokens = token_batch(
                 ids, config.training.sequence_length, config.model.vocab_size, config.run.seed
             )
@@ -155,41 +181,121 @@ def train(
                 learning_rate=scheduler.get_last_lr()[0],
             )
             completed = step + 1
+            if resume_checkpoint is not None and completed == global_step + 1:
+                append_event(
+                    event_path,
+                    run_id=run_id,
+                    attempt_id=attempt_id,
+                    rank=rank,
+                    event_type="first_resumed_update",
+                    global_step=completed,
+                )
+            if pending is not None and (
+                completed % config.checkpoint.poll_interval_steps == 0
+                or (
+                    config.fault.require_committed_step == pending.step
+                    and completed == config.fault.step
+                )
+            ):
+                force = (
+                    config.fault.require_committed_step == pending.step
+                    and completed == config.fault.step
+                )
+                if force or save_ready(pending, control_group):
+                    finish_save(
+                        pending,
+                        config,
+                        run_id,
+                        attempt_id,
+                        rank,
+                        event_path,
+                        completed,
+                        control_group,
+                    )
+                    if config.fault.kind == "corrupt":
+                        _inject_fault(
+                            "corrupt",
+                            _fault_active(
+                                attempt_id, rank, config.fault.rank, pending.step, config.fault.step
+                            ),
+                            pending.path,
+                        )
+                    pending = None
             fault_active = _fault_active(
                 attempt_id, rank, config.fault.rank, completed, config.fault.step
             )
             if config.fault.kind in {"worker_exit", "hang"}:
+                if fault_active:
+                    append_event(
+                        event_path,
+                        run_id=run_id,
+                        attempt_id=attempt_id,
+                        rank=rank,
+                        event_type="fault_injected",
+                        global_step=completed,
+                        fault_kind=config.fault.kind,
+                    )
                 _inject_fault(config.fault.kind, fault_active)
             if config.checkpoint.mode != "none" and (
                 completed % config.checkpoint.interval_steps == 0
                 or completed == config.training.total_steps
             ):
                 if pending is not None:
-                    finish_save(pending, config, run_id, attempt_id, rank, event_path)
+                    finish_save(
+                        pending,
+                        config,
+                        run_id,
+                        attempt_id,
+                        rank,
+                        event_path,
+                        completed,
+                        control_group,
+                    )
                     if config.fault.kind == "corrupt":
                         _inject_fault(
                             "corrupt",
                             _fault_active(
-                                attempt_id, rank, config.fault.rank,
-                                pending.step, config.fault.step,
+                                attempt_id,
+                                rank,
+                                config.fault.rank,
+                                pending.step,
+                                config.fault.step,
                             ),
                             pending.path,
                         )
                 pending = start_save(
-                    config, run_dir, run_id, attempt_id, rank, completed,
-                    wrapped, optimizer, scheduler,
+                    config,
+                    run_dir,
+                    run_id,
+                    attempt_id,
+                    rank,
+                    completed,
+                    wrapped,
+                    optimizer,
+                    scheduler,
                     checkpoint_group,
                 )
                 if config.fault.kind == "save_interrupt":
                     _inject_fault("save_interrupt", fault_active)
                 if config.checkpoint.mode == "sync":
-                    finish_save(pending, config, run_id, attempt_id, rank, event_path)
+                    finish_save(
+                        pending,
+                        config,
+                        run_id,
+                        attempt_id,
+                        rank,
+                        event_path,
+                        completed,
+                        control_group,
+                    )
                     if config.fault.kind == "corrupt":
                         _inject_fault("corrupt", fault_active, pending.path)
                     pending = None
 
         if pending is not None:
-            finish_save(pending, config, run_id, attempt_id, rank, event_path)
+            finish_save(
+                pending, config, run_id, attempt_id, rank, event_path, completed, control_group
+            )
             if config.fault.kind == "corrupt":
                 _inject_fault(
                     "corrupt",
@@ -199,8 +305,10 @@ def train(
                     pending.path,
                 )
 
-        dist.barrier()
+        dist.barrier(group=control_group)
         training_elapsed_seconds = time.monotonic() - training_started
+        rank_times = [None] * world_size
+        dist.all_gather_object(rank_times, training_elapsed_seconds, group=control_group)
         if rank == 0:
             write_json_atomic(
                 run_dir / "attempts" / attempt_id / "summary.json",
@@ -217,7 +325,8 @@ def train(
                     "last_loss": last_loss,
                     "torch_version": torch.__version__,
                     "world_size": world_size,
-                    "training_elapsed_seconds": training_elapsed_seconds,
+                    "training_elapsed_seconds": max(rank_times),
+                    "rank_training_seconds": rank_times,
                 },
             )
         append_event(
@@ -229,6 +338,8 @@ def train(
             global_step=config.training.total_steps,
         )
     finally:
+        dist.destroy_process_group(control_group)
+        dist.destroy_process_group(checkpoint_group)
         dist.destroy_process_group()
 
 

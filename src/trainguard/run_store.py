@@ -85,8 +85,12 @@ class RunStore:
         )
 
     def start_attempt(
-        self, run_id: str, attempt_id: str, number: int,
-        resume_checkpoint: str | None, resume_step: int,
+        self,
+        run_id: str,
+        attempt_id: str,
+        number: int,
+        resume_checkpoint: str | None,
+        resume_step: int,
     ) -> None:
         self.database.execute(
             """INSERT INTO attempts
@@ -114,9 +118,7 @@ class RunStore:
         self.database.commit()
 
     def discard_unlaunched_attempt(self, attempt_id: str) -> None:
-        self.database.execute(
-            "DELETE FROM recoveries WHERE to_attempt=?", (attempt_id,)
-        )
+        self.database.execute("DELETE FROM recoveries WHERE to_attempt=?", (attempt_id,))
         self.database.execute(
             "DELETE FROM attempts WHERE attempt_id=? AND pid IS NULL",
             (attempt_id,),
@@ -124,27 +126,47 @@ class RunStore:
         self.database.commit()
 
     def record_checkpoint(
-        self, path: str, run_id: str, attempt_id: str | None,
-        global_step: int | None, status: str, reason: str | None,
+        self,
+        path: str,
+        run_id: str,
+        attempt_id: str | None,
+        global_step: int | None,
+        status: str,
+        reason: str | None,
     ) -> None:
-        self.database.execute(
-            """INSERT INTO checkpoints VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(path) DO UPDATE SET
-            attempt_id=excluded.attempt_id, global_step=excluded.global_step,
-            status=excluded.status, reason=excluded.reason, checked_at=excluded.checked_at""",
-            (path, run_id, attempt_id, global_step, status, reason, utc_now()),
-        )
-        self.database.commit()
+        self.record_checkpoints([(path, run_id, attempt_id, global_step, status, reason)])
+
+    def record_checkpoints(self, records: list[tuple]) -> None:
+        with self.database:
+            self.database.executemany(
+                """INSERT INTO checkpoints VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(path) DO UPDATE SET
+                attempt_id=excluded.attempt_id, global_step=excluded.global_step,
+                status=excluded.status, reason=excluded.reason, checked_at=excluded.checked_at""",
+                [(*record, utc_now()) for record in records],
+            )
 
     def record_recovery(
-        self, run_id: str, from_attempt: str, to_attempt: str,
-        checkpoint_path: str, resume_step: int, recomputed_steps: int,
+        self,
+        run_id: str,
+        from_attempt: str,
+        to_attempt: str,
+        checkpoint_path: str,
+        resume_step: int,
+        recomputed_steps: int,
     ) -> None:
         self.database.execute(
             """INSERT INTO recoveries
             (run_id, from_attempt, to_attempt, checkpoint_path, resume_step,
              recomputed_steps, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (run_id, from_attempt, to_attempt, checkpoint_path,
-             resume_step, recomputed_steps, utc_now()),
+            (
+                run_id,
+                from_attempt,
+                to_attempt,
+                checkpoint_path,
+                resume_step,
+                recomputed_steps,
+                utc_now(),
+            ),
         )
         self.database.commit()

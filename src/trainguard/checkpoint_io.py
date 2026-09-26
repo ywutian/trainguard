@@ -31,6 +31,22 @@ class PendingSave:
     started: float
     staging_seconds: float
     future: Any | None
+    preparation_seconds: float = 0.0
+    upload_started: float = 0.0
+    upload_finished: float | None = None
+
+    def mark_uploaded(self, future: Any = None) -> None:
+        self.upload_finished = time.monotonic()
+
+
+def save_ready(pending: PendingSave, process_group: dist.ProcessGroup) -> bool:
+    done = pending.future is None or pending.future.done()
+    failed = done and pending.future is not None and pending.future.exception() is not None
+    status = torch.tensor([int(not done), int(failed)], dtype=torch.int64)
+    dist.all_reduce(status, op=dist.ReduceOp.SUM, group=process_group)
+    if status[1].item():
+        raise RuntimeError("checkpoint upload failed on at least one rank")
+    return status[0].item() == 0
 
 
 def start_save(
@@ -53,18 +69,27 @@ def start_save(
     model_state, optimizer_state = get_state_dict(model, optimizer)
     state_ready = time.monotonic()
     state = {"model": model_state, "optimizer": optimizer_state}
+    upload_started = time.monotonic()
     if config.checkpoint.mode == "async":
-        future = dcp.async_save(
-            state, checkpoint_id=path / "dcp", process_group=process_group
+        response = dcp.async_save(state, checkpoint_id=path / "dcp", process_group=process_group)
+        if hasattr(response, "staging_completion"):
+            response.staging_completion.result(timeout=config.checkpoint.save_timeout_seconds)
+            future = response.upload_completion
+        else:
+            future = response
+        staging_seconds = time.monotonic() - upload_started
+        pending = PendingSave(
+            path, step, started, staging_seconds, future, state_ready - started, upload_started
         )
-        staging_seconds = time.monotonic() - started
+        future.add_done_callback(pending.mark_uploaded)
     else:
         dcp.save(state, checkpoint_id=path / "dcp", process_group=process_group)
-        future = None
-        staging_seconds = state_ready - started
+        pending = PendingSave(
+            path, step, started, 0.0, None, state_ready - started, upload_started, time.monotonic()
+        )
     local = capture_rank_state(config, run_id, attempt_id, rank, step, scheduler.state_dict())
     write_json_atomic(path / f"rank-{rank}.json", local)
-    return PendingSave(path, step, started, staging_seconds, future)
+    return pending
 
 
 def finish_save(
@@ -74,14 +99,30 @@ def finish_save(
     attempt_id: str,
     rank: int,
     event_path: Path,
+    current_step: int | None = None,
+    control_group: dist.ProcessGroup | None = None,
 ) -> None:
+    waited = time.monotonic()
     if pending.future is not None:
-        pending.future.result()
-    dist.barrier()
-    writing_seconds = time.monotonic() - pending.started - pending.staging_seconds
+        pending.future.result(timeout=config.checkpoint.save_timeout_seconds)
+    main_wait = time.monotonic() - waited
+    group = control_group
+    dist.barrier(group=group)
+    upload_finished = pending.upload_finished or time.monotonic()
+    metrics = torch.tensor(
+        [
+            pending.preparation_seconds,
+            pending.staging_seconds,
+            max(0.0, upload_finished - pending.upload_started),
+            main_wait,
+        ],
+        dtype=torch.float64,
+    )
+    dist.all_reduce(metrics, op=dist.ReduceOp.MAX, group=group)
+    # Completion times stay local; durations can safely be reduced across hosts.
+    commit_started = time.monotonic()
     if rank == 0:
-        commit_started = time.monotonic()
-        commit_checkpoint(pending.path, config, run_id, attempt_id, pending.step)
+        record = commit_checkpoint(pending.path, config, run_id, attempt_id, pending.step)
         commit_seconds = time.monotonic() - commit_started
         append_event(
             event_path,
@@ -91,11 +132,18 @@ def finish_save(
             event_type="checkpoint_committed",
             global_step=pending.step,
             checkpoint_path=str(pending.path),
-            staging_seconds=pending.staging_seconds,
-            writing_seconds=writing_seconds,
+            committed_at_step=current_step or pending.step,
+            recoverable_step_lag=(current_step or pending.step) - pending.step,
+            preparation_seconds=metrics[0].item(),
+            staging_seconds=metrics[1].item(),
+            upload_seconds=metrics[2].item(),
+            main_thread_wait_seconds=metrics[3].item(),
+            writing_seconds=max(0.0, time.monotonic() - pending.started - pending.staging_seconds),
             checksum_commit_seconds=commit_seconds,
+            eligibility_lag_seconds=max(0.0, time.monotonic() - upload_finished),
+            checkpoint_bytes=sum(item["size"] for item in record.manifest["files"]),
         )
-    dist.barrier()
+    dist.barrier(group=group)
 
 
 def load_training_state(

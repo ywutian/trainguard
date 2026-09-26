@@ -33,6 +33,10 @@ class TrainingSettings(StrictModel):
 class CheckpointSettings(StrictModel):
     mode: Literal["none", "sync", "async"] = "none"
     interval_steps: int = Field(default=1, ge=1)
+    poll_interval_steps: int = Field(default=5, ge=1)
+    save_timeout_seconds: int = Field(default=120, ge=1)
+    keep_last_k: int | None = Field(default=None, ge=2)
+    max_retained_bytes: int | None = Field(default=None, ge=1)
 
 
 class RecoverySettings(StrictModel):
@@ -45,6 +49,7 @@ class FaultSettings(StrictModel):
     kind: Literal["none", "worker_exit", "save_interrupt", "corrupt", "hang"] = "none"
     step: int | None = Field(default=None, ge=1)
     rank: int = Field(default=0, ge=0)
+    require_committed_step: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def validate_trigger(self) -> FaultSettings:

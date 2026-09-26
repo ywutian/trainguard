@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import random
+import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -15,7 +16,7 @@ import torch
 
 from trainguard import __version__
 from trainguard.config import ProjectConfig
-from trainguard.events import write_json_atomic
+from trainguard.events import sync_directory, write_json_atomic
 
 
 class CheckpointInvalid(ValueError):
@@ -96,7 +97,8 @@ def _files(path: Path) -> list[Path]:
         if entry.is_symlink():
             raise CheckpointInvalid("checkpoint contains a symbolic link")
         if entry.is_file() and entry.relative_to(path).as_posix() not in {
-            "manifest.json", "COMMITTED"
+            "manifest.json",
+            "COMMITTED",
         }:
             files.append(entry)
     return sorted(files)
@@ -154,6 +156,7 @@ def _write_marker_atomic(path: Path, value: str) -> None:
         stream.flush()
         os.fsync(stream.fileno())
     os.replace(temporary, path)
+    sync_directory(path.parent)
 
 
 def commit_checkpoint(
@@ -164,8 +167,11 @@ def commit_checkpoint(
     _check_rank_states(path, config, run_id, attempt_id, step)
     _check_dcp_files(path, config)
     files = [
-        {"path": entry.relative_to(path).as_posix(), "size": entry.stat().st_size,
-         "sha256": _sha256(entry)}
+        {
+            "path": entry.relative_to(path).as_posix(),
+            "size": entry.stat().st_size,
+            "sha256": _sha256(entry),
+        }
         for entry in _files(path)
     ]
     manifest = {
@@ -180,6 +186,10 @@ def commit_checkpoint(
         "torch_version": torch.__version__,
         "files": files,
     }
+    # DCP syncs payload files; persist the directory entries before publishing the transaction.
+    sync_directory(path / "dcp")
+    sync_directory(path)
+    sync_directory(path.parent)
     write_json_atomic(path / "manifest.json", manifest)
     marker = _sha256(path / "manifest.json") + "\n"
     _write_marker_atomic(path / "COMMITTED", marker)
@@ -187,9 +197,11 @@ def commit_checkpoint(
 
 
 def validate_checkpoint(path: Path, config: ProjectConfig, run_id: str) -> CheckpointRecord:
-    if path.is_symlink() or (path / "COMMITTED").is_symlink() or (
-        path / "manifest.json"
-    ).is_symlink():
+    if (
+        path.is_symlink()
+        or (path / "COMMITTED").is_symlink()
+        or (path / "manifest.json").is_symlink()
+    ):
         raise CheckpointInvalid("checkpoint transaction contains a symbolic link")
     if not (path / "COMMITTED").is_file():
         raise CheckpointInvalid("checkpoint commit marker is missing")
@@ -252,12 +264,25 @@ def latest_valid_checkpoint(
     root = run_dir / "checkpoints"
     if not root.is_dir():
         return None
-    candidates = []
-    for path in root.iterdir():
-        if not path.is_dir() or path.is_symlink():
-            continue
+    for path in ordered_candidates(run_dir):
         try:
-            candidates.append(validate_checkpoint(path, config, run_id))
+            return validate_checkpoint(path, config, run_id)
         except (CheckpointInvalid, OSError):
             continue
-    return max(candidates, key=lambda item: (item.global_step, item.path.name), default=None)
+    return None
+
+
+def ordered_candidates(run_dir: Path) -> list[Path]:
+    root = run_dir / "checkpoints"
+    if not root.is_dir():
+        return []
+
+    def order(path: Path) -> tuple[int, str]:
+        match = re.fullmatch(r"step-(\d+)-attempt-(\d+)", path.name)
+        return (int(match[1]) if match else -1, path.name)
+
+    return sorted(
+        (path for path in root.iterdir() if path.is_dir() and not path.is_symlink()),
+        key=order,
+        reverse=True,
+    )

@@ -8,7 +8,7 @@ from typing import Annotated
 import typer
 
 from trainguard import __version__
-from trainguard.benchmark import run_benchmark
+from trainguard.benchmark import resume_benchmark, run_benchmark
 from trainguard.config import load_config
 from trainguard.controller import RunActiveError
 from trainguard.controller import resume as resume_run
@@ -98,3 +98,10 @@ def benchmark(
     """Measure no checkpoint, synchronous DCP, and native asynchronous DCP."""
     directory = run_benchmark(config, output_root, repetitions, warmups=warmups)
     typer.echo(f"Benchmark report: {directory / 'report.md'}")
+
+
+@app.command("benchmark-resume")
+def benchmark_resume(directory: Annotated[Path, typer.Argument(exists=True, file_okay=False)]) -> None:
+    """Continue missing experiment slots with the original source and workload."""
+    result = resume_benchmark(directory)
+    typer.echo(f"Benchmark report: {result / 'report.md'}")

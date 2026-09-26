@@ -16,9 +16,15 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from trainguard.checkpoint import CheckpointInvalid, CheckpointRecord, validate_checkpoint
+from trainguard.checkpoint import (
+    CheckpointInvalid,
+    CheckpointRecord,
+    ordered_candidates,
+    validate_checkpoint,
+)
 from trainguard.config import ProjectConfig, load_config
-from trainguard.events import utc_now, write_json_atomic
+from trainguard.events import append_event, utc_now, write_json_atomic
+from trainguard.lifecycle import prune_checkpoints
 from trainguard.records import parse_event
 from trainguard.run_store import RunStore
 from trainguard.validation import completion_errors
@@ -183,25 +189,28 @@ def _max_step(run_dir: Path, attempt_id: str, run_id: str, world_size: int) -> i
 
 
 def _scan_checkpoints(
-    run_dir: Path, config: ProjectConfig, run_id: str, store: RunStore
+    run_dir: Path, config: ProjectConfig, run_id: str, store: RunStore, audit: bool = False
 ) -> CheckpointRecord | None:
     root = run_dir / "checkpoints"
     if not root.is_dir():
         return None
-    valid = []
-    for path in root.iterdir():
-        if not path.is_dir() or path.is_symlink():
-            continue
+    records = []
+    selected = None
+    for path in ordered_candidates(run_dir):
         try:
             record = validate_checkpoint(path, config, run_id)
         except (CheckpointInvalid, OSError) as exc:
-            store.record_checkpoint(str(path), run_id, None, None, "INVALID", str(exc))
+            records.append((str(path), run_id, None, None, "INVALID", str(exc)))
         else:
-            store.record_checkpoint(
-                str(path), run_id, record.attempt_id, record.global_step, "VALID", None
+            records.append(
+                (str(path), run_id, record.attempt_id, record.global_step, "VALID", None)
             )
-            valid.append(record)
-    return max(valid, key=lambda item: (item.global_step, item.path.name), default=None)
+            if selected is None:
+                selected = record
+            if not audit:
+                break
+    store.record_checkpoints(records)
+    return selected
 
 
 def _valid_attempt_summary(
@@ -259,6 +268,18 @@ def _launch_attempt(
     last_progress = started
     reason = "launcher exited before completion"
     exit_code = None
+    commits_seen: set[str] = set()
+
+    def milestone(event_type: str, **fields) -> None:
+        append_event(
+            run_dir / "controller.jsonl",
+            run_id=run_id,
+            attempt_id=attempt_id,
+            event_type=event_type,
+            **fields,
+        )
+
+    milestone("launch_requested", resumed=resume_checkpoint is not None)
     with (run_dir / "launcher.log").open("ab") as log:
         log.write(f"\n=== {attempt_id} ===\n".encode())
         log.flush()
@@ -282,16 +303,32 @@ def _launch_attempt(
                     completed,
                 ):
                     last_progress = time.monotonic()
+                if config.checkpoint.keep_last_k is not None:
+                    commits = {
+                        str(path.parent) for path in (run_dir / "checkpoints").glob("*/COMMITTED")
+                    }
+                    if commits != commits_seen:
+                        prune_checkpoints(
+                            run_dir,
+                            config,
+                            run_id,
+                            protected={resume_checkpoint.path} if resume_checkpoint else set(),
+                        )
+                        commits_seen = commits
                 exit_code = process.poll()
                 if exit_code is not None:
+                    if exit_code != 0:
+                        milestone("fault_observed", reason=f"launcher exit {exit_code}")
                     break
                 if time.monotonic() - started > config.run.timeout_seconds:
                     reason = f"attempt exceeded {config.run.timeout_seconds} seconds"
+                    milestone("fault_observed", reason=reason)
                     _stop_process_group(process, run_dir, run_id, attempt_id)
                     exit_code = process.poll()
                     break
                 if time.monotonic() - last_progress > config.recovery.progress_timeout_seconds:
                     reason = "step progress stalled"
+                    milestone("fault_observed", reason=reason)
                     _stop_process_group(process, run_dir, run_id, attempt_id)
                     exit_code = process.poll()
                     break
@@ -311,8 +348,10 @@ def _launch_attempt(
                 reason = f"launcher exit code {exit_code}; completion evidence missing or invalid"
         except KeyboardInterrupt:
             reason = "interrupted by user"
+            milestone("fault_observed", reason=reason)
         except Exception as exc:  # noqa: BLE001 - cleanup covers every controller failure
             reason = f"controller {type(exc).__name__}: {exc}"
+            milestone("fault_observed", reason=reason)
             write_json_atomic(
                 run_dir / "attempts" / attempt_id / "controller-error.json",
                 {"reason": reason, "time": utc_now()},
@@ -320,6 +359,7 @@ def _launch_attempt(
         finally:
             try:
                 _stop_process_group(process, run_dir, run_id, attempt_id)
+                milestone("group_stopped")
             except BaseException as cleanup:
                 raise RunActiveError(f"{reason}; worker cleanup failed: {cleanup}") from cleanup
     return AttemptResult(False, reason, process.poll(), max(steps.values(), default=0))
@@ -384,6 +424,16 @@ def _drive(run_dir: Path, status: dict, store: RunStore) -> bool:
                 _set_status(run_dir, status, "FAILED", reason)
                 return False
 
+        if selected is not None:
+            append_event(
+                run_dir / "controller.jsonl",
+                run_id=run_id,
+                attempt_id=f"attempt-{number:03d}",
+                event_type="checkpoint_selected",
+                checkpoint_path=str(selected.path),
+                global_step=selected.global_step,
+            )
+        prune_checkpoints(run_dir, config, run_id, protected={selected.path} if selected else set())
         attempt_id = f"attempt-{number:03d}"
         attempt_dir = run_dir / "attempts" / attempt_id
         attempt_dir.mkdir(parents=True, exist_ok=True)
@@ -417,8 +467,9 @@ def _drive(run_dir: Path, status: dict, store: RunStore) -> bool:
             result.exit_code,
             result.reason,
         )
-        _scan_checkpoints(run_dir, config, run_id, store)
         if result.succeeded:
+            _scan_checkpoints(run_dir, config, run_id, store)
+            prune_checkpoints(run_dir, config, run_id)
             summary = _valid_attempt_summary(run_dir, attempt_id, config, run_id)
             assert summary is not None
             write_json_atomic(run_dir / "summary.json", summary)
