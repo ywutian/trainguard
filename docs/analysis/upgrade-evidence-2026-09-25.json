@@ -1,0 +1,90 @@
+{
+  "question": "Does an async save at step100 become eligible before a worker exits at step150?",
+  "total_steps": 300,
+  "interval_steps": 100,
+  "fault_step": 150,
+  "records": [
+    {
+      "mode": "sync",
+      "run_id": "e7d824277474",
+      "succeeded": true,
+      "reason": "completed all training steps",
+      "committed_steps": [
+        300,
+        100,
+        200
+      ],
+      "attempts": [
+        {
+          "attempt_id": "attempt-001",
+          "resume_step": 0,
+          "status": "FAILED"
+        },
+        {
+          "attempt_id": "attempt-002",
+          "resume_step": 100,
+          "status": "SUCCEEDED"
+        }
+      ],
+      "candidates": [
+        {
+          "directory": "step-000300-attempt-002",
+          "metadata_present": true,
+          "dcp_payload_files": 2,
+          "manifest_present": true,
+          "committed": true
+        },
+        {
+          "directory": "step-000100-attempt-001",
+          "metadata_present": true,
+          "dcp_payload_files": 2,
+          "manifest_present": true,
+          "committed": true
+        },
+        {
+          "directory": "step-000200-attempt-002",
+          "metadata_present": true,
+          "dcp_payload_files": 2,
+          "manifest_present": true,
+          "committed": true
+        }
+      ]
+    },
+    {
+      "mode": "async",
+      "run_id": "9d915ee0b4e5",
+      "succeeded": false,
+      "reason": "no valid checkpoint remains for recovery",
+      "committed_steps": [],
+      "attempts": [
+        {
+          "attempt_id": "attempt-001",
+          "resume_step": 0,
+          "status": "FAILED"
+        }
+      ],
+      "candidates": [
+        {
+          "directory": "step-000100-attempt-001",
+          "metadata_present": true,
+          "dcp_payload_files": 2,
+          "manifest_present": false,
+          "committed": false
+        }
+      ]
+    }
+  ],
+  "code_revision": "06e2ef199fe3f8d7cfbd26cce8b76ffb50e58296",
+  "evidence_id": "upgrade-probe-2b0eade4cf7b",
+  "controller_function_probes": {
+    "matching_summary_without_final_hashes_accepted": true,
+    "nonmapping_live_event_exception": "AttributeError",
+    "scope": "direct helper calls in temporary directory; no controller failure or false successful run was simulated"
+  },
+  "environment": {
+    "torch": "2.10.0",
+    "device": "cpu",
+    "backend": "gloo",
+    "world_size": 2
+  }
+}
