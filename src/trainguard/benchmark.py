@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 import statistics
@@ -13,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from trainguard.config import ProjectConfig, load_config
-from trainguard.controller import _controller_lock, resume, run
+from trainguard.controller import RunActiveError, _controller_lock, resume, run
 from trainguard.environment import environment_snapshot
 from trainguard.events import utc_now, write_json_atomic
 from trainguard.validation import validate_runs
@@ -225,8 +226,8 @@ def _report_text(results: dict[str, Any]) -> str:
             "## Measured save and recovery phases",
             "",
             (
-                "| Mode | Repeat | Staging (s) | Completion lag (s) | Hash + commit (s) | "
-                "Attempt gap (s) | Recomputed steps |"
+                "| Mode | Repeat | Staging (s) | Upload (s) | Hash + commit (s) | "
+                "Recovery RTO (s) | Recomputed steps |"
             ),
             "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
@@ -304,7 +305,29 @@ def _persist(directory: Path, results: dict) -> None:
         (directory / "report.md").write_text(_report_text(results), encoding="utf-8")
 
 
-def _execute_benchmark(directory: Path, results: dict) -> Path:
+def _original_measurement(run_dir: Path) -> dict | None:
+    path = run_dir / "run.json"
+    if not path.exists():
+        return None
+    measurement = json.loads(path.read_text()).get("measurement")
+    if not isinstance(measurement, dict):
+        return None
+    if measurement.get("method") != "controller_monotonic":
+        return None
+    duration = measurement.get("elapsed_seconds")
+    if type(duration) not in (int, float) or not math.isfinite(duration) or duration < 0:
+        return None
+    for key in ("load_average_before", "load_average_after"):
+        values = measurement.get(key)
+        if (
+            not isinstance(values, list) or len(values) != 3
+            or any(type(item) not in (int, float) or not math.isfinite(item) for item in values)
+        ):
+            return None
+    return measurement
+
+
+def _execute_slots(directory: Path, results: dict) -> Path:
     reference = Path(results["reference_dir"]) if results.get("reference_dir") else None
     if reference is not None and not validate_runs(reference, reference)["passed"]:
         raise ValueError("benchmark reference evidence is invalid")
@@ -321,21 +344,40 @@ def _execute_benchmark(directory: Path, results: dict) -> Path:
         slot["reason"] = None
         slot["started_at"] = utc_now()
         _persist(directory, results)
-        load_before = list(os.getloadavg())
-        started = time.monotonic()
         try:
             config_copy = directory / f"{mode}-config.json"
             # A completed worker run may have outlived an interrupted experiment coordinator.
             candidates = sorted(
                 root.glob("*/run.json"), key=lambda path: path.stat().st_mtime, reverse=True
             )
-            reusable = candidates[0].parent if candidates and not slot.get("history") else None
+            reusable = (
+                Path(slot["run_dir"]) if slot.get("run_dir")
+                else candidates[0].parent if candidates else None
+            )
+            measurement = None
             if reusable is not None:
                 if load_config(reusable / "config.json").fingerprint() != load_config(config_copy).fingerprint():
                     raise ValueError("benchmark slot configuration differs")
                 run_dir, succeeded = reusable, resume(reusable)
-            else:
+                measurement = _original_measurement(run_dir) if succeeded else None
+                if measurement is None:
+                    slot.setdefault("history", []).append({
+                        "reason": "original measurement unavailable; excluded from formal statistics"
+                        if succeeded else "previous training failed; workers reconciled before retry",
+                        "run_dir": str(run_dir), "time": utc_now(),
+                    })
+            if measurement is None:
+                slot.pop("run_dir", None)
+                _persist(directory, results)
+                load_before = list(os.getloadavg())
+                started = time.monotonic()
                 run_dir, succeeded = run(config_copy, root)
+                measurement = _original_measurement(run_dir) or {
+                    "elapsed_seconds": time.monotonic() - started,
+                    "load_average_before": load_before,
+                    "load_average_after": list(os.getloadavg()),
+                    "method": "experiment_monotonic",
+                }
             slot["run_dir"] = str(run_dir)
             _persist(directory, results)
             if not succeeded:
@@ -355,7 +397,8 @@ def _execute_benchmark(directory: Path, results: dict) -> Path:
                 "repeat": repeat,
                 "phase": phase,
                 "run_dir": str(run_dir),
-                "elapsed_seconds": time.monotonic() - started,
+                "elapsed_seconds": measurement["elapsed_seconds"],
+                "elapsed_method": measurement["method"],
                 "training_seconds": json.loads((run_dir / "summary.json").read_text())[
                     "training_elapsed_seconds"
                 ],
@@ -371,13 +414,18 @@ def _execute_benchmark(directory: Path, results: dict) -> Path:
                     default=None,
                 ),
                 "rank_training_seconds": [item["training_seconds"] for item in rank_states],
-                "load_average_before": load_before,
-                "load_average_after": list(os.getloadavg()),
+                "load_average_before": measurement["load_average_before"],
+                "load_average_after": measurement["load_average_after"],
                 "validation_passed": validation["passed"],
                 "validation_differences": validation["differences"],
                 **_run_metrics(run_dir),
             }
             slot["status"] = "VALIDATED"
+        except RunActiveError as exc:
+            slot.update(status="RUNNING", reason=str(exc))
+            results.update(status="BLOCKED", reason=str(exc))
+            _persist(directory, results)
+            raise
         except BaseException as exc:
             slot["status"] = "FAILED"
             slot["reason"] = f"{type(exc).__name__}: {exc}"
@@ -391,6 +439,17 @@ def _execute_benchmark(directory: Path, results: dict) -> Path:
     results["status"] = "SUCCEEDED"
     _persist(directory, results)
     return directory
+
+
+def _execute_benchmark(directory: Path, results: dict) -> Path:
+    try:
+        return _execute_slots(directory, results)
+    except RunActiveError:
+        raise
+    except BaseException as exc:
+        results.update(status="FAILED", reason=f"{type(exc).__name__}: {exc}")
+        _persist(directory, results)
+        raise
 
 
 def run_benchmark(

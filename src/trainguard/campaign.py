@@ -9,7 +9,7 @@ from pathlib import Path
 
 from trainguard.benchmark import _run_metrics
 from trainguard.config import ProjectConfig, load_config
-from trainguard.controller import _controller_lock, resume, run
+from trainguard.controller import RunActiveError, _controller_lock, resume, run
 from trainguard.environment import environment_snapshot
 from trainguard.events import utc_now, write_json_atomic
 from trainguard.strategy import preflight
@@ -62,7 +62,66 @@ def _persist(directory, result):
     (directory / "report.md").write_text("\n".join(lines) + "\n")
 
 
-def _execute(directory: Path, result: dict) -> Path:
+def _reconcile_or_retry(
+    directory, result, owner, config_copy, root,
+    run_key="run_dir", history_key="history",
+):
+    existing = Path(owner[run_key]) if owner.get(run_key) else None
+    if existing is None:
+        candidates = sorted(root.glob("*/run.json"), key=lambda path: path.stat().st_mtime)
+        existing = candidates[-1].parent if candidates else None
+    if existing is not None:
+        if load_config(existing / "config.json").fingerprint() != load_config(config_copy).fingerprint():
+            raise ValueError("acceptance configuration differs")
+        owner[run_key] = str(existing)
+        _persist(directory, result)
+        original_status = json.loads((existing / "run.json").read_text())["status"]
+        succeeded = resume(existing)  # A live worker group must prevent a new launch.
+        if succeeded:
+            return existing, True
+        if original_status == "SUCCEEDED":
+            raise ValueError("completed acceptance evidence is invalid")
+        owner.setdefault(history_key, []).append({
+            "run_dir": str(existing), "time": utc_now(),
+            "reason": "incomplete training; workers reconciled before retry",
+        })
+    # A subsequent coordinator must discover any new run even if launch never returns.
+    owner.pop(run_key, None)
+    _persist(directory, result)
+    return run(config_copy, root)
+
+
+def _case_evidence(reference, run_dir, case, expected):
+    integrity = validate_runs(run_dir, run_dir)
+    if not integrity["passed"]:
+        raise ValueError(f"acceptance evidence is invalid: {integrity['differences']}")
+    if load_config(run_dir / "config.json").fingerprint() != expected.fingerprint():
+        raise ValueError("acceptance case configuration differs")
+    status = json.loads((run_dir / "run.json").read_text())
+    with sqlite3.connect((run_dir / "run.sqlite3").resolve().as_uri() + "?mode=ro", uri=True) as database:
+        count = database.execute(
+            "SELECT COUNT(*) FROM recoveries WHERE run_id=?", (status["run_id"],)
+        ).fetchone()[0]
+    validation = validate_runs(reference, run_dir)
+    differences = set(validation["differences"])
+    expected_difference = validation["passed"] == case["expected_exact"]
+    if not case["expected_exact"]:
+        allowed = {"final model_sha256 differs", "final optimizer_sha256 differs"}
+        required = {"final model_sha256 differs"}
+        if case["omit_state"] == "cursor":
+            sequences = {
+                f"rank {rank} {name} differs"
+                for rank in range(expected.run.world_size)
+                for name in ("effective sample sequence", "consumed batch sequence")
+            }
+            allowed |= sequences
+            required |= sequences
+        expected_difference = required <= differences <= allowed
+    case.update(validation=validation, recovery_count=count, metrics=_run_metrics(run_dir))
+    return count >= 1 and expected_difference
+
+
+def _execute_cases(directory: Path, result: dict) -> Path:
     base = ProjectConfig.model_validate(result["config"])
     try:
         preflight(base)
@@ -70,67 +129,60 @@ def _execute(directory: Path, result: dict) -> Path:
         result.update(status="BLOCKED", reason=str(exc))
         _persist(directory, result)
         return directory
-    result["status"] = "RUNNING"
+    result.update(status="RUNNING", reason=None)
     _persist(directory, result)
     reference = Path(result["reference_dir"]) if result.get("reference_dir") else None
-    if reference is not None:
+    if reference is not None and result.get("reference_status") == "VALIDATED":
         if not validate_runs(reference, reference)["passed"]:
             raise ValueError("acceptance reference evidence is invalid")
     else:
         path = directory / "reference-config.json"
         write_json_atomic(path, _case_config(base, "none", "none").model_dump())
-        candidates = list((directory / "reference").glob("*/run.json"))
-        if candidates:
-            reference = candidates[-1].parent
-            succeeded = resume(reference)
-        else:
-            reference, succeeded = run(path, directory / "reference")
+        try:
+            reference, succeeded = _reconcile_or_retry(
+                directory, result, result, path, directory / "reference",
+                run_key="reference_dir", history_key="reference_history",
+            )
+        except RunActiveError as exc:
+            result.update(status="BLOCKED", reason=str(exc))
+            _persist(directory, result)
+            raise
         result["reference_dir"] = str(reference)
         if not succeeded or not validate_runs(reference, reference)["passed"]:
             result.update(status="FAILED", reason="reference failed")
             _persist(directory, result)
             return directory
+        result["reference_status"] = "VALIDATED"
         _persist(directory, result)
     for case in result["cases"]:
+        expected = _case_config(base, case["mode"], case["fault"], case["omit_state"])
         if case["status"] == "PASSED":
-            validation = validate_runs(reference, Path(case["run_dir"]))
-            if validation["passed"] != case["expected_exact"]:
+            if not _case_evidence(reference, Path(case["run_dir"]), case, expected):
                 raise ValueError(f"completed acceptance evidence changed: {case['name']}")
             continue
         case["status"] = "RUNNING"
         _persist(directory, result)
         config_copy = directory / f"{case['name']}-config.json"
-        expected = _case_config(base, case["mode"], case["fault"], case["omit_state"])
         write_json_atomic(config_copy, expected.model_dump())
         try:
-            existing = Path(case["run_dir"]) if case.get("run_dir") else None
-            if existing is None:
-                candidates = list((directory / case["name"]).glob("*/run.json"))
-                existing = candidates[-1].parent if candidates else None
-            if existing:
-                if load_config(existing / "config.json").fingerprint() != expected.fingerprint():
-                    raise ValueError("case configuration differs")
-                run_dir, succeeded = existing, resume(existing)
-            else:
-                run_dir, succeeded = run(config_copy, directory / case["name"])
+            run_dir, succeeded = _reconcile_or_retry(
+                directory, result, case, config_copy, directory / case["name"]
+            )
             case["run_dir"] = str(run_dir)
             _persist(directory, result)
-            validation = (
-                validate_runs(reference, run_dir)
-                if succeeded
-                else {"passed": False, "differences": ["training did not succeed"]}
-            )
-            with sqlite3.connect(run_dir / "run.sqlite3") as database:
-                count = database.execute("SELECT COUNT(*) FROM recoveries").fetchone()[0]
-            case.update(validation=validation, recovery_count=count, metrics=_run_metrics(run_dir))
             case["status"] = (
                 "PASSED"
-                if succeeded and count >= 1 and validation["passed"] == case["expected_exact"]
+                if succeeded and _case_evidence(reference, run_dir, case, expected)
                 else "FAILED"
             )
             case["reason"] = (
                 None if case["status"] == "PASSED" else "recovery or comparison expectation failed"
             )
+        except RunActiveError as exc:
+            case.update(status="RUNNING", reason=str(exc))
+            result.update(status="BLOCKED", reason=str(exc))
+            _persist(directory, result)
+            raise
         except BaseException as exc:
             case.update(status="FAILED", reason=f"{type(exc).__name__}: {exc}")
             result.update(status="FAILED", reason=case["reason"])
@@ -143,6 +195,17 @@ def _execute(directory: Path, result: dict) -> Path:
     result["finished_at"] = utc_now()
     _persist(directory, result)
     return directory
+
+
+def _execute(directory: Path, result: dict) -> Path:
+    try:
+        return _execute_cases(directory, result)
+    except RunActiveError:
+        raise
+    except BaseException as exc:
+        result.update(status="FAILED", reason=f"{type(exc).__name__}: {exc}")
+        _persist(directory, result)
+        raise
 
 
 def run_campaign(config_path: Path, output_root: Path) -> Path:

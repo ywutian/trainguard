@@ -372,9 +372,21 @@ def _launch_attempt(
 
 
 def _set_status(run_dir: Path, status: dict, value: str, reason: str) -> None:
+    previous = status.get("status")
     status.update(status=value, reason=reason)
     if value in {"SUCCEEDED", "FAILED", "INTERRUPTED"}:
-        status["finished_at"] = utc_now()
+        if previous != value or "finished_at" not in status:
+            status["finished_at"] = utc_now()
+        started = status.pop("execution_started_monotonic", None)
+        if started is not None:
+            status["measurement"] = {
+                "elapsed_seconds": time.monotonic() - started,
+                "load_average_before": status.pop("execution_load_before"),
+                "load_average_after": list(os.getloadavg()),
+                "method": "controller_monotonic",
+            }
+    else:
+        status.pop("finished_at", None)
     write_json_atomic(run_dir / "run.json", status)
 
 
@@ -497,6 +509,8 @@ def _drive(run_dir: Path, status: dict, store: RunStore) -> bool:
 
 
 def run(config_path: Path, output_root: Path) -> tuple[Path, bool]:
+    execution_started = time.monotonic()
+    execution_load_before = list(os.getloadavg())
     config = load_config(config_path.resolve())
     preflight(config)
     run_id = uuid.uuid4().hex[:12]
@@ -513,6 +527,8 @@ def run(config_path: Path, output_root: Path) -> tuple[Path, bool]:
         "config": config.model_dump(),
         "run_schema_version": 2,
         "environment": environment_snapshot(config.run.world_size, config.run.device, run_dir),
+        "execution_started_monotonic": execution_started,
+        "execution_load_before": execution_load_before,
     }
     write_json_atomic(run_dir / "run.json", status)
     store = RunStore(run_dir / "run.sqlite3")
@@ -541,6 +557,11 @@ def resume(run_dir: Path) -> bool:
     store = RunStore(run_dir / "run.sqlite3")
     try:
         with _controller_lock(run_dir):
+            if status["status"] != "SUCCEEDED":
+                # A different controller cannot reconstruct the original wall-time window.
+                status.pop("execution_started_monotonic", None)
+                status.pop("execution_load_before", None)
+                status.pop("measurement", None)
             if status["status"] == "SUCCEEDED":
                 attempts = store.attempts(status["run_id"])
                 if (

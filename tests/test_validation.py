@@ -228,3 +228,25 @@ def test_nonmapping_summary_returns_failed_report(tmp_path):
     result = validate_runs(reference, recovered)
     assert not result["passed"]
     assert any("summary" in item for item in result["differences"])
+
+
+def test_unreadable_batch_evidence_returns_failed_report(tmp_path):
+    reference = _run(tmp_path, "reference")
+    recovered = _run(tmp_path, "recovered")
+    with (recovered / "attempts/attempt-001/rank-0.jsonl").open("ab") as stream:
+        stream.write(b"\xff\n")
+    report = validate_runs(reference, recovered)
+    assert not report["passed"]
+    assert any("unreadable" in item for item in report["differences"])
+
+
+def test_invalid_batch_cursor_returns_failed_report(tmp_path):
+    import sqlite3
+
+    reference = _run(tmp_path, "reference")
+    recovered = _run(tmp_path, "recovered")
+    with sqlite3.connect(recovered / "run.sqlite3") as database:
+        database.execute("UPDATE attempts SET resume_consumed_batches='invalid'")
+    report = validate_runs(reference, recovered)
+    assert not report["passed"]
+    assert any("cursor" in item for item in report["differences"])

@@ -280,13 +280,21 @@ def _effective_batches(run_dir: Path, run_id: str, config: ProjectConfig):
     except sqlite3.Error as exc:
         return {rank: [] for rank in effective}, [f"attempt index is unreadable: {exc}"]
     for attempt_id, status, cursor in attempts:
+        if type(cursor) is not int or cursor < 0:
+            errors.append(f"{attempt_id}: invalid consumed batch cursor")
+            continue
         for rank, prior in effective.items():
             effective[rank] = {index: ids for index, ids in prior.items() if index <= cursor}
             path = run_dir / "attempts" / attempt_id / f"rank-{rank}.jsonl"
             if not path.exists():
                 continue
             previous = cursor
-            for line in path.read_text().splitlines(keepends=True):
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+            except (OSError, UnicodeError) as exc:
+                errors.append(f"{attempt_id} rank {rank}: rank log is unreadable: {exc}")
+                continue
+            for line in lines:
                 if not line.endswith("\n") and status != "SUCCEEDED":
                     continue
                 try:
