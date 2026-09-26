@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from trainguard.config import ProjectConfig, load_config
+from trainguard.records import parse_event, summary_errors
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -57,16 +58,11 @@ def _effective_samples(
                 if not line.endswith("\n") and status != "SUCCEEDED" and number == len(lines):
                     continue
                 try:
-                    event = json.loads(line)
-                except ValueError:
-                    errors.append(f"{location}: invalid JSON")
+                    event = parse_event(line, run_id, attempt_id, rank)
+                except ValueError as exc:
+                    errors.append(f"{location}: {exc}")
                     continue
-                if not isinstance(event, dict):
-                    errors.append(f"{location}: event is not a mapping")
-                    continue
-                if (event.get("run_id"), event.get("attempt_id"), event.get("rank")) != (
-                    run_id, attempt_id, rank
-                ):
+                if event is None:
                     continue
                 if event.get("event_type") != "step_completed":
                     continue
@@ -82,9 +78,12 @@ def _effective_samples(
                 if step != previous_step + 1:
                     errors.append(f"{location}: invalid step order; expected {previous_step + 1}")
                 previous_step = step
-                if (not isinstance(ids, list) or len(ids) != config.training.batch_size_per_rank
-                        or any(type(sample) is not int or sample < 0 for sample in ids)
-                        or len(set(ids)) != len(ids)):
+                if (
+                    not isinstance(ids, list)
+                    or len(ids) != config.training.batch_size_per_rank
+                    or any(type(sample) is not int or sample < 0 for sample in ids)
+                    or len(set(ids)) != len(ids)
+                ):
                     errors.append(f"{location}: invalid sample IDs")
                     continue
                 effective[rank][step] = ids
@@ -116,14 +115,7 @@ def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
         ("reference", reference_summary, reference_config),
         ("recovered", recovered_summary, recovered_config),
     ):
-        for field in ("model_sha256", "optimizer_sha256", "scheduler_sha256"):
-            value = summary.get(field)
-            if (not isinstance(value, str) or len(value) != 64
-                    or any(character not in "0123456789abcdef" for character in value)):
-                differences.append(f"{name} final {field} is missing or invalid")
-        if (type(summary.get("global_step")) is not int
-                or summary["global_step"] != config.training.total_steps):
-            differences.append(f"{name} final global_step differs from configured total")
+        differences.extend(f"{name} {error}" for error in summary_errors(summary, config))
     for field in ("model_sha256", "optimizer_sha256", "scheduler_sha256", "global_step"):
         if reference_summary.get(field) != recovered_summary.get(field):
             differences.append(f"final {field} differs")
@@ -140,7 +132,9 @@ def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
     for rank in range(reference_config.run.world_size):
         expected = reference_samples[rank]
         actual = recovered_samples.get(rank, [])
-        if [step for step, _ in expected] != list(range(1, reference_config.training.total_steps + 1)):
+        if [step for step, _ in expected] != list(
+            range(1, reference_config.training.total_steps + 1)
+        ):
             differences.append(f"reference rank {rank} effective sample steps are incomplete")
         steps = [step for step, _ in actual]
         if steps != list(range(1, recovered_config.training.total_steps + 1)):
@@ -165,3 +159,29 @@ def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
         },
         "effective_samples": sample_counts,
     }
+
+
+def completion_errors(
+    run_dir: Path, attempt_id: str, config: ProjectConfig, run_id: str, summary: Any
+) -> list[str]:
+    errors = summary_errors(summary, config, run_id, attempt_id)
+    if errors:
+        return errors
+    samples, audit = _effective_samples(run_dir, run_id, config)
+    errors.extend(audit)
+    expected_steps = list(range(1, config.training.total_steps + 1))
+    for rank in range(config.run.world_size):
+        if [step for step, _ in samples[rank]] != expected_steps:
+            errors.append(f"rank {rank}: effective sample steps are incomplete")
+        path = run_dir / "attempts" / attempt_id / f"rank-{rank}.jsonl"
+        completed = []
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                event = parse_event(line, run_id, attempt_id, rank)
+                if event and event["event_type"] == "training_completed":
+                    completed.append(event["global_step"])
+        except (ValueError, OSError, UnicodeError) as exc:
+            errors.append(f"rank {rank}: completion log invalid: {exc}")
+        if completed != [config.training.total_steps]:
+            errors.append(f"rank {rank}: final completion missing or invalid")
+    return errors

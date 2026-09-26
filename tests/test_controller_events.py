@@ -18,12 +18,27 @@ def test_stale_attempt_and_run_events_cannot_advance_progress(tmp_path: Path) ->
     path = tmp_path / "attempts" / "attempt-002" / "rank-0.jsonl"
     path.parent.mkdir(parents=True)
     records = [
-        {"run_id": "run-a", "attempt_id": "attempt-001", "rank": 0,
-         "event_type": "step_completed", "global_step": 99},
-        {"run_id": "run-b", "attempt_id": "attempt-002", "rank": 0,
-         "event_type": "step_completed", "global_step": 99},
-        {"run_id": "run-a", "attempt_id": "attempt-002", "rank": 0,
-         "event_type": "step_completed", "global_step": 2},
+        {
+            "run_id": "run-a",
+            "attempt_id": "attempt-001",
+            "rank": 0,
+            "event_type": "step_completed",
+            "global_step": 99,
+        },
+        {
+            "run_id": "run-b",
+            "attempt_id": "attempt-002",
+            "rank": 0,
+            "event_type": "step_completed",
+            "global_step": 99,
+        },
+        {
+            "run_id": "run-a",
+            "attempt_id": "attempt-002",
+            "rank": 0,
+            "event_type": "step_completed",
+            "global_step": 2,
+        },
     ]
     path.write_text("".join(json.dumps(record) + "\n" for record in records))
     offsets: dict[int, int] = {}
@@ -63,3 +78,34 @@ def test_orphaned_owned_worker_is_detected_after_launcher_exits(tmp_path: Path) 
             os.killpg(launcher.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+
+
+def test_nonmapping_event_has_diagnostic(tmp_path: Path) -> None:
+    import pytest
+
+    path = tmp_path / "attempts/attempt-001/rank-0.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text("[]\n")
+    with pytest.raises(ValueError, match="not a mapping"):
+        _read_events(tmp_path, "attempt-001", "run", 1, {}, {}, set())
+
+
+def test_boolean_step_is_rejected(tmp_path: Path) -> None:
+    import pytest
+
+    path = tmp_path / "attempts/attempt-001/rank-0.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "run_id": "run",
+                "attempt_id": "attempt-001",
+                "rank": 0,
+                "event_type": "step_completed",
+                "global_step": True,
+            }
+        )
+        + "\n"
+    )
+    with pytest.raises(ValueError, match="invalid step"):
+        _read_events(tmp_path, "attempt-001", "run", 1, {}, {}, set())

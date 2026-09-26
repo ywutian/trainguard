@@ -19,7 +19,9 @@ from pathlib import Path
 from trainguard.checkpoint import CheckpointInvalid, CheckpointRecord, validate_checkpoint
 from trainguard.config import ProjectConfig, load_config
 from trainguard.events import utc_now, write_json_atomic
+from trainguard.records import parse_event
 from trainguard.run_store import RunStore
+from trainguard.validation import completion_errors
 
 
 class RunActiveError(RuntimeError):
@@ -45,7 +47,9 @@ def _owned_group_members(
 ) -> list[int]:
     result = subprocess.run(
         ["ps", "axww", "-o", "pid=", "-o", "pgid=", "-o", "command="],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if result.returncode != 0:
         raise RuntimeError("cannot inspect worker process ownership")
@@ -110,19 +114,26 @@ def _controller_lock(run_dir: Path) -> Iterator[None]:
 def _pid_identity(pid: int) -> str:
     result = subprocess.run(
         ["ps", "-p", str(pid), "-o", "lstart="],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def _owned_process_alive(
-    pid: int | None, identity: str | None, run_id: str, attempt_id: str,
+    pid: int | None,
+    identity: str | None,
+    run_id: str,
+    attempt_id: str,
     run_dir: Path,
 ) -> bool:
     if pid is not None and identity and _pid_identity(pid) == identity:
         result = subprocess.run(
             ["ps", "-p", str(pid), "-o", "command="],
-            capture_output=True, text=True, check=False,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         if result.returncode == 0 and f"--run-id {run_id}" in result.stdout:
             return True
@@ -130,8 +141,13 @@ def _owned_process_alive(
 
 
 def _read_events(
-    run_dir: Path, attempt_id: str, run_id: str, world_size: int,
-    offsets: dict[int, int], steps: dict[int, int], completed: set[int],
+    run_dir: Path,
+    attempt_id: str,
+    run_id: str,
+    world_size: int,
+    offsets: dict[int, int],
+    steps: dict[int, int],
+    completed: set[int],
 ) -> bool:
     progressed = False
     for rank in range(world_size):
@@ -145,16 +161,14 @@ def _read_events(
                     break
                 offsets[rank] = stream.tell()
                 try:
-                    event = json.loads(line)
-                except ValueError:
-                    continue
-                if (event.get("run_id"), event.get("attempt_id"), event.get("rank")) != (
-                    run_id, attempt_id, rank
-                ):
+                    event = parse_event(line, run_id, attempt_id, rank)
+                except ValueError as exc:
+                    raise ValueError(f"{path.name}: {exc}") from exc
+                if event is None:
                     continue
                 if event.get("event_type") == "step_completed":
                     step = event.get("global_step")
-                    if isinstance(step, int) and step > steps.get(rank, 0):
+                    if type(step) is int and step > steps.get(rank, 0):
                         steps[rank] = step
                         progressed = True
                 if event.get("event_type") == "training_completed":
@@ -198,30 +212,40 @@ def _valid_attempt_summary(
         return None
     try:
         summary = json.loads(path.read_text(encoding="utf-8"))
-    except ValueError:
+    except (ValueError, OSError, UnicodeError):
         return None
-    expected = {
-        "run_id": run_id,
-        "attempt_id": attempt_id,
-        "config_fingerprint": config.fingerprint(),
-        "global_step": config.training.total_steps,
-        "world_size": config.run.world_size,
-    }
-    if any(summary.get(key) != value for key, value in expected.items()):
+    if completion_errors(run_dir, attempt_id, config, run_id, summary):
         return None
     return summary
 
 
 def _launch_attempt(
-    run_dir: Path, config: ProjectConfig, run_id: str, attempt_id: str,
-    resume_checkpoint: CheckpointRecord | None, store: RunStore,
+    run_dir: Path,
+    config: ProjectConfig,
+    run_id: str,
+    attempt_id: str,
+    resume_checkpoint: CheckpointRecord | None,
+    store: RunStore,
 ) -> AttemptResult:
     command = [
-        sys.executable, "-m", "torch.distributed.run", "--nnodes=1",
-        f"--nproc-per-node={config.run.world_size}", "--max-restarts=0",
-        "--master-addr=127.0.0.1", f"--master-port={_available_local_port()}",
-        "-m", "trainguard.trainer", "--config", str(run_dir / "config.json"),
-        "--run-dir", str(run_dir), "--run-id", run_id, "--attempt-id", attempt_id,
+        sys.executable,
+        "-m",
+        "torch.distributed.run",
+        "--nnodes=1",
+        f"--nproc-per-node={config.run.world_size}",
+        "--max-restarts=0",
+        "--master-addr=127.0.0.1",
+        f"--master-port={_available_local_port()}",
+        "-m",
+        "trainguard.trainer",
+        "--config",
+        str(run_dir / "config.json"),
+        "--run-dir",
+        str(run_dir),
+        "--run-id",
+        run_id,
+        "--attempt-id",
+        attempt_id,
     ]
     if resume_checkpoint is not None:
         command.extend(["--resume-checkpoint", str(resume_checkpoint.path)])
@@ -239,15 +263,23 @@ def _launch_attempt(
         log.write(f"\n=== {attempt_id} ===\n".encode())
         log.flush()
         process = subprocess.Popen(
-            command, env=environment, stdout=log, stderr=subprocess.STDOUT,
+            command,
+            env=environment,
+            stdout=log,
+            stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-        store.set_pid(attempt_id, process.pid, _pid_identity(process.pid))
         try:
+            store.set_pid(attempt_id, process.pid, _pid_identity(process.pid))
             while True:
                 if _read_events(
-                    run_dir, attempt_id, run_id, config.run.world_size,
-                    offsets, steps, completed,
+                    run_dir,
+                    attempt_id,
+                    run_id,
+                    config.run.world_size,
+                    offsets,
+                    steps,
+                    completed,
                 ):
                     last_progress = time.monotonic()
                 exit_code = process.poll()
@@ -264,24 +296,33 @@ def _launch_attempt(
                     exit_code = process.poll()
                     break
                 time.sleep(0.2)
+            orphaned_workers = bool(_owned_group_members(run_dir, run_id, attempt_id, process.pid))
+            if orphaned_workers:
+                reason = "launcher exited while owned workers remained"
+            _read_events(
+                run_dir, attempt_id, run_id, config.run.world_size, offsets, steps, completed
+            )
+            summary = _valid_attempt_summary(run_dir, attempt_id, config, run_id)
+            if exit_code == 0 and not orphaned_workers and summary is not None:
+                return AttemptResult(
+                    True, "completed all training steps", 0, max(steps.values(), default=0)
+                )
+            if reason == "launcher exited before completion":
+                reason = f"launcher exit code {exit_code}; completion evidence missing or invalid"
         except KeyboardInterrupt:
             reason = "interrupted by user"
-            _stop_process_group(process, run_dir, run_id, attempt_id)
-            exit_code = process.poll()
-    orphaned_workers = bool(_owned_group_members(run_dir, run_id, attempt_id, process.pid))
-    if orphaned_workers:
-        _stop_process_group(process, run_dir, run_id, attempt_id)
-        reason = "launcher exited while owned workers remained"
-    _read_events(run_dir, attempt_id, run_id, config.run.world_size, offsets, steps, completed)
-    summary = _valid_attempt_summary(run_dir, attempt_id, config, run_id)
-    if (
-        exit_code == 0 and not orphaned_workers and summary is not None
-        and len(completed) == config.run.world_size
-    ):
-        return AttemptResult(True, "completed all training steps", 0, max(steps.values(), default=0))
-    if reason == "launcher exited before completion":
-        reason = f"launcher exit code {exit_code}; summary or rank completion missing"
-    return AttemptResult(False, reason, exit_code, max(steps.values(), default=0))
+        except Exception as exc:  # noqa: BLE001 - cleanup covers every controller failure
+            reason = f"controller {type(exc).__name__}: {exc}"
+            write_json_atomic(
+                run_dir / "attempts" / attempt_id / "controller-error.json",
+                {"reason": reason, "time": utc_now()},
+            )
+        finally:
+            try:
+                _stop_process_group(process, run_dir, run_id, attempt_id)
+            except BaseException as cleanup:
+                raise RunActiveError(f"{reason}; worker cleanup failed: {cleanup}") from cleanup
+    return AttemptResult(False, reason, process.poll(), max(steps.values(), default=0))
 
 
 def _set_status(run_dir: Path, status: dict, value: str, reason: str) -> None:
@@ -298,13 +339,17 @@ def _drive(run_dir: Path, status: dict, store: RunStore) -> bool:
     if attempts:
         last = attempts[-1]
         if _owned_process_alive(
-            last["pid"], last["pid_identity"], run_id,
-            last["attempt_id"], run_dir,
+            last["pid"],
+            last["pid_identity"],
+            run_id,
+            last["attempt_id"],
+            run_dir,
         ):
             raise RunActiveError(f"attempt {last['attempt_id']} still owns a worker group")
         summary = (
             _valid_attempt_summary(run_dir, last["attempt_id"], config, run_id)
-            if last["status"] in {"RUNNING", "SUCCEEDED"} else None
+            if last["status"] in {"RUNNING", "SUCCEEDED"}
+            else None
         )
         if summary is not None:
             write_json_atomic(run_dir / "summary.json", summary)
@@ -317,9 +362,7 @@ def _drive(run_dir: Path, status: dict, store: RunStore) -> bool:
             return True
         if last["status"] == "RUNNING":
             attempt_dir = run_dir / "attempts" / last["attempt_id"]
-            if last["pid"] is None and (
-                not attempt_dir.exists() or not any(attempt_dir.iterdir())
-            ):
+            if last["pid"] is None and (not attempt_dir.exists() or not any(attempt_dir.iterdir())):
                 store.discard_unlaunched_attempt(last["attempt_id"])
             else:
                 store.finish_attempt(last["attempt_id"], "INTERRUPTED", None, "controller exited")
@@ -350,7 +393,9 @@ def _drive(run_dir: Path, status: dict, store: RunStore) -> bool:
         _set_status(run_dir, status, "RUNNING", "training in progress")
         store.set_run_status(run_id, "RUNNING")
         store.start_attempt(
-            run_id, attempt_id, number,
+            run_id,
+            attempt_id,
+            number,
             str(selected.path) if selected else None,
             selected.global_step if selected else 0,
         )
@@ -358,13 +403,19 @@ def _drive(run_dir: Path, status: dict, store: RunStore) -> bool:
             previous = attempts[-1]
             previous_max = _max_step(run_dir, previous["attempt_id"], run_id, config.run.world_size)
             store.record_recovery(
-                run_id, previous["attempt_id"], attempt_id, str(selected.path),
-                selected.global_step, max(0, previous_max - selected.global_step),
+                run_id,
+                previous["attempt_id"],
+                attempt_id,
+                str(selected.path),
+                selected.global_step,
+                max(0, previous_max - selected.global_step),
             )
         result = _launch_attempt(run_dir, config, run_id, attempt_id, selected, store)
         store.finish_attempt(
-            attempt_id, "SUCCEEDED" if result.succeeded else "FAILED",
-            result.exit_code, result.reason,
+            attempt_id,
+            "SUCCEEDED" if result.succeeded else "FAILED",
+            result.exit_code,
+            result.reason,
         )
         _scan_checkpoints(run_dir, config, run_id, store)
         if result.succeeded:
@@ -413,11 +464,21 @@ def resume(run_dir: Path) -> bool:
     config = load_config(run_dir / "config.json")
     if config.fingerprint() != status["config_fingerprint"]:
         raise ValueError("saved config fingerprint differs from run metadata")
-    if status["status"] == "SUCCEEDED":
-        return True
     store = RunStore(run_dir / "run.sqlite3")
     try:
         with _controller_lock(run_dir):
+            if status["status"] == "SUCCEEDED":
+                attempts = store.attempts(status["run_id"])
+                if (
+                    not attempts
+                    or _valid_attempt_summary(
+                        run_dir, attempts[-1]["attempt_id"], config, status["run_id"]
+                    )
+                    is None
+                ):
+                    store.set_run_status(status["run_id"], "FAILED")
+                    _set_status(run_dir, status, "FAILED", "completion evidence missing or invalid")
+                    return False
             return _drive(run_dir, status, store)
     finally:
         store.close()
