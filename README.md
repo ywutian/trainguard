@@ -87,3 +87,5 @@ uv run pytest tests/test_gpu_acceptance.py
 ```
 
 The JSONL example contains illustrative token rows, not a real-corpus performance claim. Supply an immutable token file and its SHA-256 for real training. See [current acceptance and remaining gates](docs/experiments/full-upgrade-2026-09-26.md).
+
+Version 0.2.1 rejects linked checkpoint roots and inactive retention budgets, and avoids a second full payload read at commit. See the [local hardening and measurement report](docs/experiments/local-hardening-2026-09-26.md). CUDA, multi-node, remote storage, power-loss and dedicated-host performance gates remain open.

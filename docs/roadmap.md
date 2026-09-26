@@ -60,3 +60,13 @@ GPU and FSDP experiments are independent extensions after the CPU recovery path 
 - [ ] Establish stable performance differences on a dedicated host with two batches of at least 12 repetitions per mode.
 
 The last five gates remain open; local CPU results are not substituted for them. See [upgrade acceptance](experiments/full-upgrade-2026-09-26.md).
+
+## 6. Version 0.2.1 local hardening
+
+- [x] Reject symbolic-link checkpoint roots before creation, selection, commit and retention.
+- [x] Reject a retention byte budget when retention is disabled.
+- [x] Hash payloads once during publication, detect changed files, and keep full validation before recovery load.
+- [x] Recheck real CPU recovery, two-version retention, 99 tests, build and local 64/256 MiB stage measurements.
+- [ ] Close the five infrastructure gates above when the required environments are available.
+
+Evidence: [local hardening and measurement](experiments/local-hardening-2026-09-26.md).

@@ -156,6 +156,11 @@ def test_checkpoint_selection_and_new_candidate_refuse_linked_root(tmp_path):
         latest_valid_checkpoint(run_dir, config, "run-one")
     with pytest.raises(CheckpointInvalid, match="symbolic link"):
         candidate_path(run_dir, "attempt-002", 2)
+    linked_path = run_dir / "checkpoints" / checkpoint.name
+    with pytest.raises(CheckpointInvalid, match="symbolic link"):
+        validate_checkpoint(linked_path, config, "run-one")
+    with pytest.raises(CheckpointInvalid, match="symbolic link"):
+        commit_checkpoint(linked_path, config, "run-one", "attempt-001", 1)
 
 
 def test_commit_reads_payload_once_and_later_validation_rechecks_it(tmp_path, monkeypatch):
@@ -191,7 +196,7 @@ def test_payload_change_during_publication_cannot_report_success(tmp_path, monke
     def mutate_after_marker(marker_path, value):
         original(marker_path, value)
         payload = path / "dcp" / "__0_0.distcp"
-        payload.write_bytes(b"changed")
+        payload.write_bytes(b"change")
 
     monkeypatch.setattr(checkpoint_module, "_write_marker_atomic", mutate_after_marker)
     with pytest.raises(CheckpointInvalid, match="changed during publication"):
