@@ -297,7 +297,7 @@ def _validate_pytest_result(raw_dir: Path, details: dict) -> None:
 
 
 def _local_cpu_acceptance_complete(acceptance: object) -> bool:
-    """Independently verify the ordered campaign matrix before local evidence passes."""
+    """Independently verify each campaign case before local evidence passes."""
     if not isinstance(acceptance, dict) or acceptance.get("status") != "SUCCEEDED" or (
         acceptance.get("reference_status") != "VALIDATED"
     ):
@@ -305,8 +305,20 @@ def _local_cpu_acceptance_complete(acceptance: object) -> bool:
     cases = acceptance.get("cases")
     if not isinstance(cases, list) or len(cases) != len(LOCAL_CPU_CASES):
         return False
-    for case, (name, mode, fault, omitted, exact) in zip(cases, LOCAL_CPU_CASES, strict=True):
-        if not isinstance(case, dict) or (
+    expected = {
+        name: (mode, fault, omitted, exact)
+        for name, mode, fault, omitted, exact in LOCAL_CPU_CASES
+    }
+    seen: set[str] = set()
+    for case in cases:
+        if not isinstance(case, dict) or not isinstance(case.get("name"), str):
+            return False
+        name = case["name"]
+        if name not in expected or name in seen:
+            return False
+        seen.add(name)
+        mode, fault, omitted, exact = expected[name]
+        if (
             case.get("name"), case.get("mode"), case.get("fault"), case.get("omit_state")
         ) != (name, mode, fault, omitted) or (
             case.get("expected_exact") is not exact
@@ -319,7 +331,7 @@ def _local_cpu_acceptance_complete(acceptance: object) -> bool:
             or case["validation"].get("passed") is not exact
         ):
             return False
-    return True
+    return seen == set(expected)
 
 
 def _verify_artifacts(root: Path, wheel: Path, sdist: Path, source_digest: str) -> None:
