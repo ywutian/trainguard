@@ -66,7 +66,40 @@ Sev1 为疑似错误状态、双写、无法可靠恢复或数据安全事件，
 
 ROI 以客户原有方案为对照：先逐次归集原有失败事件中互不重叠的有效重跑 GPU 小时和人工处置小时；在同一故障、镜像与资源条件下测增量改善，再减去新增检查点计算/IO、对象存储、演练、运维及服务费。用客户实际费率，不借用竞争产品公开标价。无自然故障的观察期只报告净开销和演练的条件改善，不报告已经节约的费用。历史故障率乘以条件改善仅列为情景预测，附原始账本、样本量与不确定性。按受保护时长收费前须建立可重放、去重、对账和争议更正的权威计量；当前实验统计不得用于开票。
 
-用 [`pilot-ledger-template.json`](pilot-ledger-template.json) 填写同故障配对数据，执行 `python scripts/calculate_pilot_value.py <ledger.json> --output <result.json>`。脚本拒绝重复场景和负成本，逐项扣除新增计算、人工、存储、演练和服务费，输出仅是**这组演练的成本差额**；重复演练次数会改变总额，不可年化、作为定价上限、实际节省宣称或开票依据。年度价值须另以客户真实事故频率、账本、观察期间和可归因改善作保守测算，原始记录与双方核对另行保留。
+用 [`pilot-ledger-template.json`](pilot-ledger-template.json) 建立版本 2 账本。每一对必须有唯一 `scenario_id` 与 `exercise_id`，基线和受测两份原始事件 JSON 分别记录不同的 `event_id` 与 `run_id`，但两者的 `exercise_id`、`comparison_spec_sha256`（共同镜像、数据、拓扑和比较条件）及 `fault_spec_sha256`（同一故障注入规格）必须一致。账本用相对路径和文件 SHA-256 绑定这两份原始记录；总试点开销另用一份原始记录绑定全部 `exercise_id`。记录仅存于客户受限环境，计算结果不导出人员、资源标识或路径。原始事件必须采用以下字段结构，`arm` 分别为 `baseline`、`trial`，时间都用带 `Z` 的 UTC：
+
+```json
+{
+  "schema_version": 1,
+  "record_type": "paired_arm",
+  "scenario_id": "scenario-1",
+  "exercise_id": "exercise-1",
+  "comparison_spec_sha256": "[同一比较规格的真实 SHA-256]",
+  "fault_spec_sha256": "[同一故障规格的真实 SHA-256]",
+  "arm": "baseline",
+  "event_id": "baseline-event-1",
+  "run_id": "baseline-run-1",
+  "gpu_loss_intervals": [{"resource_id": "gpu-pseudonym-1", "start_utc": "[UTC 起点]", "end_utc": "[UTC 终点]"}],
+  "engineer_intervals": [{"person_id": "person-pseudonym-1", "start_utc": "[UTC 起点]", "end_utc": "[UTC 终点]"}]
+}
+```
+
+`resource_id` 必须标识**一张可计费 GPU**，`person_id` 必须标识**同一位工程师**；客户为整个账本稳定使用受控假名。同一资源或人员在基线、受测、其他演练及额外开销中的区间不得重叠，相邻区间可接续。总开销记录采用如下结构，`exercise_ids` 必须恰好覆盖本账本的所有演练：
+
+```json
+{
+  "schema_version": 1,
+  "record_type": "trial_overhead",
+  "record_id": "overhead-event-1",
+  "exercise_ids": ["exercise-1"],
+  "gpu_overhead_intervals": [{"resource_id": "gpu-pseudonym-1", "start_utc": "[UTC 起点]", "end_utc": "[UTC 终点]"}],
+  "engineer_overhead_intervals": []
+}
+```
+
+小时数由原始区间计算，不接受手填小时数。每份原始记录最大 1 MiB，账本引用必须是其真实 SHA-256；缺失、篡改、重复事件/运行/演练、不同故障规格、非 UTC、逆序或重叠区间均拒绝，不输出金额。旧版只有小时合计的账本不能迁移其结论，须从原始事件重建。比较和故障规格的原件也须由客户保留并与摘要核对；脚本只核对两臂填写的摘要相等。文件摘要与结构核验**不能证明原始计时、故障归因或资源假名真实**，客户与供应商仍须共同核对原始日志、账单和人员时间记录。
+
+执行 `python scripts/calculate_pilot_value.py <ledger.json> --output <新结果路径>`；每次使用新路径，脚本拒绝覆盖旧结果。只有全部引用和区间检查通过才输出这组配对故障演练的成本差额，逐项扣除新增计算、人工、存储、演练和服务费。结果绑定账本文件 SHA-256，并始终标注 `evidence_authenticity_verified=false`、`realized_savings_claim_eligible=false`、`invoice_eligible=false`；重复演练次数会改变总额，不可年化、作为定价上限、实际节省宣称或开票依据。年度价值须另以客户真实事故频率、账本、观察期间和可归因改善作保守测算，原始记录与双方核对另行保留。
 
 季度价值复核记录：实际支持矩阵覆盖、版本变更后的复测、阴性对照拒绝、真实事故的恢复正确性和 RPO/RTO、额外开销、发现并修复的缺陷、支持工时和客户继续使用意愿。续约以这些实测结果与双方商业谈判为准。
 

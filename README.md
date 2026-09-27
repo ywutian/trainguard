@@ -79,7 +79,7 @@ SQLite WAL, the run-directory process lock, and the persisted local epoch identi
 
 Experiment run evidence can contain raw sample identifiers and paths. Guarded rank events replace raw sample IDs with ordered, customer-keyed HMAC commitments and record only a key identifier; the customer keeps the key in a private file outside the run directory. The key holder can re-sign evidence, and custom workload output or unstructured launcher logs are outside this protection. Keep all run data in a restricted customer-controlled directory. `trainguard support-bundle runs/<run-id> --output support.json` produces a read-only summary with allowlisted scalar fields; the customer should review and approve it before sharing.
 
-For a paired trial cost calculation, fill in [the pilot ledger template](docs/commercial/pilot-ledger-template.json) with customer rates and measured results, then run `python scripts/calculate_pilot_value.py <ledger.json> --output <result.json>`. The result is conditional on the injected scenarios and is not a realized savings or billing record.
+For a paired trial cost calculation, use [the version 2 pilot ledger template](docs/commercial/pilot-ledger-template.json) with customer rates and SHA-256-bound raw event records. The [pilot evidence contract](docs/commercial/customer-pilot-template.md#5-报价计量与续约) requires paired fault identities, UTC intervals, and stable per-GPU and per-person pseudonyms; missing or overlapping evidence produces no amount. Run `python scripts/calculate_pilot_value.py <ledger.json> --output <result.json>`. The result is conditional on the injected scenarios and is neither realized savings nor a billing record.
 
 ## Experiments
 
