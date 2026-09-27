@@ -175,6 +175,31 @@ def test_explicit_import_root_cannot_shadow_application(
         environment.startup_identity_sha256()
 
 
+@pytest.mark.parametrize("filename", ["trainguard.pyc", "trainguard.abi3.so"])
+def test_explicit_import_root_rejects_top_level_module_shadow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, filename: str,
+) -> None:
+    (tmp_path / filename).write_bytes(b"shadow")
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    with pytest.raises(ValueError, match="may shadow"):
+        environment.startup_identity_sha256()
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_run_output_inside_explicit_import_root_is_rejected_before_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing: bool,
+) -> None:
+    imports = tmp_path / "imports"
+    if existing:
+        imports.mkdir()
+    monkeypatch.setenv("PYTHONPATH", str(imports))
+    output = imports / "runs"
+    source = Path(__file__).parents[1] / "configs" / "cpu_demo.yaml"
+    with pytest.raises(ValueError, match="outside PYTHONPATH"):
+        run(source, output)
+    assert not output.exists()
+
+
 def test_third_party_editable_dependency_is_rejected_without_path_leak(monkeypatch) -> None:
     class EditableDistribution:
         def __init__(self):

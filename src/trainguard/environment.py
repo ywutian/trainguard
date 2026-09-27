@@ -172,6 +172,20 @@ def _zip_import_container(path: Path) -> tuple[Path, str] | None:
     return None
 
 
+def require_output_outside_import_roots(output: Path) -> None:
+    """Avoid self-changing import identity as a run creates its own artifacts."""
+    pythonpath = os.environ.get("PYTHONPATH")
+    if pythonpath is None:
+        return
+    destination = output.resolve()
+    for entry in pythonpath.split(os.pathsep):
+        if not entry:
+            raise ValueError("PYTHONPATH contains an empty import root")
+        root = Path(entry).resolve()
+        if not root.is_file() and destination.is_relative_to(root):
+            raise ValueError("run output must be outside PYTHONPATH import roots")
+
+
 def startup_identity_sha256() -> str:
     """Bind import lookup paths, startup hooks, and Python path controls without exposing paths."""
     paths = [Path(entry or os.getcwd()).resolve() for entry in sys.path]
@@ -187,8 +201,9 @@ def startup_identity_sha256() -> str:
             if original.is_symlink():
                 raise ValueError("PYTHONPATH contains a linked import root")
             root = original.resolve()
-            if root != source_root and (
-                (root / "trainguard").exists() or (root / "trainguard.py").exists()
+            if root != source_root and root.is_dir() and any(
+                child.name == "trainguard" or child.name.startswith("trainguard.")
+                for child in root.iterdir()
             ):
                 raise ValueError("PYTHONPATH may shadow the application package")
             zip_root = _zip_import_container(root)
@@ -197,7 +212,8 @@ def startup_identity_sha256() -> str:
                 with zipfile.ZipFile(archive_path) as archive:
                     if any(
                         name.startswith(prefix) and (
-                            name[len(prefix):] == "trainguard.py"
+                            name[len(prefix):] == "trainguard"
+                            or name[len(prefix):].startswith("trainguard.")
                             or name[len(prefix):].startswith("trainguard/")
                         )
                         for name in archive.namelist()
@@ -258,6 +274,7 @@ def startup_identity_sha256() -> str:
 
 
 def environment_snapshot(world_size: int, device: str, storage_path: Path) -> dict:
+    require_output_outside_import_roots(storage_path)
     repository = Path(__file__).resolve().parents[2]
     checkout_source = repository / "src" / "trainguard" / "environment.py"
     is_checkout = checkout_source.resolve() == Path(__file__).resolve()

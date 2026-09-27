@@ -27,7 +27,7 @@ from trainguard.checkpoint import (
     validate_checkpoint,
 )
 from trainguard.config import ProjectConfig, load_config
-from trainguard.environment import environment_snapshot
+from trainguard.environment import environment_snapshot, require_output_outside_import_roots
 from trainguard.events import append_event, utc_now, write_json_atomic
 from trainguard.lifecycle import prune_checkpoints
 from trainguard.privacy import key_for_run, load_sample_key, sample_key_id
@@ -820,6 +820,7 @@ def run(
         )
     run_id = uuid.uuid4().hex[:12]
     run_dir = (output_root / run_id).resolve()
+    require_output_outside_import_roots(run_dir)
     configured_reference = config.checkpoint.reference_store_path
     if reference_store_path is not None:
         resolved_reference = str(Path(reference_store_path).resolve())
