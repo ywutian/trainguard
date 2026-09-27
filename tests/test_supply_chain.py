@@ -159,6 +159,9 @@ def test_supply_chain_rejects_candidate_identity_change(tmp_path: Path) -> None:
     ("supply-chain-installed.json", "C:\\Users\\customer\\secret"),
     ("supply-chain-sbom.json", "https://repo.example/?access_token=secret"),
     ("supply-chain-receipt.json", "file:///private/customer/evidence"),
+], ids=[
+    "requirements-url", "audit-posix-path", "installed-windows-path",
+    "sbom-secret-url", "receipt-local-url",
 ])
 def test_supply_chain_rejects_private_output_after_rehash(
     tmp_path: Path, name: str, secret: str,

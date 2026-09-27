@@ -293,7 +293,7 @@ def test_archived_receipts_pass_the_release_evidence_verifier(
 @pytest.mark.parametrize("private_text", [
     "example==1.0 --hash=sha256:abc /Users/private/customer.key\n",
     "--extra-index-url https://user:secret@example.invalid/simple\n",
-])
+], ids=["local-path", "credentialed-url"])
 def test_archive_rejects_private_locked_requirements(
     archive_fixture, private_text: str
 ) -> None:
@@ -307,6 +307,20 @@ def test_archive_rejects_private_locked_requirements(
     with pytest.raises(ValueError, match="local path|private URL"):
         archiver.archive(source, "0.3.6-r1", root)
     assert not (root / "docs/commercial/evidence/local-0.3.6-r1").exists()
+
+
+def test_collected_test_identities_are_safe_for_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1] / "scripts"))
+    import check_release_readiness as checker
+
+    identities = checker._collected_test_identities(Path(__file__).parents[1])
+    assert identities
+    assert all(
+        not any(marker in classname + name for marker in ("/", "\\", "@"))
+        for classname, name in identities
+    )
 
 
 def test_archive_rejects_self_consistent_requirements_from_another_lock(

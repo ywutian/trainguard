@@ -63,6 +63,10 @@ def candidate(tmp_path: Path) -> Path:
     ("uv.lock", "version = 2\n"),
     ("docs/commercial/release-gates.json",
      '{"previous_release":{"git_commit":"new"},"gates":[]}'),
+], ids=[
+    "test", "script", "config", "example", "workflow", "readme", "security",
+    "build-constraints", "security-channel", "operations", "source", "metadata",
+    "lock", "release-base",
 ])
 def test_execution_digest_changes_for_each_gate_input(
     candidate: Path, path: str, replacement: str
@@ -84,7 +88,7 @@ def test_evidence_only_manifest_fields_do_not_change_execution_digest(candidate:
 @pytest.mark.parametrize("path,replacement", [
     ("tests/test_recovery.py", "def test_recovery():\n    assert True\n"),
     ("examples/workload.py", "VALUE = 2\n"),
-])
+], ids=["test", "example"])
 def test_successful_command_does_not_pass_if_input_changes_during_gate(
     candidate: Path, path: str, replacement: str
 ) -> None:
