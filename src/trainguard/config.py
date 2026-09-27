@@ -55,6 +55,7 @@ class CheckpointSettings(StrictModel):
 
 class RecoverySettings(StrictModel):
     max_restarts: int = Field(default=2, ge=0)
+    startup_timeout_seconds: int = Field(default=120, ge=1)
     progress_timeout_seconds: int = Field(default=120, ge=1)
     omit_state: Literal["none", "rng", "optimizer", "cursor"] = "none"
 
@@ -102,6 +103,12 @@ class DataSettings(StrictModel):
         return self
 
 
+class ExternalWorkloadSettings(StrictModel):
+    version: Literal[1] = 1
+    path: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class ProjectConfig(StrictModel):
     run: RunSettings
     training: TrainingSettings
@@ -110,9 +117,15 @@ class ProjectConfig(StrictModel):
     recovery: RecoverySettings = Field(default_factory=RecoverySettings)
     fault: FaultSettings = Field(default_factory=FaultSettings)
     data: DataSettings = Field(default_factory=DataSettings)
+    external_workload: ExternalWorkloadSettings | None = None
 
     @model_validator(mode="after")
     def validate_fault(self) -> ProjectConfig:
+        if self.external_workload is not None:
+            if self.run.device != "cpu" or self.run.strategy != "ddp":
+                raise ValueError("external workload v1 requires CPU DDP")
+            if self.data.kind != "synthetic":
+                raise ValueError("external workload v1 owns its data stream")
         if self.run.profile == "guarded":
             if self.fault.kind != "none" or self.recovery.omit_state != "none":
                 raise ValueError("guarded runs forbid fault injection and omitted recovery state")
@@ -163,6 +176,8 @@ class ProjectConfig(StrictModel):
                 "training": self.training.model_dump(),
                 "model": self.model.model_dump(),
                 "data": self.data.model_dump(exclude={"path"}),
+                "external_workload": self.external_workload.model_dump(exclude={"path"})
+                if self.external_workload is not None else None,
             }
         )
 
@@ -178,6 +193,8 @@ class ProjectConfig(StrictModel):
                 "generator": "sample-id-v1"
                 if self.data.kind == "synthetic"
                 else "epoch-shuffle-v1",
+                "external_workload": self.external_workload.model_dump(exclude={"path"})
+                if self.external_workload is not None else None,
             }
         )
 
@@ -206,4 +223,6 @@ def load_config(path: Path) -> ProjectConfig:
     config = ProjectConfig.model_validate(raw)
     if config.data.path is not None:
         config.data.path = str((path.parent / config.data.path).resolve())
+    if config.external_workload is not None:
+        config.external_workload.path = str((path.parent / config.external_workload.path).resolve())
     return config

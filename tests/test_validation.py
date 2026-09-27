@@ -164,6 +164,22 @@ def test_equal_invalid_summaries_cannot_pass(tmp_path: Path, field: str, value: 
     assert any(field in difference for difference in result["differences"])
 
 
+@pytest.mark.parametrize(
+    "field", ["model_sha256", "optimizer_sha256", "scheduler_sha256", "scaler_sha256"]
+)
+def test_ddp_summary_rejects_different_rank_state_hashes(tmp_path: Path, field: str) -> None:
+    reference = _run(tmp_path, "reference")
+    recovered = _run(tmp_path, "recovered")
+    path = recovered / "summary.json"
+    summary = json.loads(path.read_text())
+    summary["rank_states"][0][field] = "0" * 64
+    summary[field] = state_digest([item[field] for item in summary["rank_states"]])
+    path.write_text(json.dumps(summary))
+    result = validate_runs(reference, recovered)
+    assert not result["passed"]
+    assert any(f"DDP rank {field} differs" in item for item in result["differences"])
+
+
 def test_stale_records_are_ignored(tmp_path: Path) -> None:
     reference = _run(tmp_path, "reference")
     recovered = _run(tmp_path, "recovered")

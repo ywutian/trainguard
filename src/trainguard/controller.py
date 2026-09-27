@@ -200,7 +200,9 @@ def _scan_checkpoints(
     selected = None
     for path in ordered_candidates(run_dir):
         try:
-            record = validate_checkpoint(path, config, run_id, decode_payload=True)
+            record = validate_checkpoint(
+                path, config, run_id, decode_payload=True, require_trainable_state=True
+            )
         except (CheckpointInvalid, OSError) as exc:
             records.append((str(path), run_id, None, None, "INVALID", str(exc)))
         else:
@@ -261,7 +263,12 @@ def _launch_attempt(
         attempt_id,
     ]
     if resume_checkpoint is not None:
-        command.extend(["--resume-checkpoint", str(resume_checkpoint.path)])
+        if not re.fullmatch(r"[0-9a-f]{64}", resume_checkpoint.manifest_sha256):
+            raise ValueError("selected checkpoint manifest digest is invalid")
+        command.extend([
+            "--resume-checkpoint", str(resume_checkpoint.path),
+            "--expected-checkpoint-sha256", resume_checkpoint.manifest_sha256,
+        ])
     environment = os.environ.copy()
     environment["OMP_NUM_THREADS"] = "1"
     environment["PYTHONUNBUFFERED"] = "1"
@@ -331,7 +338,17 @@ def _launch_attempt(
                     _stop_process_group(process, run_dir, run_id, attempt_id)
                     exit_code = process.poll()
                     break
-                if time.monotonic() - last_progress > config.recovery.progress_timeout_seconds:
+                if not steps and (
+                    time.monotonic() - started > config.recovery.startup_timeout_seconds
+                ):
+                    reason = "worker startup or first update stalled"
+                    milestone("fault_observed", reason=reason)
+                    _stop_process_group(process, run_dir, run_id, attempt_id)
+                    exit_code = process.poll()
+                    break
+                if steps and (
+                    time.monotonic() - last_progress > config.recovery.progress_timeout_seconds
+                ):
                     reason = "step progress stalled"
                     milestone("fault_observed", reason=reason)
                     _stop_process_group(process, run_dir, run_id, attempt_id)
@@ -447,6 +464,7 @@ def _drive(run_dir: Path, status: dict, store: RunStore, config: ProjectConfig) 
                 attempt_id=f"attempt-{number:03d}",
                 event_type="checkpoint_selected",
                 checkpoint_path=str(selected.path),
+                manifest_sha256=selected.manifest_sha256,
                 global_step=selected.global_step,
             )
         prune_checkpoints(run_dir, config, run_id, protected={selected.path} if selected else set())
@@ -516,10 +534,15 @@ def run(
         raise ExperimentNotAuthorizedError(
             "fault injection or omitted recovery state requires explicit experiment authorization"
         )
-    preflight(config)
+    workload_source = preflight(config)
     run_id = uuid.uuid4().hex[:12]
     run_dir = (output_root / run_id).resolve()
     run_dir.mkdir(parents=True, exist_ok=False)
+    if workload_source is not None:
+        from trainguard.external_workload import freeze_source, read_verified_source
+
+        frozen = freeze_source(run_dir, workload_source)
+        read_verified_source(config, path=frozen)
     write_json_atomic(run_dir / "config.json", config.model_dump())
     started_at = utc_now()
     status = {
@@ -560,7 +583,12 @@ def resume(run_dir: Path) -> bool:
     for field in ("source_sha256", "python", "torch", "versions"):
         if current[field] != status["environment"].get(field):
             raise ValueError(f"saved run source or runtime {field} differs")
-    preflight(config)
+    if config.external_workload is not None:
+        from trainguard.external_workload import frozen_workload_path
+
+        preflight(config, workload_source=frozen_workload_path(run_dir))
+    else:
+        preflight(config)
     if config.fingerprint() != status["config_fingerprint"]:
         raise ValueError("saved config fingerprint differs from run metadata")
     store = RunStore(run_dir / "run.sqlite3")

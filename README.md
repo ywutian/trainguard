@@ -6,6 +6,8 @@ TrainGuard tests whether fixed-size distributed PyTorch training resumes from a 
 
 The CPU recovery path is implemented and tested with two Gloo workers. It supports synchronous and native asynchronous Distributed Checkpoint (DCP), application-level checkpoint commits, bounded full-group restarts, explicit resume, deterministic fault injection, correctness validation, and repeated local benchmarks. CUDA DDP and FSDP2 adapters are implemented but require real-device acceptance. Multi-node/object-storage recovery and host-power-loss durability remain open gates.
 
+Version 0.3.3 adds a single-file external CPU DDP workload interface for local evaluation. A nonbuilt-in regression example runs through the same reference, crash/recovery, and omitted-state comparisons. The interface still uses the fixed AdamW optimizer and Cosine scheduler; its source hash covers only the adapter file. The local SQLite object-store implementation exercises same-host conditional-write protocol behavior and is not connected to checkpoint storage in the training path.
+
 For the proposed customer deployment, integration, operations, security and commercial acceptance scope, see the [product closure and release gates](docs/plans/product-closure-2026-09-26.md). The current release is an experiment package and has not passed those production gates.
 
 The [customer pilot template](docs/commercial/customer-pilot-template.md), [operations runbook](docs/commercial/operations-runbook.md), and [machine-readable release gates](docs/commercial/release-gates.json) record the commercial scope and evidence required before customer production use. The existing code is MIT licensed; pilot fees cover agreed integration, validation and support services.
@@ -39,6 +41,10 @@ uv run trainguard resume runs/<run-id>
 ```
 
 Resume refuses to start while the previous owned launcher or worker group is still running, including the interval before a launcher PID is recorded. A run with no valid committed checkpoint fails clearly. Configuration is copied into the run directory so later changes to the original YAML do not alter recovery.
+
+`recovery.startup_timeout_seconds` bounds launch, state loading, and the first completed update. After that first update, `recovery.progress_timeout_seconds` bounds stalls between completed updates; `run.timeout_seconds` bounds the whole attempt. A startup timeout fails the attempt and does not count as a successful recovery.
+
+For a trusted external CPU DDP workload, copy the CPU example configuration and add `external_workload` with `version: 1`, the Python file path, and its SHA-256. The file must define `WORKLOAD_API_VERSION = 1` and callable `build_model(config)`, `build_stream(config, rank, consumed_batches)`, and `loss(output, batch, config)`. The stream returns sample IDs and a Tensor batch from `next()` and provides `close()`. See [the independent example](examples/external_cpu_workload.py). The source file is checked before launch, copied into the run directory, and checked again by each worker and on resume. Preflight executes this trusted Python code. Imports, data files, and external side effects are outside the single-file digest and need their own inventory and acceptance. This interface does not establish customer-workload or production support.
 
 ## Checkpoints and records
 
@@ -105,20 +111,20 @@ Version 0.2.2 binds each recovery decision to every progressing rank's state-loa
 
 ```bash
 uv build --wheel --sdist --out-dir dist
-uv run python scripts/verify_wheel.py dist/trainguard-0.3.2-py3-none-any.whl
-uv run python scripts/verify_install.py dist/trainguard-0.3.2-py3-none-any.whl
+uv run python scripts/verify_wheel.py dist/trainguard-0.3.3-py3-none-any.whl
+uv run python scripts/verify_install.py dist/trainguard-0.3.3-py3-none-any.whl
 ```
 
 See the [full closure assessment](docs/analysis/closure-assessment-2026-09-26.md) for the supported boundary, infrastructure gates and next acceptance steps.
 The [0.2.2 local acceptance report](docs/experiments/closure-2026-09-26.md) contains the test, campaign, build and package evidence.
 
-## Version 0.3.0 local simulation closure
+## Local simulation closure
 
 Run the complete local gate from the repository root:
 
 ```bash
 uv sync --locked --group dev
-uv run python scripts/run_simulation_closure.py --output-root runs/simulation-closure --previous-ref 12b673f
+uv run python scripts/run_simulation_closure.py --output-root runs/simulation-closure --previous-ref 0afbece
 ```
 
 The gate retains static checks, the full test suite, JUnit and raw test recovery directories, a fresh ten-case CPU acceptance campaign, a wheel and source distribution, and a wheel/source identity check in a uniquely named result directory. Its `result.json` and `report.md` record the outcome even if a gate fails. The CPU campaign requires the intended fault, exactly one recovery, the expected attempt statuses, and either exact agreement with the uninterrupted reference or the specified negative-control difference.
@@ -134,4 +140,6 @@ The package now includes an installed CPU template, a guarded configuration prof
 These checks support a limited, isolated evaluation package. Run the [release readiness checker](docs/commercial/operations-runbook.md) against the candidate wheel, source distribution, lock and reviewed gate receipts. A `BLOCKED` result prevents a production claim. The current real GPU, multi-host, customer-workload, object-service, security operations and paid-customer gates remain open.
 The [version 0.3.1 local validation record](docs/commercial/evidence/local-validation-0.3.1.json) links its local outcomes to its artifacts. The [Linux verification failure](docs/commercial/evidence/linux-check-0.3.1.json) is retained separately; those artifacts and receipts are not used for the current candidate. An evaluation bundle remains labeled `EVALUATION_ONLY`; machine-checked receipts never authorize production release.
 
-Version 0.3.2 closes the Linux process-start ownership race and makes the CLI option check independent of terminal width. The [current local validation record](docs/commercial/evidence/local-validation-0.3.2.json) and the release gates identify its separate artifacts and evidence; the version 0.3.1 record remains historical.
+Version 0.3.2 closes the Linux process-start ownership race and makes the CLI option check independent of terminal width. Its [local validation record](docs/commercial/evidence/local-validation-0.3.2.json) identifies separate artifacts and evidence; the version 0.3.1 record remains historical.
+
+Version 0.3.3 verifies a selected checkpoint again on every worker before and after loading, rejects inconsistent rank scheduler and final DDP state, and strengthens local test and delivery-bundle integrity checks. Its [local validation record](docs/commercial/evidence/local-validation-0.3.3.json) binds the new artifacts and raw results. A recipient can run `python scripts/verify_delivery_bundle.py <bundle-directory>` and compare the reported manifest SHA-256 with a digest received through an independent trusted channel. Bundle consistency alone does not authenticate the sender. The external workload example and same-host storage reference do not change the nine blocked customer and production gates.

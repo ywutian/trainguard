@@ -5,12 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from pathlib import Path
 
 import torch
 from torch.nn.parallel import DistributedDataParallel
 
 
-def preflight(config) -> None:
+def preflight(config, *, workload_source: Path | None = None) -> bytes | None:
     if config.run.device == "cuda":
         if not torch.cuda.is_available() or torch.cuda.device_count() < config.run.world_size:
             raise RuntimeError(
@@ -24,6 +25,16 @@ def preflight(config) -> None:
         from trainguard.data import read_token_rows
 
         read_token_rows(config)
+    if config.external_workload is not None:
+        from trainguard.external_workload import load_verified_workload, read_verified_source
+
+        source = read_verified_source(config, path=workload_source)
+        load_verified_workload(
+            config, source,
+            workload_source if workload_source is not None else Path(config.external_workload.path),
+        )
+        return source
+    return None
 
 
 def bind_device(config):

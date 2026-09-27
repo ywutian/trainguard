@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from trainguard.config import ProjectConfig, load_config
+from trainguard.external_workload import frozen_workload_path, read_verified_source
 from trainguard.records import parse_event, summary_errors
 
 
@@ -90,13 +91,18 @@ def _effective_samples(
                         * config.training.gradient_accumulation_steps
                     )
                     or (
-                        config.data.kind == "synthetic"
+                        config.external_workload is None
+                        and config.data.kind == "synthetic"
                         and len(ids)
                         != config.training.batch_size_per_rank
                         * config.training.gradient_accumulation_steps
                     )
                     or any(type(sample) is not int or sample < 0 for sample in ids)
-                    or (config.data.kind == "synthetic" and len(set(ids)) != len(ids))
+                    or (
+                        config.external_workload is None
+                        and config.data.kind == "synthetic"
+                        and len(set(ids)) != len(ids)
+                    )
                 ):
                     errors.append(f"{location}: invalid sample IDs")
                     continue
@@ -239,6 +245,15 @@ def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
             "recovered_run_id": None,
         }
     differences = []
+    for name, directory, config in (
+        ("reference", reference_dir, reference_config),
+        ("recovered", recovered_dir, recovered_config),
+    ):
+        if config.external_workload is not None:
+            try:
+                read_verified_source(config, path=frozen_workload_path(directory))
+            except ValueError as exc:
+                differences.append(f"{name} external workload evidence differs: {exc}")
     if reference_status["status"] != "SUCCEEDED":
         differences.append("reference run did not succeed")
     if recovered_status["status"] != "SUCCEEDED":

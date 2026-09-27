@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import math
 import pickle
 import random
 from pathlib import Path
@@ -160,6 +161,70 @@ def test_checkpoint_rejects_different_source_identity(tmp_path):
     (path / 'COMMITTED').write_text(hashlib.sha256(manifest_path.read_bytes()).hexdigest() + '\n')
     with pytest.raises(CheckpointInvalid, match='source_sha256'):
         validate_checkpoint(path, config, 'run-one')
+
+
+def test_resealed_checkpoint_rejects_rank_scheduler_drift(tmp_path: Path) -> None:
+    path, config = _candidate(tmp_path, 1)
+    for rank in range(config.run.world_size):
+        sidecar = path / f"rank-{rank}.json"
+        state = json.loads(sidecar.read_text())
+        state["scheduler"] = {
+            "T_max": config.training.total_steps,
+            "last_epoch": 1,
+            "_step_count": 2,
+            "base_lrs": [0.001],
+            "eta_min": 0.0,
+            "_last_lr": [0.001 * (1 + math.cos(math.pi / config.training.total_steps)) / 2],
+        }
+        write_json_atomic(sidecar, state)
+    selected = commit_checkpoint(path, config, "run-one", "attempt-001", 1)
+    assert validate_checkpoint(path, config, "run-one").manifest_sha256 == selected.manifest_sha256
+
+    sidecar = path / "rank-0.json"
+    changed = json.loads(sidecar.read_text())
+    changed["scheduler"]["T_max"] = 400
+    write_json_atomic(sidecar, changed)
+    manifest_path = path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    entry = next(row for row in manifest["files"] if row["path"] == "rank-0.json")
+    entry["size"] = sidecar.stat().st_size
+    entry["sha256"] = hashlib.sha256(sidecar.read_bytes()).hexdigest()
+    write_json_atomic(manifest_path, manifest)
+    (path / "COMMITTED").write_text(hashlib.sha256(manifest_path.read_bytes()).hexdigest() + "\n")
+    with pytest.raises(CheckpointInvalid, match="selected manifest"):
+        validate_checkpoint(
+            path, config, "run-one", expected_manifest_sha256=selected.manifest_sha256
+        )
+    with pytest.raises(CheckpointInvalid, match="scheduler progress"):
+        validate_checkpoint(path, config, "run-one")
+
+
+def test_trainable_checkpoint_requires_scheduler_state(tmp_path: Path) -> None:
+    path, config = _candidate(tmp_path, 1)
+    commit_checkpoint(path, config, "run-one", "attempt-001", 1)
+    with pytest.raises(CheckpointInvalid, match="trainable scheduler"):
+        validate_checkpoint(path, config, "run-one", require_trainable_state=True)
+
+
+def test_checkpoint_rejects_different_rank_scheduler_states(tmp_path: Path) -> None:
+    path, config = _candidate(tmp_path, 1)
+    scheduler = {
+        "T_max": config.training.total_steps,
+        "last_epoch": 1,
+        "_step_count": 2,
+        "base_lrs": [0.001],
+        "eta_min": 0.0,
+        "_last_lr": [0.001 * (1 + math.cos(math.pi / config.training.total_steps)) / 2],
+    }
+    for rank in range(config.run.world_size):
+        sidecar = path / f"rank-{rank}.json"
+        state = json.loads(sidecar.read_text())
+        state["scheduler"] = dict(scheduler)
+        if rank == 1:
+            state["scheduler"]["_get_lr_called_within_step"] = True
+        write_json_atomic(sidecar, state)
+    with pytest.raises(CheckpointInvalid, match="rank scheduler states differ"):
+        commit_checkpoint(path, config, "run-one", "attempt-001", 1)
 
 
 def test_checkpoint_selection_and_new_candidate_refuse_linked_root(tmp_path):

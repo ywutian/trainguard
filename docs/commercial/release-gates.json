@@ -1,63 +1,63 @@
 {
-  "schema_version": 1,
-  "candidate_source_sha256": "933c2b2a02d52dbcb09a7c0fcfc8033c4a6362f94d6aecda443104ac2b0d8215",
+  "candidate_source_sha256": "9c8e83cfc4127bc569e499612b22bf3ba9a467cb2580cb68f7feb9f97d461e29",
   "gates": [
     {
+      "evidence": "docs/commercial/evidence/local_package-0.3.3.json",
       "id": "local_package",
-      "status": "PASS",
-      "evidence": "docs/commercial/evidence/local_package-0.3.2.json",
-      "sha256": "41e9ecdaafd7269d16fdbc78d981e68a4b65990f3fb901947684dbf66910de17"
+      "sha256": "68aca6376e8a13c14bbb5c56b5e9391033dc6344f3b34f6c9f029f3d0fe633ef",
+      "status": "PASS"
     },
     {
+      "evidence": "docs/commercial/evidence/local_cpu-0.3.3.json",
       "id": "local_cpu",
-      "status": "PASS",
-      "evidence": "docs/commercial/evidence/local_cpu-0.3.2.json",
-      "sha256": "6e8694b31014001ef3e1c0c3106f43eb9998f4a733f3e2db3a97fb42541cb40e"
+      "sha256": "718b72d420e65b13b488daba07d2370606f426192d13db45d4d2a92001900f35",
+      "status": "PASS"
     },
     {
       "id": "customer_workload",
-      "status": "BLOCKED",
-      "reason": "尚无非内置客户作业适配及状态清单验收"
+      "reason": "已有包外 CPU 示例，尚无真实客户作业、状态清单及完整适配验收",
+      "status": "BLOCKED"
     },
     {
       "id": "persistent_checkpoint",
-      "status": "BLOCKED",
-      "reason": "尚无真实对象服务与强一致发布权威的生产接线和验收"
+      "reason": "尚无真实对象服务与强一致发布权威的生产接线和验收",
+      "status": "BLOCKED"
     },
     {
       "id": "cross_host_fencing",
-      "status": "BLOCKED",
-      "reason": "尚无两主机隔离、接管与旧身份拒写实测"
+      "reason": "尚无两主机隔离、接管与旧身份拒写实测",
+      "status": "BLOCKED"
     },
     {
       "id": "real_gpu_matrix",
-      "status": "BLOCKED",
-      "reason": "尚无客户目标 GPU、驱动和 NCCL 故障矩阵实测"
+      "reason": "尚无客户目标 GPU、驱动和 NCCL 故障矩阵实测",
+      "status": "BLOCKED"
     },
     {
       "id": "security_operations",
-      "status": "BLOCKED",
-      "reason": "客户身份权限、告警、支持值班和数据流尚未验收"
+      "reason": "客户身份权限、告警、支持值班和数据流尚未验收",
+      "status": "BLOCKED"
     },
     {
       "id": "commercial_contract",
-      "status": "BLOCKED",
-      "reason": "订单、责任、支持及适用法律条款尚未经客户与专业人员定稿"
+      "reason": "订单、责任、支持及适用法律条款尚未经客户与专业人员定稿",
+      "status": "BLOCKED"
     },
     {
       "id": "paid_pilot",
-      "status": "BLOCKED",
-      "reason": "尚无真实客户付费、技术验收、价值核算和双方签收"
+      "reason": "尚无真实客户付费、技术验收、价值核算和双方签收",
+      "status": "BLOCKED"
     },
     {
       "id": "supported_matrix",
-      "status": "BLOCKED",
-      "reason": "尚无公开支持矩阵在目标环境逐项复测与版本维护证据"
+      "reason": "尚无公开支持矩阵在目标环境逐项复测与版本维护证据",
+      "status": "BLOCKED"
     },
     {
       "id": "sustained_operations",
-      "status": "BLOCKED",
-      "reason": "尚无连续事故/SLO 观察与有人员承接的支持履约证据"
+      "reason": "尚无连续事故/SLO 观察与有人员承接的支持履约证据",
+      "status": "BLOCKED"
     }
-  ]
+  ],
+  "schema_version": 1
 }

@@ -93,6 +93,8 @@ def summary_errors(
                     not isinstance(value, str) or len(value) != 64 for value in values
                 ) or state_digest(values) != summary.get(field):
                     errors.append(f"final combined rank {field} differs")
+                if config.run.strategy == "ddp" and len(set(values)) > 1:
+                    errors.append(f"final DDP rank {field} differs")
             for item in rank_states:
                 if (
                     not isinstance(item, dict)

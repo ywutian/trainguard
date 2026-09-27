@@ -18,10 +18,16 @@ import torch.distributed as dist
 from torch import nn
 from torch.nn.parallel import DistributedDataParallel
 
+from trainguard.checkpoint import validate_checkpoint
 from trainguard.checkpoint_io import finish_save, load_training_state, save_ready, start_save
 from trainguard.config import load_config
 from trainguard.data import BatchStream
 from trainguard.events import append_event, sync_event_file, write_json_atomic
+from trainguard.external_workload import (
+    frozen_workload_path,
+    load_verified_workload,
+    read_verified_source,
+)
 from trainguard.model import TinyTransformer
 from trainguard.strategy import bind_device, state_digest, wrap_model
 from trainguard.training_state import TrainingState, complete_update
@@ -61,10 +67,17 @@ def train(
     attempt_id: str,
     resume_checkpoint: Path | None = None,
     expected_config_fingerprint: str | None = None,
+    expected_checkpoint_sha256: str | None = None,
 ) -> None:
     config = load_config(config_path)
     if expected_config_fingerprint is not None and config.fingerprint() != expected_config_fingerprint:
         raise ValueError("worker configuration differs from controller-approved configuration")
+    external = None
+    if config.external_workload is not None:
+        frozen = frozen_workload_path(run_dir)
+        external = load_verified_workload(
+            config, read_verified_source(config, path=frozen), frozen
+        )
     rank, world_size = int(os.environ["RANK"]), int(os.environ["WORLD_SIZE"])
     if world_size != config.run.world_size:
         raise ValueError("launched world size differs from configuration")
@@ -101,8 +114,28 @@ def train(
             sync_event_file(event_path)
         _inject_fault(kind, active, checkpoint_path)
 
+    def verify_resume_checkpoint(phase: str) -> None:
+        if resume_checkpoint is None:
+            return
+        local_error = None
+        try:
+            validate_checkpoint(
+                resume_checkpoint, config, run_id,
+                expected_manifest_sha256=expected_checkpoint_sha256,
+                require_trainable_state=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - synchronize rejection across every rank
+            local_error = f"{type(exc).__name__}: {exc}"
+        failed = torch.tensor([int(local_error is not None)], dtype=torch.int64)
+        dist.all_reduce(failed, op=dist.ReduceOp.SUM, group=control_group)
+        if failed.item():
+            detail = local_error or "another rank rejected the selected checkpoint"
+            raise RuntimeError(f"checkpoint changed {phase}: {detail}")
+
     try:
-        model = TinyTransformer(config.model)
+        model = external.build_model(config) if external is not None else TinyTransformer(config.model)
+        if not isinstance(model, nn.Module):
+            raise TypeError("workload build_model must return a torch module")
         wrapped = wrap_model(model, config, device)
         optimizer = torch.optim.AdamW(wrapped.parameters(), lr=1e-3)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -112,6 +145,7 @@ def train(
         state = TrainingState(scaler=scaler)
         event("group_initialized", global_step=0, device=str(device), strategy=config.run.strategy)
         if resume_checkpoint is not None:
+            verify_resume_checkpoint("before load")
             loaded = time.monotonic()
             _, data_start = load_training_state(
                 resume_checkpoint,
@@ -123,6 +157,7 @@ def train(
                 config.recovery.omit_state,
                 state,
             )
+            verify_resume_checkpoint("during load")
             event(
                 "state_loaded",
                 global_step=state.optimizer_updates,
@@ -130,9 +165,15 @@ def train(
                 load_seconds=time.monotonic() - loaded,
             )
         resumed_at = state.optimizer_updates
-        stream = BatchStream(
-            config, rank, data_start if resume_checkpoint else state.consumed_batches
+        cursor = data_start if resume_checkpoint else state.consumed_batches
+        stream = (
+            external.build_stream(config, rank, cursor)
+            if external is not None else BatchStream(config, rank, cursor)
         )
+        if not callable(getattr(stream, "next", None)) or not callable(
+            getattr(stream, "close", None)
+        ):
+            raise TypeError("workload build_stream must return a stream with next and close")
         parameter_count = sum(parameter.numel() for parameter in model.parameters())
         if device.type == "cuda":
             torch.cuda.synchronize(device)
@@ -154,6 +195,14 @@ def train(
             ids = []
             for micro in range(accumulation):
                 batch_ids, tokens = stream.next()
+                if external is not None and (
+                    not isinstance(batch_ids, list)
+                    or not 1 <= len(batch_ids) <= config.training.batch_size_per_rank
+                    or any(type(sample) is not int or sample < 0 for sample in batch_ids)
+                    or not isinstance(tokens, torch.Tensor)
+                    or tokens.shape[0] != len(batch_ids)
+                ):
+                    raise ValueError("external stream must return sample IDs and a Tensor batch")
                 ids.extend(batch_ids)
                 tokens = tokens.to(device)
                 context = (
@@ -165,10 +214,16 @@ def train(
                     with torch.autocast(
                         device_type=device.type, dtype=precision, enabled=precision is not None
                     ):
-                        logits = wrapped(tokens[:, :-1])
-                        loss = nn.functional.cross_entropy(
-                            logits.reshape(-1, config.model.vocab_size), tokens[:, 1:].reshape(-1)
-                        )
+                        if external is None:
+                            logits = wrapped(tokens[:, :-1])
+                            loss = nn.functional.cross_entropy(
+                                logits.reshape(-1, config.model.vocab_size),
+                                tokens[:, 1:].reshape(-1),
+                            )
+                        else:
+                            loss = external.loss(wrapped(tokens), tokens, config)
+                            if not isinstance(loss, torch.Tensor) or loss.ndim != 0:
+                                raise TypeError("external workload loss must return a scalar Tensor")
                     scaled_loss = loss / accumulation
                     (scaler.scale(scaled_loss) if scaler is not None else scaled_loss).backward()
                 state.consumed_batches += 1
@@ -394,11 +449,13 @@ def main() -> None:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--attempt-id", required=True)
     parser.add_argument("--resume-checkpoint", type=Path)
+    parser.add_argument("--expected-checkpoint-sha256")
     parser.add_argument("--local-rank", "--local_rank", type=int)
     args = parser.parse_args()
     train(
         args.config, args.run_dir, args.run_id, args.attempt_id,
         args.resume_checkpoint, args.expected_config_fingerprint,
+        args.expected_checkpoint_sha256,
     )
 
 

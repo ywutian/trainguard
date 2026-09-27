@@ -104,6 +104,35 @@ def test_corrupted_newest_checkpoint_uses_previous_step(tmp_path: Path) -> None:
     assert step == 1
 
 
+def test_selected_checkpoint_mutation_before_worker_load_fails_closed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    original_scan = controller._scan_checkpoints
+    modified = False
+
+    def mutate_after_selection(run_dir, config, run_id, store, audit=False):
+        nonlocal modified
+        selected = original_scan(run_dir, config, run_id, store, audit)
+        if selected is not None and not modified:
+            sidecar = selected.path / "rank-0.json"
+            state = json.loads(sidecar.read_text())
+            state["scheduler"]["T_max"] += 1
+            sidecar.write_text(json.dumps(state))
+            modified = True
+        return selected
+
+    monkeypatch.setattr(controller, "_scan_checkpoints", mutate_after_selection)
+    run_dir, succeeded = run(
+        _config(tmp_path, checkpoint="sync", fault="worker_exit", step=2),
+        tmp_path / "runs",
+    )
+    assert modified
+    assert not succeeded
+    assert not (run_dir / "summary.json").exists()
+    assert "checkpoint changed before load" in (run_dir / "launcher.log").read_text()
+    assert json.loads((run_dir / "run.json").read_text())["status"] == "FAILED"
+
+
 def test_no_valid_checkpoint_fails_without_restart(tmp_path: Path) -> None:
     config = _config(tmp_path, checkpoint="sync", fault="worker_exit", step=1)
     raw = json.loads(config.read_text())

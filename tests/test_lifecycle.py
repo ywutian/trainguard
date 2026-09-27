@@ -1,5 +1,6 @@
 import io
 import json
+import math
 import pickle
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,7 +37,13 @@ def candidate(root, config, step):
     for rank in range(config.run.world_size):
         events.write_json_atomic(
             path / f"rank-{rank}.json",
-            capture_rank_state(config, "run", "attempt-001", rank, step, {}),
+            capture_rank_state(
+                config, "run", "attempt-001", rank, step,
+                {"T_max": config.training.total_steps, "last_epoch": step,
+                 "_step_count": step + 1, "base_lrs": [0.001], "eta_min": 0.0,
+                 "_last_lr": [0.001 * (1 + math.cos(
+                     math.pi * step / config.training.total_steps)) / 2]},
+            ),
         )
     commit_checkpoint(path, config, "run", "attempt-001", step)
     return path

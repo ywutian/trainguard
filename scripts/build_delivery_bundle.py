@@ -7,17 +7,79 @@ import hashlib
 import json
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import tomllib
 from pathlib import Path
 
 from check_release_readiness import LOCAL_RAW_FILES, evaluate
+from verify_delivery_bundle import SOURCE_MEMBERS, verify_bundle
 
 from trainguard.events import write_json_atomic
 
 
 def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _stage_path(stage: Path, relative: str) -> Path:
+    path = Path(relative)
+    if not relative or path.is_absolute() or ".." in path.parts:
+        raise ValueError("delivery evidence path must stay inside the bundle")
+    return stage / path
+
+
+def _check_digest(path: Path, expected: str) -> None:
+    if path.is_symlink() or not path.is_file() or _digest(path) != expected:
+        raise ValueError(f"staged delivery file differs from reviewed evidence: {path.name}")
+
+
+def _check_stage(stage: Path, fresh: dict, gate_manifest_name: str,
+                 version: str, sdist_name: str) -> None:
+    for name, expected in fresh["artifacts"].items():
+        _check_digest(_stage_path(stage, name), expected)
+
+    manifest = json.loads((stage / gate_manifest_name).read_text(encoding="utf-8"))
+    staged_gates = []
+    for gate in manifest["gates"]:
+        checked = {"id": gate["id"], "status": gate["status"]}
+        if gate["status"] == "PASS":
+            checked.update(evidence=gate["evidence"], sha256=gate["sha256"])
+        else:
+            checked["reason"] = gate["reason"]
+        staged_gates.append(checked)
+    if (
+        manifest.get("schema_version") != 1
+        or manifest.get("candidate_source_sha256") != fresh["candidate_source_sha256"]
+        or staged_gates != fresh["gates"]
+    ):
+        raise ValueError("staged release gates differ from reviewed gate evidence")
+
+    for gate in fresh["gates"]:
+        if gate["status"] != "PASS":
+            continue
+        receipt_path = _stage_path(stage, gate["evidence"])
+        _check_digest(receipt_path, gate["sha256"])
+        if gate["id"] in {"local_package", "local_cpu"}:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            record_path = _stage_path(stage, receipt["record_reference"])
+            _check_digest(record_path, receipt["record_sha256"])
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            if set(record["raw_files"]) != LOCAL_RAW_FILES:
+                raise ValueError("staged local evidence file set differs")
+            for name, expected in record["raw_files"].items():
+                _check_digest(_stage_path(stage, record["raw_evidence_dir"]) / name, expected)
+
+    with tarfile.open(stage / sdist_name, "r:gz") as archive:
+        for staged_name, source_name in SOURCE_MEMBERS.items():
+            member = archive.getmember(f"trainguard-{version}/{source_name}")
+            if not member.isfile():
+                raise ValueError(f"source distribution member is not a file: {source_name}")
+            content = archive.extractfile(member)
+            if content is None or _digest(stage / staged_name) != hashlib.sha256(
+                content.read()
+            ).hexdigest():
+                raise ValueError(f"staged delivery source differs from source distribution: {staged_name}")
 
 
 def main() -> None:
@@ -50,35 +112,37 @@ def main() -> None:
             root / "docs/commercial/customer-pilot-template.md",
             root / "docs/commercial/pilot-ledger-template.json",
             root / "docs/commercial/market-evidence-2026-09-26.md",
-            args.gate_manifest,
         ]
         if len({path.name for path in files}) != len(files) or any(
-            path.name in {"readiness-report.json", "delivery-manifest.json", "requirements.txt"}
+            path.name in {"release-gates.json", "readiness-report.json",
+                          "delivery-manifest.json", "requirements.txt"}
             for path in files
         ):
             raise ValueError("delivery inputs contain conflicting file names")
         for path in files:
             shutil.copy2(path, stage / path.name)
+        shutil.copy2(args.gate_manifest, stage / "release-gates.json")
         write_json_atomic(stage / "readiness-report.json", fresh)
         scripts = stage / "scripts"
         scripts.mkdir()
         shutil.copy2(root / "scripts/calculate_pilot_value.py", scripts / "calculate_pilot_value.py")
+        shutil.copy2(root / "scripts/verify_delivery_bundle.py", scripts / "verify_delivery_bundle.py")
         evidence_map = {}
         for gate in fresh["gates"]:
             if gate["status"] == "PASS":
                 source = root / gate["evidence"]
-                target = stage / gate["evidence"]
+                target = _stage_path(stage, gate["evidence"])
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, target)
                 evidence_map[gate["id"]] = target.relative_to(stage).as_posix()
                 if gate["id"] in {"local_package", "local_cpu"}:
                     receipt = json.loads(source.read_text(encoding="utf-8"))
                     record = root / receipt["record_reference"]
-                    record_target = stage / receipt["record_reference"]
+                    record_target = _stage_path(stage, receipt["record_reference"])
                     record_target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(record, record_target)
                     raw_dir = json.loads(record.read_text(encoding="utf-8"))["raw_evidence_dir"]
-                    raw_target = stage / raw_dir
+                    raw_target = _stage_path(stage, raw_dir)
                     raw_target.mkdir(parents=True, exist_ok=True)
                     for name in LOCAL_RAW_FILES:
                         shutil.copy2(root / raw_dir / name, raw_target / name)
@@ -86,13 +150,14 @@ def main() -> None:
         exported = subprocess.run(
             ["uv", "export", "--locked", "--no-dev", "--no-emit-project", "--format",
              "requirements.txt"],
-            cwd=root,
+            cwd=stage,
             check=True,
             capture_output=True,
             text=True,
         )
         requirements.write_text(exported.stdout, encoding="utf-8")
-        version = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
+        version = tomllib.loads((stage / "pyproject.toml").read_text())["project"]["version"]
+        _check_stage(stage, fresh, "release-gates.json", version, args.sdist.name)
         manifest = {
             "schema_version": 1,
             "version": version,
@@ -105,9 +170,12 @@ def main() -> None:
                       for path in sorted(stage.rglob("*")) if path.is_file()},
         }
         write_json_atomic(stage / "delivery-manifest.json", manifest)
+        verify_bundle(stage)
         stage.rename(output)
     print(json.dumps({"status": manifest["status"], "version": version,
-                      "files": len(manifest["files"])}, sort_keys=True))
+                      "files": len(manifest["files"]),
+                      "manifest_sha256": _digest(output / "delivery-manifest.json")},
+                     sort_keys=True))
 
 
 if __name__ == "__main__":

@@ -52,6 +52,69 @@ def _archive_source_sha256(items: dict[str, bytes]) -> str:
     return digest.hexdigest()
 
 
+GPU_TESTS = {
+    "test_actual_cuda_recovery_campaign[ddp-fp32]",
+    "test_actual_cuda_recovery_campaign[ddp-bf16]",
+    "test_actual_cuda_recovery_campaign[ddp-fp16]",
+    "test_actual_cuda_recovery_campaign[fsdp2-fp32]",
+}
+DEVICE_PREFLIGHT_SKIP = (
+    "tests.test_device_upgrade",
+    "test_cuda_configuration_is_accepted_but_missing_devices_fail_before_launch",
+)
+
+
+def _validate_pytest_result(raw_dir: Path, details: dict) -> None:
+    root = ElementTree.parse(raw_dir / "pytest.xml").getroot()
+    suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite"))
+    if not suites:
+        raise ValueError("local raw test suite is missing")
+    cases = [case for suite in suites for case in suite.findall("testcase")]
+    identities = [(case.get("classname"), case.get("name")) for case in cases]
+    declared = sum(int(suite.get("tests", -1)) for suite in suites)
+    declared_failures = sum(int(suite.get("failures", -1)) for suite in suites)
+    declared_errors = sum(int(suite.get("errors", -1)) for suite in suites)
+    declared_skips = sum(int(suite.get("skipped", -1)) for suite in suites)
+    failures = sum(case.find("failure") is not None for case in cases)
+    errors = sum(case.find("error") is not None for case in cases)
+    skipped = [case for case in cases if case.find("skipped") is not None]
+    gpu_skipped = [case for case in skipped if case.get("classname") == "tests.test_gpu_acceptance"]
+    device_skipped = [case for case in skipped if (
+        case.get("classname"), case.get("name")
+    ) == DEVICE_PREFLIGHT_SKIP]
+    recorded_tests = details.get("tests")
+    expected_tests = {
+        "passed": len(cases) - len(skipped), "skipped_no_gpu": len(gpu_skipped)
+    }
+    if isinstance(recorded_tests, dict) and "skipped_device_preflight" in recorded_tests:
+        expected_tests["skipped_device_preflight"] = len(device_skipped)
+    if (
+        declared != len(cases)
+        or any(not all(isinstance(part, str) and part for part in identity)
+               for identity in identities)
+        or len(set(identities)) != len(identities)
+        or declared_failures != failures
+        or declared_errors != errors
+        or declared_skips != len(skipped)
+        or failures
+        or errors
+        or not isinstance(recorded_tests, dict)
+        or len(skipped) != len(gpu_skipped) + len(device_skipped)
+        or len(gpu_skipped) > len(GPU_TESTS)
+        or bool(gpu_skipped and device_skipped)
+        or {case.get("name") for case in gpu_skipped} - GPU_TESTS
+        or any(case.find("skipped").get("message") != "requires two actual CUDA devices"
+               for case in gpu_skipped)
+        or any(case.find("skipped").get("message") !=
+               "this test verifies the unavailable-device preflight"
+               for case in device_skipped)
+        or (device_skipped and "skipped_device_preflight" not in recorded_tests)
+        or len(cases) - len(skipped) < 156
+        or recorded_tests != expected_tests
+    ):
+        raise ValueError("local raw test suite is incomplete, failing, or over-skipped")
+
+
 def _verify_artifacts(root: Path, wheel: Path, sdist: Path, source_digest: str) -> None:
     version = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
     if (
@@ -176,13 +239,7 @@ def _local_evidence(root: Path, details: dict, source_digest: str,
         )
     ):
         raise ValueError("local raw result does not prove all required gates")
-    suite = ElementTree.parse(raw_dir / "pytest.xml").getroot()
-    suites = [suite] if suite.tag == "testsuite" else list(suite.findall("testsuite"))
-    tests = sum(int(item.get("tests", 0)) for item in suites)
-    failures = sum(int(item.get("failures", 0)) for item in suites)
-    errors = sum(int(item.get("errors", 0)) for item in suites)
-    if tests < 100 or failures or errors:
-        raise ValueError("local raw test suite is incomplete or failing")
+    _validate_pytest_result(raw_dir, details)
     acceptance = json.loads((raw_dir / "acceptance.json").read_text(encoding="utf-8"))
     expected_cases = {
         "sync-worker_exit", "async-worker_exit", "sync-save_interrupt",

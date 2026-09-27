@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import os
 import random
 import re
@@ -33,6 +34,7 @@ class CheckpointRecord:
     global_step: int
     attempt_id: str
     manifest: dict[str, Any]
+    manifest_sha256: str
 
 
 def candidate_path(run_dir: Path, attempt_id: str, step: int) -> Path:
@@ -158,9 +160,11 @@ def _files(path: Path) -> list[Path]:
 
 
 def _check_rank_states(
-    path: Path, config: ProjectConfig, run_id: str, attempt_id: str, step: int
+    path: Path, config: ProjectConfig, run_id: str, attempt_id: str, step: int,
+    *, require_trainable_state: bool = False,
 ) -> None:
     consumed = []
+    schedulers = []
     for rank in range(config.run.world_size):
         rank_path = path / f"rank-{rank}.json"
         if not rank_path.is_file():
@@ -189,8 +193,45 @@ def _check_rank_states(
         for key, value in expected.items():
             if state.get(key) != value or (type(value) is int and type(state.get(key)) is not int):
                 raise CheckpointInvalid(f"rank {rank} {key} differs at checkpoint step {step}")
-        if not isinstance(state.get("scheduler"), dict) or not isinstance(state.get("rng"), dict):
+        scheduler = state.get("scheduler")
+        if not isinstance(scheduler, dict) or not isinstance(state.get("rng"), dict):
             raise CheckpointInvalid(f"rank {rank} scheduler or RNG state is missing")
+        if scheduler:
+            base_lrs = scheduler.get("base_lrs")
+            last_lrs = scheduler.get("_last_lr")
+            eta_min = scheduler.get("eta_min")
+            if (
+                type(scheduler.get("T_max")) is not int
+                or scheduler["T_max"] != config.training.total_steps
+                or type(scheduler.get("last_epoch")) is not int
+                or scheduler["last_epoch"] != step
+                or type(scheduler.get("_step_count")) is not int
+                or scheduler["_step_count"] != step + 1
+                or not isinstance(base_lrs, list)
+                or len(base_lrs) != 1
+                or type(base_lrs[0]) not in (int, float)
+                or not math.isfinite(base_lrs[0])
+                or base_lrs[0] != 0.001
+                or type(eta_min) not in (int, float)
+                or eta_min != 0.0
+                or not isinstance(last_lrs, list)
+                or len(last_lrs) != 1
+                or type(last_lrs[0]) not in (int, float)
+                or not math.isfinite(last_lrs[0])
+                or (
+                    config.recovery.omit_state != "optimizer"
+                    and not math.isclose(
+                        last_lrs[0],
+                        eta_min + (base_lrs[0] - eta_min)
+                        * (1 + math.cos(math.pi * step / config.training.total_steps)) / 2,
+                        rel_tol=1e-10, abs_tol=1e-12,
+                    )
+                )
+            ):
+                raise CheckpointInvalid(f"rank {rank} scheduler progress differs at checkpoint")
+        elif require_trainable_state:
+            raise CheckpointInvalid(f"rank {rank} trainable scheduler state is missing")
+        schedulers.append(scheduler)
         cursor = state.get("consumed_batches")
         if (
             type(cursor) is not int
@@ -209,6 +250,8 @@ def _check_rank_states(
             raise CheckpointInvalid(f"rank {rank} RNG state is incomplete")
     if len(set(consumed)) != 1:
         raise CheckpointInvalid("rank consumed batch boundaries differ at checkpoint")
+    if any(scheduler != schedulers[0] for scheduler in schedulers[1:]):
+        raise CheckpointInvalid("rank scheduler states differ at checkpoint")
 
 
 def _check_dcp_files(path: Path, config: ProjectConfig, *, decode_payload: bool = False) -> None:
@@ -335,11 +378,13 @@ def commit_checkpoint(
         raise CheckpointInvalid("checkpoint payload changed during publication")
     # The payload was already hashed and identity-checked before publication.
     # Recovery independently rereads every payload before loading it.
-    return CheckpointRecord(path, step, attempt_id, manifest)
+    return CheckpointRecord(path, step, attempt_id, manifest, marker.strip())
 
 
 def validate_checkpoint(
-    path: Path, config: ProjectConfig, run_id: str, *, decode_payload: bool = False
+    path: Path, config: ProjectConfig, run_id: str, *, decode_payload: bool = False,
+    expected_manifest_sha256: str | None = None,
+    require_trainable_state: bool = False,
 ) -> CheckpointRecord:
     if (
         path.parent.is_symlink()
@@ -353,11 +398,15 @@ def validate_checkpoint(
     manifest_path = path / "manifest.json"
     if not manifest_path.is_file():
         raise CheckpointInvalid("checkpoint manifest is missing")
-    if (path / "COMMITTED").read_bytes() != (_sha256(manifest_path) + "\n").encode("ascii"):
+    manifest_bytes = manifest_path.read_bytes()
+    manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+    if (path / "COMMITTED").read_bytes() != (manifest_sha256 + "\n").encode("ascii"):
         raise CheckpointInvalid("manifest hash differs from commit marker")
+    if expected_manifest_sha256 is not None and manifest_sha256 != expected_manifest_sha256:
+        raise CheckpointInvalid("checkpoint differs from the selected manifest")
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except ValueError as exc:
+        manifest = json.loads(manifest_bytes)
+    except (ValueError, UnicodeError) as exc:
         raise CheckpointInvalid("checkpoint manifest is unreadable") from exc
     if not isinstance(manifest, dict):
         raise CheckpointInvalid("checkpoint manifest is not a mapping")
@@ -405,9 +454,12 @@ def validate_checkpoint(
             raise CheckpointInvalid(f"checkpoint file {relative} size or hash differs")
     if names != actual:
         raise CheckpointInvalid("checkpoint file list differs from directory")
-    _check_rank_states(path, config, run_id, attempt_id, step)
+    _check_rank_states(
+        path, config, run_id, attempt_id, step,
+        require_trainable_state=require_trainable_state,
+    )
     _check_dcp_files(path, config, decode_payload=decode_payload)
-    return CheckpointRecord(path, step, attempt_id, manifest)
+    return CheckpointRecord(path, step, attempt_id, manifest, manifest_sha256)
 
 
 def latest_valid_checkpoint(
