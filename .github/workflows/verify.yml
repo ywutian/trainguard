@@ -40,6 +40,13 @@ jobs:
             verification/simulation-*/cpu-acceptance.txt
             verification/simulation-*/package.txt
             verification/simulation-*/wheel.txt
+            verification/simulation-*/supply-chain.txt
+            verification/simulation-*/supply-chain-sbom.json
+            verification/simulation-*/supply-chain-licenses.json
+            verification/simulation-*/supply-chain-audit.json
+            verification/simulation-*/supply-chain-installed.json
+            verification/simulation-*/supply-chain-requirements.txt
+            verification/simulation-*/supply-chain-receipt.json
             verification/simulation-*/fresh-install.txt
             verification/simulation-*/upgrade-boundary.txt
           if-no-files-found: error

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "repository": "ywutian/trainguard",
+  "setting_endpoint": "GET /repos/ywutian/trainguard/private-vulnerability-reporting",
+  "before": {
+    "checked_at_utc": "2026-09-27T11:35:27Z",
+    "enabled": false
+  },
+  "enable_operation": {
+    "endpoint": "PUT /repos/ywutian/trainguard/private-vulnerability-reporting",
+    "exit_code": 0
+  },
+  "after": {
+    "checked_at_utc": "2026-09-27T11:35:37Z",
+    "enabled": true
+  },
+  "public_reporting_page": {
+    "checked_at_utc": "2026-09-27T11:35:59Z",
+    "url": "https://github.com/ywutian/trainguard/security/advisories",
+    "report_a_vulnerability_button_observed": true,
+    "form_url": "https://github.com/ywutian/trainguard/security/advisories/new"
+  }
+}

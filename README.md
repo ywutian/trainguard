@@ -13,6 +13,8 @@ Version 0.3.6 is a candidate with a bounded v2 external workload contract for lo
 For the proposed customer deployment, integration, operations, security and commercial acceptance scope, see the [product closure and release gates](docs/plans/product-closure-2026-09-26.md). The current release is an experiment package and has not passed those production gates.
 
 The [customer pilot template](docs/commercial/customer-pilot-template.md), [operations runbook](docs/commercial/operations-runbook.md), and [machine-readable release gates](docs/commercial/release-gates.json) record the commercial scope and evidence required before customer production use. The existing code is MIT licensed; pilot fees cover agreed integration, validation and support services.
+[Security reporting](SECURITY.md) uses the repository private vulnerability form. Candidate supply-chain evidence includes a CycloneDX SBOM, declared third-party license inventory, and point-in-time known-vulnerability scan. These are candidate evaluation records and do not establish production approval.
+
 The [market evidence](docs/commercial/market-evidence-2026-09-26.md) separates current competitor facts from unvalidated positioning and pricing hypotheses. The source distribution includes the commercial handoff documents but omits historical raw experiment evidence; the repository retains the full record.
 
 ## Quick start

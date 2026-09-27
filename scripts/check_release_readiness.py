@@ -6,6 +6,7 @@ import argparse
 import base64
 import csv
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -32,12 +33,43 @@ HOSTED_REPOSITORY = "ywutian/trainguard"
 LOCAL_RAW_FILES = {
     "result.json", "pytest.xml", "acceptance.json", "static.txt", "tests.txt",
     "cpu-acceptance.txt", "package.txt", "wheel.txt", "fresh-install.txt",
-    "upgrade-boundary.txt",
+    "upgrade-boundary.txt", "supply-chain.txt", "supply-chain-sbom.json",
+    "supply-chain-licenses.json", "supply-chain-audit.json",
+    "supply-chain-installed.json", "supply-chain-requirements.txt",
+    "supply-chain-receipt.json",
 }
+
+
+def _supply_module():
+    script = Path(__file__).resolve().parent / "supply_chain.py"
+    spec = importlib.util.spec_from_file_location("release_supply_chain", script)
+    if spec is None or spec.loader is None:
+        raise ValueError("supply-chain verifier is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _verify_supply_chain(raw_dir: Path, expected: dict[str, str]) -> None:
+    _supply_module().verify_supply_chain(raw_dir, expected)
 
 
 def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _private_reporting_enabled(root: Path) -> bool:
+    checked = subprocess.run(
+        ["gh", "api", f"repos/{HOSTED_REPOSITORY}/private-vulnerability-reporting"],
+        cwd=root, capture_output=True, text=True, check=False, timeout=30,
+    )
+    if checked.returncode:
+        raise ValueError("private vulnerability reporting setting could not be verified")
+    try:
+        enabled = json.loads(checked.stdout)["enabled"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("private vulnerability reporting setting is invalid") from exc
+    return enabled is True
 
 
 def package_source_sha256(root: Path) -> str:
@@ -260,6 +292,7 @@ def _verify_artifacts(root: Path, wheel: Path, sdist: Path, source_digest: str) 
     from verify_sdist import verify_sdist
 
     verify_sdist(root, sdist, version)
+    _supply_module().verify_candidate_license(wheel, root / "LICENSE")
     with zipfile.ZipFile(wheel) as archive:
         files = archive.namelist()
         if len(files) != len(set(files)):
@@ -367,7 +400,7 @@ def _local_evidence(root: Path, details: dict, source_digest: str,
     version = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
     expected_gates = {
         "static", "tests", "cpu-acceptance", "package", "wheel", "fresh-install",
-        "upgrade-boundary",
+        "upgrade-boundary", "supply-chain",
     }
     gates = result.get("gates")
     if (
@@ -426,11 +459,27 @@ def _local_evidence(root: Path, details: dict, source_digest: str,
     ):
         raise ValueError("local raw CPU acceptance matrix is incomplete")
     wheel_name = next(name for name in artifacts if name.endswith(".whl"))
+    _verify_supply_chain(raw_dir, {
+        "candidate_version": version,
+        "source_sha256": source_digest,
+        "execution_inputs_sha256": input_digest,
+        "wheel_sha256": artifacts[wheel_name],
+        "lock_sha256": artifacts["uv.lock"],
+        "tool_lock_sha256": _digest(root / "scripts/supply-chain-tools.txt"),
+        "security_policy_sha256": _digest(root / "SECURITY.md"),
+        "first_party_license_sha256": _digest(root / "LICENSE"),
+        "security_channel_record_sha256": _digest(
+            root / "docs/commercial/security-channel-2026-09-27.json"
+        ),
+    })
+    supply_result = json.loads((raw_dir / "supply-chain.txt").read_text(encoding="utf-8").splitlines()[-1])
     wheel_result = json.loads((raw_dir / "wheel.txt").read_text(encoding="utf-8").splitlines()[-1])
     install = json.loads((raw_dir / "fresh-install.txt").read_text(encoding="utf-8").splitlines()[-1])
     upgrade = json.loads((raw_dir / "upgrade-boundary.txt").read_text(encoding="utf-8").splitlines()[-1])
     if (
-        wheel_result.get("passed") is not True
+        supply_result.get("status") != "PASS"
+        or supply_result.get("wheel_sha256") != artifacts[wheel_name]
+        or wheel_result.get("passed") is not True
         or wheel_result.get("version") != version
         or wheel_result.get("source_sha256") != source_digest
         or install.get("version") != version
@@ -498,7 +547,7 @@ def _receipt(path: Path, gate_id: str, source_digest: str, artifacts: dict[str, 
             raise ValueError(f"{gate_id}: local execution identity differs")
         checks = receipt.get("checks")
         required = (
-            {"wheel_identity", "fresh_install", "upgrade_recovery"}
+            {"wheel_identity", "fresh_install", "upgrade_recovery", "supply_chain"}
             if gate_id == "local_package" else {"full_suite", "cpu_fault_matrix"}
         )
         if not isinstance(checks, dict) or not all(checks.get(name) is True for name in required):
@@ -524,6 +573,7 @@ def _receipt(path: Path, gate_id: str, source_digest: str, artifacts: dict[str, 
             or details["checks"].get("wheel_identity") is not True
             or details["checks"].get("fresh_install") is not True
             or details["checks"].get("upgrade_recovery") is not True
+            or details["checks"].get("supply_chain") is not True
         ):
             raise ValueError(f"{gate_id}: local evidence record does not prove its checks")
         _local_evidence(root, details, source_digest, artifacts, previous_release)
@@ -692,7 +742,18 @@ def evaluate(manifest: Path, wheel: Path, sdist: Path, hosted_run_id: int | None
             hosted_reason = str(exc)
         else:
             hosted_reason = None
-    linux_customer_evaluation_allowed = local_experiment_allowed and hosted_evidence is not None
+    private_reporting_enabled = False
+    if local_experiment_allowed and hosted_evidence is not None:
+        try:
+            private_reporting_enabled = _private_reporting_enabled(root)
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            hosted_reason = str(exc)
+        else:
+            if not private_reporting_enabled:
+                hosted_reason = "private vulnerability reporting is disabled"
+    linux_customer_evaluation_allowed = (
+        local_experiment_allowed and hosted_evidence is not None and private_reporting_enabled
+    )
     final_commit = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True
     ).stdout.strip()
@@ -713,6 +774,7 @@ def evaluate(manifest: Path, wheel: Path, sdist: Path, hosted_run_id: int | None
         "evaluation_allowed": linux_customer_evaluation_allowed,
         "local_experiment_allowed": local_experiment_allowed,
         "linux_customer_evaluation_allowed": linux_customer_evaluation_allowed,
+        "private_vulnerability_reporting_enabled": private_reporting_enabled,
         "linux_customer_evaluation_reason": hosted_reason,
         "hosted_linux_workflow_run_id": hosted_run_id,
         "hosted_linux_evidence": hosted_evidence,

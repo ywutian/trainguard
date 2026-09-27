@@ -7,9 +7,11 @@ import importlib.util
 import io
 import json
 import tarfile
+import zipfile
 from pathlib import Path
 
 import pytest
+from test_supply_chain import supply_fixture
 
 
 def _module():
@@ -54,7 +56,6 @@ def _bundle(root: Path, module) -> Path:
     }
     wheel = f"trainguard-{version}-py3-none-any.whl"
     sdist = f"trainguard-{version}.tar.gz"
-    (root / wheel).write_bytes(b"wheel bytes")
     (root / "uv.lock").write_bytes(b"lock bytes")
     (root / "pyproject.toml").write_text(
         f'[project]\nname = "trainguard"\nversion = "{version}"\n', encoding="utf-8"
@@ -63,7 +64,17 @@ def _bundle(root: Path, module) -> Path:
         path = root / staged_name
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(f"reviewed {staged_name}".encode())
+            if staged_name == "scripts/supply_chain.py":
+                path.write_bytes((Path(__file__).parents[1] / staged_name).read_bytes())
+            else:
+                path.write_bytes(f"reviewed {staged_name}".encode())
+    with zipfile.ZipFile(root / wheel, "w") as archive:
+        prefix = f"trainguard-{version}.dist-info/"
+        archive.writestr(prefix + "METADATA", (
+            f"Name: trainguard\nVersion: {version}\nLicense-Expression: MIT\n"
+            "License-File: LICENSE\n"
+        ))
+        archive.write(root / "LICENSE", prefix + "licenses/LICENSE")
     with tarfile.open(root / sdist, "w:gz") as archive:
         for staged_name, source_name in module.SOURCE_MEMBERS.items():
             content = (root / staged_name).read_bytes()
@@ -74,12 +85,58 @@ def _bundle(root: Path, module) -> Path:
     raw_dir = "docs/commercial/evidence/local-0.3.2"
     raw_name = f"{raw_dir}/result.json"
     _write(root / raw_name, {"status": "SUCCEEDED"})
+    supply_expected = supply_fixture(root / raw_dir)
+    for name in ("supply-chain-installed.json", "supply-chain-sbom.json",
+                 "supply-chain-licenses.json", "supply-chain-audit.json"):
+        path = root / raw_dir / name
+        data = json.loads(path.read_text())
+        rows = data if isinstance(data, list) else data.get(
+            "components", data.get("dependencies", [])
+        )
+        for row in rows:
+            if row.get("name") == "trainguard":
+                row["version"] = version
+                if "bom-ref" in row:
+                    row["bom-ref"] = f"pkg:pypi/trainguard@{version}"
+        if name == "supply-chain-sbom.json":
+            data["dependencies"][0]["ref"] = f"pkg:pypi/trainguard@{version}"
+        _write(path, data)
+    supply_expected.update({
+        "candidate_version": version,
+        "source_sha256": source, "execution_inputs_sha256": inputs,
+        "wheel_sha256": artifacts[wheel], "lock_sha256": artifacts["uv.lock"],
+        "tool_lock_sha256": _sha(root / "scripts/supply-chain-tools.txt"),
+        "security_policy_sha256": _sha(root / "SECURITY.md"),
+        "security_channel_record_sha256": _sha(root / "security-channel-2026-09-27.json"),
+        "first_party_license_sha256": _sha(root / "LICENSE"),
+    })
+    supply_receipt = root / raw_dir / "supply-chain-receipt.json"
+    report = json.loads(supply_receipt.read_text())
+    report.update(supply_expected)
+    report["files"] = {
+        name: _sha(root / raw_dir / name) for name in report["files"]
+    }
+    _write(supply_receipt, report)
+    _write(root / raw_dir / "supply-chain.txt", {
+        "status": "PASS", "wheel_sha256": artifacts[wheel]
+    })
+    (root / "requirements.txt").write_bytes(
+        (root / raw_dir / "supply-chain-requirements.txt").read_bytes()
+    )
+    for name in module.BUNDLE_LOCAL_RAW_FILES - {
+        "result.json", "supply-chain.txt", "supply-chain-sbom.json",
+        "supply-chain-licenses.json", "supply-chain-audit.json",
+        "supply-chain-installed.json", "supply-chain-requirements.txt",
+        "supply-chain-receipt.json",
+    }:
+        (root / raw_dir / name).write_text("synthetic raw result\n", encoding="utf-8")
     record_name = "docs/commercial/evidence/local-validation-0.3.2.json"
     _write(root / record_name, {
         "status": "SUCCEEDED", "candidate_source_sha256": source,
         "execution_inputs_sha256": inputs, "execution_commit": commit,
         "artifacts": artifacts, "raw_evidence_dir": raw_dir,
-        "raw_files": {"result.json": _sha(root / raw_name)},
+        "raw_files": {name: _sha(root / raw_dir / name)
+                      for name in sorted(module.BUNDLE_LOCAL_RAW_FILES)},
     })
     gates = []
     evidence_map = {}
@@ -127,6 +184,7 @@ def _bundle(root: Path, module) -> Path:
         "schema_version": 1, "status": "BLOCKED", "evaluation_allowed": True,
         "local_experiment_allowed": True,
         "linux_customer_evaluation_allowed": True,
+        "private_vulnerability_reporting_enabled": True,
         "customer_environment_validated": False,
         "hosted_linux_workflow_run_id": 123, "hosted_linux_evidence": hosted,
         "production_release_authorized": False, "git_dirty": False,
@@ -148,7 +206,9 @@ def _bundle(root: Path, module) -> Path:
 def test_transferred_bundle_checks_files_and_evidence_bindings(tmp_path: Path) -> None:
     module = _module()
     root = _bundle(tmp_path / "bundle", module)
-    assert module.verify_bundle(root)["files_checked"] == 19
+    assert module.verify_bundle(root)["files_checked"] == len(
+        json.loads((root / "delivery-manifest.json").read_text())["files"]
+    )
     (root / "trainguard-0.3.2-py3-none-any.whl").write_bytes(b"changed wheel")
     with pytest.raises(module.DeliveryInvalid, match="file digest differs"):
         module.verify_bundle(root)
@@ -173,6 +233,13 @@ def test_transferred_bundle_requires_bound_hosted_linux_evidence(tmp_path: Path)
     root = _bundle(tmp_path / "bundle", module)
     report_path = root / "readiness-report.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["private_vulnerability_reporting_enabled"] = False
+    _write(report_path, report)
+    _seal(root)
+    with pytest.raises(module.DeliveryInvalid, match="evaluation identity"):
+        module.verify_bundle(root)
+
+    report["private_vulnerability_reporting_enabled"] = True
     report["linux_customer_evaluation_allowed"] = False
     _write(report_path, report)
     _seal(root)
@@ -237,6 +304,27 @@ def test_transferred_bundle_rejects_prior_release_pin_drift(tmp_path: Path) -> N
     _write(gate_path, gates)
     _seal(root)
     with pytest.raises(module.DeliveryInvalid, match="prior release identity"):
+        module.verify_bundle(root)
+
+
+def test_transferred_bundle_rejects_missing_supply_chain_report(tmp_path: Path) -> None:
+    module = _module()
+    root = _bundle(tmp_path / "bundle", module)
+    (root / "docs/commercial/evidence/local-0.3.2/supply-chain-sbom.json").unlink()
+    _seal(root)
+    with pytest.raises(module.DeliveryInvalid, match="local gate raw evidence differs"):
+        module.verify_bundle(root)
+
+
+def test_transferred_bundle_rejects_changed_supply_chain_report(tmp_path: Path) -> None:
+    module = _module()
+    root = _bundle(tmp_path / "bundle", module)
+    report = root / "docs/commercial/evidence/local-0.3.2/supply-chain-audit.json"
+    changed = json.loads(report.read_text())
+    changed["dependencies"][1]["vulns"] = [{"id": "TEST-1"}]
+    _write(report, changed)
+    _seal(root)
+    with pytest.raises(module.DeliveryInvalid, match="local gate raw evidence differs"):
         module.verify_bundle(root)
 
 

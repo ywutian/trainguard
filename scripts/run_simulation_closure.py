@@ -27,6 +27,7 @@ GATE_TIMEOUT_SECONDS = {
     "cpu-acceptance": 1200,
     "package": 300,
     "wheel": 300,
+    "supply-chain": 1200,
     "fresh-install": 1200,
     "upgrade-boundary": 1200,
 }
@@ -347,6 +348,17 @@ def main() -> int:
             if path.is_file() and (path.name.endswith(".whl") or path.name.endswith(".tar.gz"))
         }
         result["lock_sha256"] = hashlib.sha256(Path("uv.lock").read_bytes()).hexdigest()
+        gate = _run_bound(
+            root, directory,
+            "supply-chain",
+            ["uv", "run", "python", "scripts/supply_chain.py", "--wheel", str(wheels[0]),
+             "--output-dir", str(directory)],
+            inputs_sha256,
+        )
+        result["gates"].append(gate)
+        if gate["exit_code"]:
+            result["status"] = "FAILED"
+            raise GateStopped
         gate = _run_bound(
             root, directory,
             "fresh-install",

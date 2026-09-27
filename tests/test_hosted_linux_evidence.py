@@ -13,6 +13,7 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 import pytest
+from test_supply_chain import supply_fixture
 
 
 def _write_json(path: Path, value: dict) -> None:
@@ -71,6 +72,12 @@ def evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     wheel = tmp_path / f"trainguard-{version}-py3-none-any.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr("trainguard/__init__.py", '__version__ = "0.3.5"\n')
+        prefix = f"trainguard-{version}.dist-info/"
+        archive.writestr(prefix + "METADATA", (
+            f"Name: trainguard\nVersion: {version}\nLicense-Expression: MIT\n"
+            "License-File: LICENSE\n"
+        ))
+        archive.write(root / "LICENSE", prefix + "licenses/LICENSE")
     sdist = tmp_path / f"trainguard-{version}.tar.gz"
     with tarfile.open(sdist, "w:gz") as archive:
         payload = b"reviewed source"
@@ -111,6 +118,55 @@ def evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         ]
         for gate in gates:
             (run / f"{gate['name']}.txt").write_text("completed\n", encoding="utf-8")
+        supply_expected = supply_fixture(run)
+        for name in ("supply-chain-installed.json", "supply-chain-sbom.json",
+                     "supply-chain-licenses.json", "supply-chain-audit.json"):
+            path = run / name
+            report = json.loads(path.read_text())
+            rows = report if isinstance(report, list) else report.get(
+                "components", report.get("dependencies", [])
+            )
+            for row in rows:
+                if row.get("name") == "trainguard":
+                    row["version"] = version
+                    if "bom-ref" in row:
+                        row["bom-ref"] = f"pkg:pypi/trainguard@{version}"
+            if name == "supply-chain-sbom.json":
+                report["dependencies"][0]["ref"] = f"pkg:pypi/trainguard@{version}"
+            _write_json(path, report)
+        supply_expected.update({
+            "candidate_version": version,
+            "source_sha256": source,
+            "execution_inputs_sha256": inputs,
+            "wheel_sha256": artifacts[wheel.name],
+            "lock_sha256": lock_sha,
+            "tool_lock_sha256": hashlib.sha256(
+                (root / "scripts/supply-chain-tools.txt").read_bytes()
+            ).hexdigest(),
+            "first_party_license_sha256": hashlib.sha256(
+                (root / "LICENSE").read_bytes()
+            ).hexdigest(),
+            "security_policy_sha256": hashlib.sha256(
+                (root / "SECURITY.md").read_bytes()
+            ).hexdigest(),
+            "security_channel_record_sha256": hashlib.sha256(
+                (root / "docs/commercial/security-channel-2026-09-27.json").read_bytes()
+            ).hexdigest(),
+        })
+        supply_receipt_path = run / "supply-chain-receipt.json"
+        supply_receipt = json.loads(supply_receipt_path.read_text())
+        supply_receipt.update(supply_expected)
+        supply_receipt.update(python_version=py, platform="Linux", machine="x86_64")
+        supply_receipt["files"] = {
+            name: hashlib.sha256((run / name).read_bytes()).hexdigest()
+            for name in supply_receipt["files"]
+        }
+        _write_json(supply_receipt_path, supply_receipt)
+        _write_json(run / "supply-chain.txt", {
+            "status": "PASS", "wheel_sha256": artifacts[wheel.name],
+            "component_count": 2, "known_vulnerability_count": 0,
+            "unscanned_third_party": [], "unlicensed_third_party": [],
+        })
         (run / "wheel.txt").write_text(json.dumps({
             "passed": True, "version": version, "source_sha256": source,
             "sdist_members": 90,
@@ -283,4 +339,34 @@ def test_hosted_linux_evidence_rejects_stale_execution_input_digest(evidence) ->
 def test_hosted_linux_evidence_rejects_previous_release_pin_drift(evidence) -> None:
     evidence[6]["previous_release"]["lock_sha256"] = "0" * 64
     with pytest.raises(ValueError, match="package or upgrade evidence is incomplete"):
+        _verify(evidence)
+
+
+def test_hosted_linux_evidence_rejects_missing_supply_chain_report(evidence) -> None:
+    run = evidence[2]["3.11"] / "simulation-run"
+    (run / "supply-chain-sbom.json").unlink()
+    with pytest.raises(ValueError, match="supply-chain evidence differs"):
+        _verify(evidence)
+
+
+def test_hosted_linux_evidence_rejects_changed_supply_chain_scan(evidence) -> None:
+    run = evidence[2]["3.12"] / "simulation-run"
+    path = run / "supply-chain-audit.json"
+    report = json.loads(path.read_text())
+    report["dependencies"][1]["vulns"] = [{"id": "TEST-1"}]
+    _write_json(path, report)
+    with pytest.raises(ValueError, match="supply-chain evidence differs"):
+        _verify(evidence)
+
+
+@pytest.mark.parametrize("field", ["wheel_sha256", "lock_sha256"])
+def test_hosted_linux_evidence_rejects_unbound_supply_chain_receipt(
+    evidence, field: str,
+) -> None:
+    run = evidence[2]["3.11"] / "simulation-run"
+    path = run / "supply-chain-receipt.json"
+    receipt = json.loads(path.read_text())
+    receipt[field] = "0" * 64
+    _write_json(path, receipt)
+    with pytest.raises(ValueError, match=f"receipt {field} differs"):
         _verify(evidence)

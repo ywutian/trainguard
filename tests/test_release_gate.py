@@ -241,10 +241,20 @@ def test_local_experiment_does_not_grant_linux_customer_evaluation(
         return {"workflow_run_id": 123, "status": "HOSTED_LINUX_EVIDENCE_CONSISTENT"}
 
     monkeypatch.setattr(module, "_hosted_linux_from_run", hosted)
+    monkeypatch.setattr(module, "_private_reporting_enabled", lambda root: True)
     scoped = module.evaluate(manifest, wheel, sdist, 123)
     assert scoped["evaluation_allowed"] is True
     assert scoped["linux_customer_evaluation_allowed"] is True
     assert scoped["decision_scope"] == "hosted Linux candidate evaluation"
+
+    monkeypatch.setattr(module, "_private_reporting_enabled", lambda root: False)
+    disabled = module.evaluate(manifest, wheel, sdist, 123)
+    assert disabled["linux_customer_evaluation_allowed"] is False
+    assert disabled["private_vulnerability_reporting_enabled"] is False
+    assert disabled["linux_customer_evaluation_reason"] == (
+        "private vulnerability reporting is disabled"
+    )
+    monkeypatch.setattr(module, "_private_reporting_enabled", lambda root: True)
 
     original_input_digest = module.execution_inputs_sha256
 

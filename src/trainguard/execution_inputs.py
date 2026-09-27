@@ -8,9 +8,10 @@ from pathlib import Path
 
 INPUT_DIRECTORIES = ("src", "tests", "scripts", "configs", "examples", ".github/workflows")
 INPUT_FILES = (
-    ".gitignore", "LICENSE", "README.md", "pyproject.toml", "uv.lock",
+    ".gitignore", "LICENSE", "README.md", "SECURITY.md", "pyproject.toml", "uv.lock",
     "build-requirements.in", "build-constraints.txt",
     "docs/commercial/customer-pilot-template.md",
+    "docs/commercial/security-channel-2026-09-27.json",
     "docs/commercial/market-evidence-2026-09-26.md",
     "docs/commercial/operations-runbook.md",
     "docs/commercial/pilot-ledger-template.json",

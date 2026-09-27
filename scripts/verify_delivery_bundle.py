@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
+import sys
 import tarfile
 import tomllib
 from pathlib import Path, PurePosixPath
@@ -30,13 +32,51 @@ SOURCE_MEMBERS = {
     "build-requirements.in": "build-requirements.in",
     "build-constraints.txt": "build-constraints.txt",
     "LICENSE": "LICENSE",
+    "SECURITY.md": "SECURITY.md",
+    "security-channel-2026-09-27.json": "docs/commercial/security-channel-2026-09-27.json",
     "operations-runbook.md": "docs/commercial/operations-runbook.md",
     "customer-pilot-template.md": "docs/commercial/customer-pilot-template.md",
     "pilot-ledger-template.json": "docs/commercial/pilot-ledger-template.json",
     "market-evidence-2026-09-26.md": "docs/commercial/market-evidence-2026-09-26.md",
     "scripts/calculate_pilot_value.py": "scripts/calculate_pilot_value.py",
     "scripts/verify_delivery_bundle.py": "scripts/verify_delivery_bundle.py",
+    "scripts/supply_chain.py": "scripts/supply_chain.py",
+    "scripts/supply-chain-tools.in": "scripts/supply-chain-tools.in",
+    "scripts/supply-chain-tools.txt": "scripts/supply-chain-tools.txt",
 }
+
+SUPPLY_CHAIN_RAW_FILES = {
+    "supply-chain.txt", "supply-chain-sbom.json", "supply-chain-licenses.json",
+    "supply-chain-audit.json", "supply-chain-installed.json",
+    "supply-chain-requirements.txt", "supply-chain-receipt.json",
+}
+BUNDLE_LOCAL_RAW_FILES = SUPPLY_CHAIN_RAW_FILES | {
+    "result.json", "pytest.xml", "acceptance.json", "static.txt", "tests.txt",
+    "cpu-acceptance.txt", "package.txt", "wheel.txt", "fresh-install.txt",
+    "upgrade-boundary.txt",
+}
+
+
+def _verify_supply_chain(root: Path, raw_dir: Path, expected: dict[str, str]) -> None:
+    script = root / "scripts/supply_chain.py"
+    spec = importlib.util.spec_from_file_location("delivery_supply_chain", script)
+    if spec is None or spec.loader is None:
+        raise DeliveryInvalid("bundled supply-chain verifier is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    bytecode_setting = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = bytecode_setting
+    try:
+        module.verify_candidate_license(root / next(
+            name for name in _mapping(root / "readiness-report.json")["artifacts"]
+            if name.endswith(".whl")
+        ), root / "LICENSE")
+        module.verify_supply_chain(raw_dir, expected)
+    except ValueError as exc:
+        raise DeliveryInvalid(f"bundled supply-chain evidence is invalid: {exc}") from exc
 
 
 def _sha256(path: Path) -> str:
@@ -97,6 +137,8 @@ def verify_bundle(root: Path) -> dict:
         if name == manifest_path.name or not _is_sha256(digest):
             raise DeliveryInvalid("delivery manifest contains an invalid file entry")
         expected[name] = digest
+    if "requirements.txt" not in expected:
+        raise DeliveryInvalid("delivery requirements are missing")
     actual = set()
     for path in root.rglob("*"):
         if path.is_symlink():
@@ -117,6 +159,7 @@ def verify_bundle(root: Path) -> dict:
         or report.get("evaluation_allowed") is not True
         or report.get("local_experiment_allowed") is not True
         or report.get("linux_customer_evaluation_allowed") is not True
+        or report.get("private_vulnerability_reporting_enabled") is not True
         or report.get("customer_environment_validated") is not False
         or report.get("production_release_authorized") is not False
         or report.get("git_dirty") is not False
@@ -302,11 +345,32 @@ def verify_bundle(root: Path) -> dict:
             raise DeliveryInvalid(f"local gate execution identity differs: {gate_id}")
         raw_dir = _relative_name(record.get("raw_evidence_dir"))
         raw_files = record.get("raw_files")
-        if not isinstance(raw_files, dict):
+        if not isinstance(raw_files, dict) or set(raw_files) != BUNDLE_LOCAL_RAW_FILES:
             raise DeliveryInvalid(f"local gate raw file list is missing: {gate_id}")
         for raw_name, digest in raw_files.items():
             if expected.get(f"{raw_dir}/{_relative_name(raw_name)}") != digest:
                 raise DeliveryInvalid(f"local gate raw evidence differs: {gate_id}")
+        wheel_name = next(name for name in artifacts if name.endswith(".whl"))
+        _verify_supply_chain(root, root / raw_dir, {
+            "candidate_version": version,
+            "source_sha256": manifest["source_sha256"],
+            "execution_inputs_sha256": manifest["execution_inputs_sha256"],
+            "wheel_sha256": artifacts[wheel_name],
+            "lock_sha256": artifacts["uv.lock"],
+            "tool_lock_sha256": expected["scripts/supply-chain-tools.txt"],
+            "security_policy_sha256": expected["SECURITY.md"],
+            "first_party_license_sha256": expected["LICENSE"],
+            "security_channel_record_sha256": expected[
+                "security-channel-2026-09-27.json"
+            ],
+        })
+        supply_result = _mapping(root / raw_dir / "supply-chain-receipt.json")
+        if supply_result.get("status") != "PASS":
+            raise DeliveryInvalid("bundled supply-chain gate is not clear")
+        if gate_id == "local_package" and (
+            root / "requirements.txt"
+        ).read_bytes() != (root / raw_dir / "supply-chain-requirements.txt").read_bytes():
+            raise DeliveryInvalid("delivery requirements differ from scanned candidate inputs")
     if seen != REQUIRED_GATES or set(evidence_map) != passing or not {
         "local_package", "local_cpu"
     } <= passing:

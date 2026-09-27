@@ -125,7 +125,9 @@ def main() -> None:
         files = [
             args.wheel, args.sdist, root / "pyproject.toml", root / "uv.lock",
             root / "build-requirements.in", root / "build-constraints.txt",
-            root / "LICENSE", root / "docs/commercial/operations-runbook.md",
+            root / "LICENSE", root / "SECURITY.md",
+            root / "docs/commercial/security-channel-2026-09-27.json",
+            root / "docs/commercial/operations-runbook.md",
             root / "docs/commercial/customer-pilot-template.md",
             root / "docs/commercial/pilot-ledger-template.json",
             root / "docs/commercial/market-evidence-2026-09-26.md",
@@ -138,12 +140,17 @@ def main() -> None:
             raise ValueError("delivery inputs contain conflicting file names")
         for path in files:
             shutil.copy2(path, stage / path.name)
+        for name, digest in fresh["artifacts"].items():
+            _check_digest(stage / name, digest)
         shutil.copy2(args.gate_manifest, stage / "release-gates.json")
         write_json_atomic(stage / "readiness-report.json", fresh)
         scripts = stage / "scripts"
         scripts.mkdir()
         shutil.copy2(root / "scripts/calculate_pilot_value.py", scripts / "calculate_pilot_value.py")
         shutil.copy2(root / "scripts/verify_delivery_bundle.py", scripts / "verify_delivery_bundle.py")
+        shutil.copy2(root / "scripts/supply_chain.py", scripts / "supply_chain.py")
+        shutil.copy2(root / "scripts/supply-chain-tools.in", scripts / "supply-chain-tools.in")
+        shutil.copy2(root / "scripts/supply-chain-tools.txt", scripts / "supply-chain-tools.txt")
         evidence_map = {}
         for gate in fresh["gates"]:
             if gate["status"] == "PASS":
@@ -173,6 +180,12 @@ def main() -> None:
             text=True,
         )
         requirements.write_text(exported.stdout, encoding="utf-8")
+        local_package = next(gate for gate in fresh["gates"] if gate["id"] == "local_package")
+        receipt = json.loads(_stage_path(stage, local_package["evidence"]).read_text())
+        record = json.loads(_stage_path(stage, receipt["record_reference"]).read_text())
+        raw_dir = _stage_path(stage, record["raw_evidence_dir"])
+        if requirements.read_bytes() != (raw_dir / "supply-chain-requirements.txt").read_bytes():
+            raise ValueError("delivery requirements differ from scanned candidate inputs")
         version = tomllib.loads((stage / "pyproject.toml").read_text())["project"]["version"]
         _check_stage(stage, fresh, "release-gates.json", version, args.sdist.name)
         manifest = {

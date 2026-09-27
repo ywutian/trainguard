@@ -21,6 +21,7 @@ from xml.etree import ElementTree
 
 from check_release_readiness import (
     _previous_release,
+    _supply_module,
     _validate_pytest_result,
     package_source_sha256,
 )
@@ -33,7 +34,7 @@ from trainguard.execution_inputs import execution_inputs_sha256 as input_digest
 PYTHON_LANES = ("3.11", "3.12")
 REQUIRED_GATES = {
     "static", "tests", "cpu-acceptance", "package", "wheel", "fresh-install",
-    "upgrade-boundary",
+    "upgrade-boundary", "supply-chain",
 }
 WORKFLOW_NAME = "Verify recovery package"
 
@@ -168,6 +169,9 @@ def verify_evidence(
     ):
         raise ValueError("local candidate packages are missing or malformed")
     artifact_sha256 = {wheel.name: _sha256(wheel), sdist.name: _sha256(sdist)}
+    source_root = Path(__file__).resolve().parents[1]
+    supply = _supply_module()
+    supply.verify_candidate_license(wheel, source_root / "LICENSE")
     workflow_run_id, jobs = _workflow_jobs(metadata, commit)
     matrix = {}
     for lane in PYTHON_LANES:
@@ -228,11 +232,41 @@ def verify_evidence(
         ):
             raise ValueError(f"Python {lane} hosted acceptance used another environment")
         tests = _junit_counts(directory)
+        supply_analysis = supply.verify_supply_chain(directory, {
+            "candidate_version": version,
+            "source_sha256": source_sha256,
+            "execution_inputs_sha256": execution_inputs_sha256,
+            "wheel_sha256": artifact_sha256[wheel.name],
+            "lock_sha256": lock_sha256,
+            "tool_lock_sha256": _sha256(source_root / "scripts/supply-chain-tools.txt"),
+            "first_party_license_sha256": _sha256(source_root / "LICENSE"),
+            "security_policy_sha256": _sha256(source_root / "SECURITY.md"),
+            "security_channel_record_sha256": _sha256(
+                source_root / "docs/commercial/security-channel-2026-09-27.json"
+            ),
+        })
+        supply_receipt = _mapping(directory / "supply-chain-receipt.json")
+        supply_output = _last_json(directory / "supply-chain.txt")
         verified_wheel = _last_json(directory / "wheel.txt")
         installed = _last_json(directory / "fresh-install.txt")
         upgrade = _last_json(directory / "upgrade-boundary.txt")
         if (
-            verified_wheel.get("passed") is not True
+            not isinstance(supply_receipt.get("python_version"), str)
+            or not supply_receipt["python_version"].startswith(f"{lane}.")
+            or supply_receipt.get("platform") != "Linux"
+            or supply_receipt.get("machine") != "x86_64"
+            or supply_output.get("status") != "PASS"
+            or supply_output.get("wheel_sha256") != artifact_sha256[wheel.name]
+            or supply_output.get("component_count") != supply_analysis["component_count"]
+            or supply_output.get("known_vulnerability_count") != 0
+            or supply_output.get("unscanned_third_party") != []
+            or supply_output.get("unlicensed_third_party") != []
+            or supply_receipt.get("candidate_version") != version
+            or supply_receipt.get("known_vulnerability_count") != 0
+            or supply_analysis["known_vulnerability_count"] != 0
+            or supply_analysis["unscanned_third_party"]
+            or supply_analysis["unlicensed_third_party"]
+            or verified_wheel.get("passed") is not True
             or verified_wheel.get("version") != version
             or verified_wheel.get("source_sha256") != source_sha256
             or type(verified_wheel.get("sdist_members")) is not int
@@ -266,6 +300,14 @@ def verify_evidence(
             "junit_sha256": _sha256(directory / "pytest.xml"),
             "tests": tests,
             "cpu_acceptance_cases_passed": len(acceptance["cases"]),
+            "supply_chain": {
+                "receipt_sha256": _sha256(directory / "supply-chain-receipt.json"),
+                "sbom_sha256": _sha256(directory / "supply-chain-sbom.json"),
+                "component_count": supply_analysis["component_count"],
+                "third_party_count": supply_analysis["third_party_count"],
+                "known_vulnerability_count": 0,
+                "uv_version": supply_receipt["uv_version"],
+            },
             "artifacts": artifact_sha256,
         }
     return {

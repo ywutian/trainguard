@@ -4,7 +4,7 @@
 
 ## 1. 候选包与安装
 
-交付包至少含 wheel、sdist、`pyproject.toml`、`uv.lock`、`build-requirements.in`、`build-constraints.txt`、`requirements.txt`、`LICENSE`、本手册和每项 SHA-256。候选包和报告必须引用同一源码指纹与测试版本。源码包仅含明列的交付文档及已审查仓库源码，不收录历史实验原始证据；构建前拒绝未跟踪输入，构建后逐项核对成员、类型、内容及完整重建摘要。构建使用固定的构建依赖闭包及分发哈希；安装锁文件固定运行依赖解析。两者均须在目标操作系统、CPU/GPU 驱动及 Python 版本上实装，不能把本机安装当成客户 Linux 验收。安装时检查 manifest 哈希，使用 Python 3.11 或 3.12 新环境：
+交付包至少含 wheel、sdist、`pyproject.toml`、`uv.lock`、`build-requirements.in`、`build-constraints.txt`、`requirements.txt`、`LICENSE`、`SECURITY.md`、本手册、SBOM、第三方许可证清单、已知漏洞扫描收据和每项 SHA-256。候选包和报告必须引用同一源码指纹与测试版本。源码包仅含明列的交付文档及已审查仓库源码，不收录历史实验原始证据；构建前拒绝未跟踪输入，构建后逐项核对成员、类型、内容及完整重建摘要。构建使用固定的构建依赖闭包及分发哈希；安装锁文件固定运行依赖解析。两者均须在目标操作系统、CPU/GPU 驱动及 Python 版本上实装，不能把本机安装当成客户 Linux 验收。安装时检查 manifest 哈希，使用 Python 3.11 或 3.12 新环境：
 
 当前候选包**不包含依赖 wheelhouse**，安装需要能访问锁文件对应的软件包索引。客户若限网或需离线交付，先在目标 Linux/Python/设备平台制作并审核完整依赖 wheelhouse，再在完全断网的目标环境实装和演练；在此之前该环境的安装门槛为 `BLOCKED`。CUDA 驱动、容器镜像和底层集群资源也由订单页列出，不由 Python wheel 自动提供。
 
@@ -56,9 +56,9 @@ Sev1 包含疑似错误恢复、重复有效写入、无有效候选或数据泄
 
 ## 4. 发布与证据
 
-运行 `scripts/run_simulation_closure.py --output-root <结果目录> --previous-ref <已审查上一版本完整提交>` 取得静态检查、全量测试、固定十案例 CPU 故障矩阵、wheel/sdist、源码身份、锁依赖新环境安装和卸载证据。上一版提交、wheel 与锁摘要由 `release-gates.json` 固定；不匹配即拒绝升级演练。每个本机步骤有期限，超时记为失败并保留原始输出；门禁会清理发现的子进程组。执行输入摘要覆盖源码、测试、脚本、配置、示例、工作流及随包文档；每步前后都须一致。证据收据可在仅新增文档/证据的提交中保存，任何执行输入变化均要求重新跑本机门禁。再运行 `scripts/check_release_readiness.py` 核对候选源码、完整重建的交付件、锁、原始本机测试身份与摘要以及每个门槛证据哈希。若只做本机实验，可不指定托管运行 ID；此时 `local_experiment_allowed` 可为真，但 `evaluation_allowed` 和 `linux_customer_evaluation_allowed` 必须为假。
+运行 `scripts/run_simulation_closure.py --output-root <结果目录> --previous-ref <已审查上一版本完整提交>` 取得静态检查、全量测试、固定十案例 CPU 故障矩阵、wheel/sdist、源码身份、锁依赖新环境安装和卸载证据。供应链步骤在隔离工具环境中使用 `scripts/supply-chain-tools.txt` 的哈希锁定版本，将当前候选 wheel 与锁依赖安装到另一干净环境，生成 CycloneDX SBOM、由已声明元数据提取的许可证清单、PyPI 已知漏洞扫描原始 JSON 和绑定 wheel/源码/输入摘要的收据；第三方包漏扫、缺声明或有已知漏洞均阻断本机包门槛。上一版提交、wheel 与锁摘要由 `release-gates.json` 固定；不匹配即拒绝升级演练。每个本机步骤有期限，超时记为失败并保留原始输出；门禁会清理发现的子进程组。执行输入摘要覆盖源码、测试、脚本、配置、示例、工作流及随包文档；每步前后都须一致。证据收据可在仅新增文档/证据的提交中保存，任何执行输入变化均要求重新跑本机门禁。再运行 `scripts/check_release_readiness.py` 核对候选源码、完整重建的交付件、锁、原始本机测试身份与摘要以及每个门槛证据哈希。若只做本机实验，可不指定托管运行 ID；此时 `local_experiment_allowed` 可为真，但 `evaluation_allowed` 和 `linux_customer_evaluation_allowed` 必须为假。
 
-客户 Linux 受限评价还须把已成功的固定仓库 push 工作流 ID 交给 `scripts/check_release_readiness.py --hosted-run-id <运行 ID>`。检查器通过当前已认证账户实时读取工作流元数据，下载 Python 3.11/3.12 的原始摘要和包，并用 `scripts/check_hosted_linux_evidence.py` 重新核对同一候选提交、执行输入、测试身份、故障矩阵和交付件字节。操作者可以单独运行离线核验器排查问题，但手工提供的离线文件不授予客户评价包构建权限。在线账户读取证明的是当次下载路径，报告仍不含独立密码学签名，也不代表客户环境验收。任何商业门槛为 `FAIL`/`BLOCKED` 时生产状态仍是 `BLOCKED`；即使全部收据完整，报告也仅给出 `REVIEW_REQUIRED`，绝不自动授权生产发布。当前真实基础设施和客户签收门槛保持 `BLOCKED`。
+客户 Linux 受限评价前还须实时核对仓库私密漏洞报告入口处于启用状态；历史启用记录及当时入口见 `security-channel-2026-09-27.json`，报告入口以 `SECURITY.md` 为准。已知漏洞扫描只代表扫描时服务返回的结果，不是无漏洞证明；许可证清单照录包元数据，不是法律兼容性结论。新披露、换版本或换目标环境时须重新扫描并审阅许可义务。客户 Linux 受限评价还须把已成功的固定仓库 push 工作流 ID 交给 `scripts/check_release_readiness.py --hosted-run-id <运行 ID>`。检查器通过当前已认证账户实时读取工作流元数据，下载 Python 3.11/3.12 的原始摘要、供应链报告和包，并用 `scripts/check_hosted_linux_evidence.py` 重新核对同一候选提交、执行输入、测试身份、故障矩阵、交付件字节及每条 Linux lane 的 wheel/锁绑定扫描收据。两个 Python 版本可安装不同的合法传递依赖；核验分别检查组件覆盖和扫描结果，不要求两份 SBOM 字节相同。操作者可以单独运行离线核验器排查问题，但手工提供的离线文件不授予客户评价包构建权限。在线账户读取证明的是当次下载路径，报告仍不含独立密码学签名，也不代表客户环境验收。任何商业门槛为 `FAIL`/`BLOCKED` 时生产状态仍是 `BLOCKED`；即使全部收据完整，报告也仅给出 `REVIEW_REQUIRED`，绝不自动授权生产发布。当前真实基础设施和客户签收门槛保持 `BLOCKED`。
 
 哈希检查能发现证据文件变化，不能证明证据内容真实、客户授权有效或结论适用于另一环境。每个门槛须由指定技术/商业负责人审阅原始记录并签收；脚本只执行完整性和状态阻断。
 
@@ -69,3 +69,5 @@ Sev1 包含疑似错误恢复、重复有效写入、无有效候选或数据泄
 收件方先运行 `python scripts/verify_delivery_bundle.py <交付包目录>`，确认清单中每个文件、候选 wheel/sdist/锁以及本机证据引用仍一致，并将输出的 `manifest_sha256` 与通过独立可信渠道收到的摘要比对。包内脚本和清单的自洽性检查只能检测传输或误操作引起的变化，不能单独证明发送者身份或原始审查结论真实。校验失败时隔离该包并要求重新交付，不安装其中的候选件。
 
 生产发布前还须在客户隔离环境完成：最低权限身份和凭据轮换、出站流量与数据脱敏、容量/保留与备份、跨主机 fencing、对象服务条件提交与失败重试、GPU/NCCL、告警与值班、升级回滚、客户技术及商业签收。未具备这些证据时仅能提供明确范围的本机实验或受限评估。
+
+供应链核验参考：[CycloneDX Python 工具说明](https://github.com/CycloneDX/cyclonedx-python/blob/main/README.md)、[PyPA pip-audit 扫描语义](https://github.com/pypa/pip-audit/blob/main/README.md)、[Python 核心元数据许可字段](https://packaging.python.org/en/latest/specifications/core-metadata/)和[GitHub 私密漏洞上报设置](https://docs.github.com/en/code-security/how-tos/report-and-fix-vulnerabilities/configure-vulnerability-reporting/configure-for-a-repository)。
