@@ -46,6 +46,9 @@ class CheckpointSettings(StrictModel):
     save_timeout_seconds: int = Field(default=120, ge=1)
     keep_last_k: int | None = Field(default=None, ge=2)
     max_retained_bytes: int | None = Field(default=None, ge=1)
+    max_checkpoint_bytes: int | None = Field(default=None, ge=1)
+    min_free_bytes: int | None = Field(default=None, ge=1)
+    max_event_log_bytes: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def validate_retention(self) -> CheckpointSettings:
@@ -173,6 +176,18 @@ class ProjectConfig(StrictModel):
                 raise ValueError("guarded runs forbid fault injection and omitted recovery state")
             if self.checkpoint.mode == "none":
                 raise ValueError("guarded runs require an enabled checkpoint mode")
+            if any(
+                value is None for value in (
+                    self.checkpoint.keep_last_k,
+                    self.checkpoint.max_retained_bytes,
+                    self.checkpoint.max_checkpoint_bytes,
+                    self.checkpoint.min_free_bytes,
+                    self.checkpoint.max_event_log_bytes,
+                )
+            ):
+                raise ValueError("guarded runs require checkpoint, retention, free-space and event budgets")
+            if self.checkpoint.max_retained_bytes < 2 * self.checkpoint.max_checkpoint_bytes:
+                raise ValueError("guarded retention budget must hold two maximum-size checkpoints")
         if self.run.strategy == "fsdp2" and self.run.device != "cuda":
             raise ValueError("FSDP2 requires CUDA")
         if (self.run.device == "cuda") != (self.run.backend == "nccl"):
@@ -206,6 +221,9 @@ class ProjectConfig(StrictModel):
 
     def fingerprint(self) -> str:
         value = self.model_dump()
+        for key in ("max_checkpoint_bytes", "min_free_bytes", "max_event_log_bytes"):
+            if value["checkpoint"][key] is None:
+                value["checkpoint"].pop(key)
         if self.external_workload is not None and self.external_workload.version == 1:
             value["external_workload"].pop("dependencies")
             value["external_workload"].pop("data_files")

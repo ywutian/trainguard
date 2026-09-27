@@ -20,6 +20,7 @@ from torch import nn
 from torch.distributed.checkpoint.api import CheckpointException
 from torch.nn.parallel import DistributedDataParallel
 
+from trainguard.capacity import event_log_limit
 from trainguard.checkpoint import restore_rng, validate_checkpoint
 from trainguard.checkpoint_io import finish_save, load_training_state, save_ready, start_save
 from trainguard.config import load_config
@@ -111,6 +112,7 @@ def train(
     def event(event_type, **fields):
         append_event(
             event_path,
+            max_bytes=event_log_limit(config),
             run_id=run_id,
             attempt_id=attempt_id,
             rank=rank,

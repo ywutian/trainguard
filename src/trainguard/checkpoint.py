@@ -443,6 +443,11 @@ def commit_checkpoint(
     _check_dcp_files(path, config)
     recorded = [_file_record(path, entry) for entry in _files(path)]
     files = [item for item, _ in recorded]
+    if (
+        config.run.profile == "guarded"
+        and sum(item["size"] for item in files) > config.checkpoint.max_checkpoint_bytes
+    ):
+        raise CheckpointInvalid("checkpoint exceeds its configured byte limit")
     identities = {item["path"]: identity for item, identity in recorded}
     manifest = {
         "format_version": 2,

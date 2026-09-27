@@ -89,8 +89,43 @@ def test_guarded_profile_rejects_experiment_controls(unsafe: str) -> None:
 def test_guarded_profile_accepts_complete_non_fault_run() -> None:
     raw = load_config(Path(__file__).parents[1] / "configs" / "cpu_demo.yaml").model_dump()
     raw["run"]["profile"] = "guarded"
-    raw["checkpoint"]["mode"] = "sync"
+    raw["checkpoint"].update(
+        mode="sync", keep_last_k=2, max_checkpoint_bytes=1_000_000,
+        max_retained_bytes=2_000_000, min_free_bytes=1_000_000,
+        max_event_log_bytes=100_000,
+    )
     assert ProjectConfig.model_validate(raw).run.profile == "guarded"
+
+
+@pytest.mark.parametrize(
+    "missing", [
+        "keep_last_k", "max_checkpoint_bytes", "max_retained_bytes",
+        "min_free_bytes", "max_event_log_bytes",
+    ]
+)
+def test_guarded_profile_requires_explicit_capacity_budgets(missing: str) -> None:
+    raw = load_config(Path(__file__).parents[1] / "configs/cpu_demo.yaml").model_dump()
+    raw["run"]["profile"] = "guarded"
+    raw["checkpoint"].update(
+        mode="sync", keep_last_k=2, max_checkpoint_bytes=1_000_000,
+        max_retained_bytes=2_000_000, min_free_bytes=1_000_000,
+        max_event_log_bytes=100_000,
+    )
+    raw["checkpoint"][missing] = None
+    with pytest.raises(ValidationError, match="guarded runs require|max_retained_bytes requires"):
+        ProjectConfig.model_validate(raw)
+
+
+def test_guarded_budget_must_hold_two_maximum_checkpoints() -> None:
+    raw = load_config(Path(__file__).parents[1] / "configs/cpu_demo.yaml").model_dump()
+    raw["run"]["profile"] = "guarded"
+    raw["checkpoint"].update(
+        mode="sync", keep_last_k=2, max_checkpoint_bytes=1_000_000,
+        max_retained_bytes=1_999_999, min_free_bytes=1_000_000,
+        max_event_log_bytes=100_000,
+    )
+    with pytest.raises(ValidationError, match="two maximum-size checkpoints"):
+        ProjectConfig.model_validate(raw)
 
 
 @pytest.mark.parametrize("duplicate", ["top_level", "nested"])

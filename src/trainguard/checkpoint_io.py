@@ -15,6 +15,7 @@ import torch.distributed.checkpoint as dcp
 from torch import nn
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
 
+from trainguard.capacity import event_log_limit, require_save_capacity
 from trainguard.checkpoint import (
     candidate_path,
     capture_rank_state,
@@ -77,6 +78,7 @@ def start_save(
     training_state: TrainingState | None = None,
     external_state: dict | None = None,
 ) -> PendingSave:
+    require_save_capacity(config, run_dir, attempt_id, rank, process_group)
     path = candidate_path(run_dir, attempt_id, step)
     if rank == 0:
         path.mkdir(parents=True, exist_ok=False)
@@ -188,6 +190,7 @@ def finish_save(
     dist.all_reduce(eligibility, op=dist.ReduceOp.MAX, group=group)
     append_event(
         event_path,
+        max_bytes=event_log_limit(config),
         run_id=run_id,
         attempt_id=attempt_id,
         rank=rank,
@@ -200,6 +203,7 @@ def finish_save(
     if rank == 0:
         append_event(
             event_path,
+            max_bytes=event_log_limit(config),
             run_id=run_id,
             attempt_id=attempt_id,
             rank=rank,

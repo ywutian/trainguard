@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from trainguard.capacity import event_log_limit
 from trainguard.checkpoint import (
     CheckpointInvalid,
     CheckpointRecord,
@@ -316,6 +317,7 @@ def _launch_attempt(
     def milestone(event_type: str, **fields) -> None:
         append_event(
             run_dir / "controller.jsonl",
+            max_bytes=event_log_limit(config),
             run_id=run_id,
             attempt_id=attempt_id,
             event_type=event_type,
@@ -559,6 +561,7 @@ def _drive(run_dir: Path, status: dict, store: RunStore, config: ProjectConfig) 
         if selected is not None:
             append_event(
                 run_dir / "controller.jsonl",
+                max_bytes=event_log_limit(config),
                 run_id=run_id,
                 attempt_id=f"attempt-{number:03d}",
                 event_type="checkpoint_selected",
