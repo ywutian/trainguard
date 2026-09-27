@@ -67,7 +67,7 @@ def candidate(tmp_path: Path) -> Path:
      '{"previous_release":{"git_commit":"new"},"gates":[]}'),
 ], ids=[
     "test", "script", "config", "example", "workflow", "readme", "security",
-    "build-constraints", "security-channel", "operations", "source", "metadata",
+    "build-constraints", "security-channel", "license-evidence", "operations", "source", "metadata",
     "lock", "release-base",
 ])
 def test_execution_digest_changes_for_each_gate_input(
