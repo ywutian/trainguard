@@ -161,6 +161,17 @@ def _import_entry_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _zip_import_container(path: Path) -> tuple[Path, str] | None:
+    """Resolve both an archive entry and Python's archive/subdirectory syntax."""
+    for candidate in (path, *path.parents):
+        if candidate.is_file():
+            if zipfile.is_zipfile(candidate):
+                prefix = path.relative_to(candidate).as_posix()
+                return candidate, "" if prefix == "." else prefix.rstrip("/") + "/"
+            return None
+    return None
+
+
 def startup_identity_sha256() -> str:
     """Bind import lookup paths, startup hooks, and Python path controls without exposing paths."""
     paths = [Path(entry or os.getcwd()).resolve() for entry in sys.path]
@@ -180,21 +191,31 @@ def startup_identity_sha256() -> str:
                 (root / "trainguard").exists() or (root / "trainguard.py").exists()
             ):
                 raise ValueError("PYTHONPATH may shadow the application package")
-            if root.is_file() and zipfile.is_zipfile(root):
-                with zipfile.ZipFile(root) as archive:
+            zip_root = _zip_import_container(root)
+            if zip_root is not None:
+                archive_path, prefix = zip_root
+                with zipfile.ZipFile(archive_path) as archive:
                     if any(
-                        name == "trainguard.py" or name.startswith("trainguard/")
+                        name.startswith(prefix) and (
+                            name[len(prefix):] == "trainguard.py"
+                            or name[len(prefix):].startswith("trainguard/")
+                        )
                         for name in archive.namelist()
                     ):
                         raise ValueError("PYTHONPATH may shadow the application package")
-            import_entries.append((str(root), _import_entry_sha256(root)))
+            import_entries.append((
+                str(root), _import_entry_sha256(zip_root[0] if zip_root is not None else root)
+            ))
     startup_files = []
     scan_paths = set(paths)
     if pythonpath:
         scan_paths.update(Path(entry).resolve() for entry in pythonpath.split(os.pathsep))
     for directory in sorted(scan_paths):
-        if directory.is_file():
-            startup_files.append((str(directory), _import_entry_sha256(directory)))
+        zip_root = _zip_import_container(directory)
+        if zip_root is not None or directory.is_file():
+            startup_files.append((
+                str(directory), _import_entry_sha256(zip_root[0] if zip_root is not None else directory)
+            ))
             continue
         if not directory.is_dir():
             continue

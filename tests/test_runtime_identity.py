@@ -149,6 +149,13 @@ def test_startup_identity_detects_explicit_import_tree_and_zip_changes(
     with zipfile.ZipFile(archive, "w") as bundle:
         bundle.writestr("sitecustomize.py", "value = 'two'\n")
     assert environment.startup_identity_sha256() != first
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("nested/sitecustomize.py", "value = 'one'\n")
+    monkeypatch.setenv("PYTHONPATH", str(archive / "nested"))
+    first = environment.startup_identity_sha256()
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("nested/sitecustomize.py", "value = 'two'\n")
+    assert environment.startup_identity_sha256() != first
 
 
 def test_explicit_import_root_cannot_shadow_application(
@@ -158,6 +165,12 @@ def test_explicit_import_root_cannot_shadow_application(
     package.mkdir()
     (package / "trainer.py").write_text("raise SystemExit(1)\n")
     monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    with pytest.raises(ValueError, match="may shadow"):
+        environment.startup_identity_sha256()
+    archive = tmp_path / "shadow.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("nested/trainguard/trainer.py", "raise SystemExit(1)\n")
+    monkeypatch.setenv("PYTHONPATH", str(archive / "nested"))
     with pytest.raises(ValueError, match="may shadow"):
         environment.startup_identity_sha256()
 
