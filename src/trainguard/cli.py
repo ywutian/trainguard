@@ -121,6 +121,9 @@ def validate(
     destination = report or recovered / "validation.json"
     write_json_atomic(destination, result)
     typer.echo(f"Validation report: {destination}")
+    if result["comparison_kind"] == "SELF_CHECK":
+        typer.echo("An independent reference run is required for recovery comparison", err=True)
+        raise typer.Exit(2)
     if not result["passed"]:
         typer.echo("Recovery differs from reference", err=True)
         raise typer.Exit(1)

@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import sqlite3
 from pathlib import Path
 
 from trainguard.config import load_config
 from trainguard.events import write_json_atomic
 from trainguard.records import summary_errors
-from trainguard.run_evidence import completed_index_errors, saved_completed_metadata_errors
+from trainguard.run_evidence import (
+    completed_event_errors,
+    completed_index_errors,
+    read_bounded_report_mapping,
+    saved_completed_metadata_errors,
+)
 
 
 class SupportBundleError(ValueError):
@@ -19,12 +23,9 @@ class SupportBundleError(ValueError):
 
 def _mapping(path: Path) -> dict:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise SupportBundleError("run metadata is missing or unreadable") from exc
-    if not isinstance(value, dict):
-        raise SupportBundleError("run metadata has an invalid shape")
-    return value
+        return read_bounded_report_mapping(path)
+    except (TypeError, ValueError) as exc:
+        raise SupportBundleError("run metadata is missing, unreadable, or over audit limit") from exc
 
 
 def _digest(value: str) -> str:
@@ -149,6 +150,10 @@ def build_support_bundle(run_dir: Path) -> dict:
             errors.extend(completed_index_errors(run_dir, status, config))
             if errors:
                 raise SupportBundleError("completed run evidence differs: " + "; ".join(errors))
+        if status["status"] == "SUCCEEDED" and completed_event_errors(
+            run_dir, status, config, summary
+        ):
+            raise SupportBundleError("completion event evidence is missing or invalid")
     elif status["status"] == "SUCCEEDED":
         raise SupportBundleError("successful run has no completion summary")
 

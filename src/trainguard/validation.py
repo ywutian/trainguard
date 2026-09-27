@@ -323,6 +323,7 @@ def _recovery_lineage_errors(run_dir: Path, run_id: str, world_size: int) -> lis
 def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
     reference_dir = reference_dir.resolve()
     recovered_dir = recovered_dir.resolve()
+    same_path = reference_dir == recovered_dir
     try:
         reference_status = _read_json(reference_dir / "run.json")
         recovered_status = _read_json(recovered_dir / "run.json")
@@ -341,7 +342,16 @@ def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
             "differences": [f"run metadata or summary is unreadable: {exc}"],
             "reference_run_id": None,
             "recovered_run_id": None,
+            "comparison_kind": "SELF_CHECK" if same_path else "UNVERIFIED",
+            "independent_reference": False,
         }
+    independent_reference = (
+        not same_path and reference_status["run_id"] != recovered_status["run_id"]
+    )
+    comparison_identity = {
+        "comparison_kind": "INDEPENDENT_REFERENCE" if independent_reference else "SELF_CHECK",
+        "independent_reference": independent_reference,
+    }
     differences = []
     for name, directory, status, config in (
         ("reference", reference_dir, reference_status, reference_config),
@@ -362,6 +372,7 @@ def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
             "passed": False, "differences": differences,
             "reference_run_id": reference_status.get("run_id"),
             "recovered_run_id": recovered_status.get("run_id"),
+            **comparison_identity,
         }
     for name, directory, config, status in (
         ("reference", reference_dir, reference_config, reference_status),
@@ -496,6 +507,7 @@ def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
         "differences": differences,
         "reference_run_id": reference_status["run_id"],
         "recovered_run_id": recovered_status["run_id"],
+        **comparison_identity,
         "comparison": {
             "tensor_atol": 0.0,
             "tensor_rtol": 0.0,

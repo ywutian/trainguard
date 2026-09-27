@@ -33,6 +33,10 @@ RUNTIME_IDENTITY_FIELDS = (
 
 MAX_CHECKPOINT_AUDIT_ENTRIES = 100_000
 DEFAULT_EXPERIMENT_CHECKPOINT_AUDIT_BYTES = 512 * 1024 * 1024
+MAX_COMPLETION_EVENT_FILE_BYTES = 16 * 1024 * 1024
+MAX_COMPLETION_EVENT_TOTAL_BYTES = 64 * 1024 * 1024
+MAX_COMPLETION_EVENT_FILES = 128
+MAX_COMPLETION_REPORT_BYTES = 8 * 1024 * 1024
 
 
 def runtime_identity_sha256(value: Any) -> str:
@@ -70,6 +74,27 @@ def measurement_sha256(value: Any) -> str | None:
             raise ValueError(f"original measurement {field} is invalid")
     payload = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def read_bounded_report_mapping(path: Path) -> dict:
+    """Read one regular JSON record within the diagnostic export byte limit."""
+    try:
+        flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+        with os.fdopen(os.open(path, flags), "rb") as stream:
+            details = os.fstat(stream.fileno())
+            if not stat.S_ISREG(details.st_mode) or details.st_size > (
+                MAX_COMPLETION_REPORT_BYTES
+            ):
+                raise ValueError("report record is unsafe or exceeds the audit limit")
+            payload = stream.read(MAX_COMPLETION_REPORT_BYTES + 1)
+        if len(payload) > MAX_COMPLETION_REPORT_BYTES:
+            raise ValueError("report record exceeds the audit limit")
+        value = json.loads(payload)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ValueError("report record is missing, unreadable, or exceeds the audit limit") from exc
+    if not isinstance(value, dict):
+        raise TypeError("report record is not a mapping")
+    return value
 
 
 def saved_completed_metadata_errors(status: Any, config: ProjectConfig) -> list[str]:
@@ -391,11 +416,70 @@ def completed_index_errors(run_dir: Path, status: dict, config: ProjectConfig) -
     return errors
 
 
+def completed_event_errors(run_dir: Path, status: dict, config: ProjectConfig,
+                           summary: dict) -> list[str]:
+    """Bound reads before revisiting a successful run's raw event evidence."""
+    invalid = ["completion event evidence is missing or invalid"]
+    run_id = status.get("run_id")
+    attempt_id = status.get("attempt_id")
+    if not isinstance(run_id, str) or not isinstance(attempt_id, str):
+        return invalid
+    try:
+        database_path = run_dir / "run.sqlite3"
+        with sqlite3.connect(database_path.resolve().as_uri() + "?mode=ro", uri=True) as db:
+            attempts = db.execute(
+                "SELECT attempt_id FROM attempts WHERE run_id=? ORDER BY number LIMIT ?",
+                (run_id, MAX_COMPLETION_EVENT_FILES + 1),
+            ).fetchall()
+        if not attempts or len(attempts) * config.run.world_size + 1 > (
+            MAX_COMPLETION_EVENT_FILES
+        ):
+            return invalid
+        if (run_dir / "attempts").is_symlink():
+            return invalid
+        paths = [run_dir / "controller.jsonl"]
+        if not paths[0].is_file() or paths[0].is_symlink():
+            return invalid
+        for (indexed_attempt,) in attempts:
+            if not isinstance(indexed_attempt, str) or re.fullmatch(
+                r"attempt-[0-9]{3,}", indexed_attempt
+            ) is None:
+                return invalid
+            paths.extend(
+                run_dir / "attempts" / indexed_attempt / f"rank-{rank}.jsonl"
+                for rank in range(config.run.world_size)
+            )
+        total = 0
+        guarded_limit = (
+            config.checkpoint.max_event_log_bytes if config.run.profile == "guarded" else None
+        )
+        per_file_limit = min(MAX_COMPLETION_EVENT_FILE_BYTES, guarded_limit) if (
+            guarded_limit is not None
+        ) else MAX_COMPLETION_EVENT_FILE_BYTES
+        for path in paths:
+            if path.parent.is_symlink():
+                return invalid
+            try:
+                file_stat = path.lstat()
+            except FileNotFoundError:
+                continue  # The completion audit decides which logs are required.
+            if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_size > per_file_limit:
+                return invalid
+            total += file_stat.st_size
+            if total > MAX_COMPLETION_EVENT_TOTAL_BYTES:
+                return invalid
+        from trainguard.validation import completion_errors
+
+        return invalid if completion_errors(run_dir, attempt_id, config, run_id, summary) else []
+    except Exception:  # noqa: BLE001 - untrusted evidence never escapes into an exported report
+        return invalid
+
+
 def trusted_measurement(run_dir: Path) -> dict | None:
     """Return original timing only when a separate index record still agrees."""
     try:
-        status = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError):
+        status = read_bounded_report_mapping(run_dir / "run.json")
+    except (TypeError, ValueError):
         return None
     if not isinstance(status, dict) or status.get("status") != "SUCCEEDED" or not isinstance(
         status.get("run_id"), str
@@ -410,6 +494,12 @@ def trusted_measurement(run_dir: Path) -> dict | None:
     if saved_completed_metadata_errors(status, config) or completed_index_errors(
         run_dir, status, config
     ):
+        return None
+    try:
+        summary = read_bounded_report_mapping(run_dir / "summary.json")
+    except (TypeError, ValueError):
+        return None
+    if completed_event_errors(run_dir, status, config, summary):
         return None
     value = status.get("measurement")
     return value if measurement_sha256(value) is not None else None

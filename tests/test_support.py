@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from trainguard.run_evidence import trusted_measurement
 from trainguard.run_store import RunStore
 from trainguard.support import SupportBundleError, build_support_bundle, export_support_bundle
 
@@ -78,3 +79,55 @@ def test_support_bundle_rejects_conflicting_success_evidence(tmp_path: Path) -> 
     (run_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
     with pytest.raises(SupportBundleError, match="saved run configuration"):
         build_support_bundle(run_dir)
+
+
+def test_successful_support_and_measurement_recheck_bounded_event_evidence(
+    tmp_path: Path,
+) -> None:
+    from trainguard.controller import run
+    from trainguard.run_evidence import (
+        MAX_COMPLETION_EVENT_FILE_BYTES,
+        MAX_COMPLETION_REPORT_BYTES,
+    )
+
+    config = Path(__file__).parents[1] / "configs/cpu_demo.yaml"
+    run_dir, succeeded = run(config, tmp_path / "runs")
+    assert succeeded
+    assert build_support_bundle(run_dir)["status"] == "SUCCEEDED"
+    assert trusted_measurement(run_dir) is not None
+
+    rank_log = run_dir / "attempts/attempt-001/rank-1.jsonl"
+    original = rank_log.read_bytes()
+    rank_log.unlink()
+    with pytest.raises(SupportBundleError, match="completion event evidence is missing or invalid"):
+        build_support_bundle(run_dir)
+    assert trusted_measurement(run_dir) is None
+
+    with rank_log.open("wb") as stream:
+        stream.truncate(MAX_COMPLETION_EVENT_FILE_BYTES + 1)
+    with pytest.raises(SupportBundleError, match="completion event evidence is missing or invalid"):
+        build_support_bundle(run_dir)
+    assert trusted_measurement(run_dir) is None
+
+    rank_log.write_bytes(original)
+    assert build_support_bundle(run_dir)["status"] == "SUCCEEDED"
+    assert trusted_measurement(run_dir) is not None
+
+    controller_log = run_dir / "controller.jsonl"
+    original_controller = controller_log.read_bytes()
+    controller_log.unlink()
+    with pytest.raises(SupportBundleError, match="completion event evidence is missing or invalid"):
+        build_support_bundle(run_dir)
+    assert trusted_measurement(run_dir) is None
+    controller_log.write_bytes(original_controller)
+    assert build_support_bundle(run_dir)["status"] == "SUCCEEDED"
+
+    summary_path = run_dir / "summary.json"
+    original_summary = summary_path.read_bytes()
+    with summary_path.open("wb") as stream:
+        stream.truncate(MAX_COMPLETION_REPORT_BYTES + 1)
+    with pytest.raises(SupportBundleError, match="over audit limit"):
+        build_support_bundle(run_dir)
+    assert trusted_measurement(run_dir) is None
+    summary_path.write_bytes(original_summary)
+    assert build_support_bundle(run_dir)["status"] == "SUCCEEDED"

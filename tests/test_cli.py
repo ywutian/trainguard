@@ -1,3 +1,5 @@
+import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -47,3 +49,45 @@ def test_controller_entry_rejects_unauthorized_fault_before_creating_run(tmp_pat
     with pytest.raises(ExperimentNotAuthorizedError):
         launch_run(config, tmp_path / "runs")
     assert not (tmp_path / "runs").exists()
+
+
+def test_validate_cli_requires_an_independent_reference_run(tmp_path: Path) -> None:
+    reference_config = Path(__file__).parents[1] / "configs/cpu_demo.yaml"
+    recovery_config = Path(__file__).parents[1] / "configs/recovery_demo.yaml"
+    reference, reference_ok = launch_run(reference_config, tmp_path / "reference")
+    recovered, recovered_ok = launch_run(
+        recovery_config, tmp_path / "recovered", allow_experiment=True
+    )
+    assert reference_ok and recovered_ok
+    runner = CliRunner()
+
+    distinct_report = tmp_path / "distinct.json"
+    distinct = runner.invoke(app, [
+        "validate", "--reference", str(reference), "--recovered", str(recovered),
+        "--report", str(distinct_report),
+    ])
+    assert distinct.exit_code == 0, distinct.output
+    assert "Recovery matches reference" in distinct.output
+    independent = json.loads(distinct_report.read_text())
+    assert independent["passed"] is True
+    assert independent["comparison_kind"] == "INDEPENDENT_REFERENCE"
+    assert independent["independent_reference"] is True
+
+    for name, duplicate in (
+        ("same-path", recovered),
+        ("copied-run", tmp_path / "copied-run"),
+    ):
+        if name == "copied-run":
+            shutil.copytree(recovered, duplicate)
+        report = tmp_path / f"{name}.json"
+        result = runner.invoke(app, [
+            "validate", "--reference", str(recovered), "--recovered", str(duplicate),
+            "--report", str(report),
+        ])
+        assert result.exit_code == 2, result.output
+        assert "Recovery matches reference" not in result.output
+        assert "independent reference run is required" in result.output.lower()
+        self_check = json.loads(report.read_text())
+        assert self_check["passed"] is True
+        assert self_check["comparison_kind"] == "SELF_CHECK"
+        assert self_check["independent_reference"] is False
