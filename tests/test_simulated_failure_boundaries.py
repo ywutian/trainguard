@@ -178,9 +178,13 @@ def test_restore_load_failure_skips_self_consistent_candidate(
     assert comparison["passed"], comparison
 
 
-def test_worker_exit_during_restore_skips_candidate_after_all_rank_start(
+def test_worker_exit_during_restore_skips_candidate_with_durable_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    reference, reference_ok = controller.run(
+        _configuration(tmp_path, recover=False), tmp_path / "reference-runs"
+    )
+    assert reference_ok, (reference / "launcher.log").read_text()
     original_launch = controller._launch_attempt
 
     class StopAfterFirstAttempt(BaseException):
@@ -243,17 +247,47 @@ def test_worker_exit_during_restore_skips_candidate_after_all_rank_start(
         ("attempt-002", "FAILED", str(newest)),
         ("attempt-003", "SUCCEEDED", str(older)),
     ]
-    assert status == ("INVALID", "worker restore incomplete for this manifest")
-    verdict = json.loads((recovered / "attempts/attempt-002/restore-incomplete.json").read_text())
-    assert verdict["checkpoint_path"] == str(newest)
-    assert verdict["manifest_sha256"] == _digest(newest / "manifest.json")
-    assert 0 in verdict["incomplete_ranks"]
-    assert all(
-        (recovered / f"attempts/attempt-002/rank-{rank}-restore-progress.json").is_file()
-        for rank in range(2)
-    )
-    assert not list((recovered / "attempts/attempt-002").glob("rank-*-restore-failure.json"))
-    assert run_id == verdict["run_id"]
+    assert status is not None and status[0] == "INVALID"
+    manifest_sha256 = _digest(newest / "manifest.json")
+    attempt_dir = recovered / "attempts/attempt-002"
+    for rank in range(2):
+        progress = json.loads(
+            (attempt_dir / f"rank-{rank}-restore-progress.json").read_text()
+        )
+        assert progress["run_id"] == run_id
+        assert progress["attempt_id"] == "attempt-002"
+        assert progress["rank"] == rank
+        assert progress["checkpoint_path"] == str(newest)
+        assert progress["manifest_sha256"] == manifest_sha256
+        if rank == 0:
+            assert progress["phase"] == "restore_started"
+    failure_markers = sorted(attempt_dir.glob("rank-*-restore-failure.json"))
+    if status[1] == "worker restore failed for this manifest":
+        assert failure_markers
+        for marker in failure_markers:
+            record = json.loads(marker.read_text())
+            assert record["run_id"] == run_id
+            assert record["attempt_id"] == "attempt-002"
+            assert record["rank"] == int(marker.name.split("-")[1])
+            assert record["checkpoint_path"] == str(newest)
+            assert record["manifest_sha256"] == manifest_sha256
+            assert record["error_type"]
+    elif status[1] == "worker restore incomplete for this manifest":
+        assert not failure_markers
+        group_end = json.loads((attempt_dir / "worker-group-ended.json").read_text())
+        assert group_end["run_id"] == run_id
+        assert group_end["attempt_id"] == "attempt-002"
+        assert group_end["observation"] == "controller_cleanup"
+        verdict = json.loads((attempt_dir / "restore-incomplete.json").read_text())
+        assert verdict["run_id"] == run_id
+        assert verdict["attempt_id"] == "attempt-002"
+        assert verdict["checkpoint_path"] == str(newest)
+        assert verdict["manifest_sha256"] == manifest_sha256
+        assert 0 in verdict["incomplete_ranks"]
+    else:
+        pytest.fail(f"unexpected checkpoint status: {status}")
+    comparison = validate_runs(reference, recovered)
+    assert comparison["passed"], comparison
 
 
 @pytest.mark.parametrize("damage", ["missing_shard", "short_shard"])

@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "status": "FAILED",
+  "candidate_commit": "ceff37495837125720727e13e2b411bdbae4a8ad",
+  "candidate_source_sha256": "48e7bb77ba360fb7885c8ea2c5e25553efce38c3e79cc9d38db4c5770ea4a1ca",
+  "push_workflow": "https://github.com/ywutian/trainguard/actions/runs/36311875730",
+  "pull_request_workflow": "https://github.com/ywutian/trainguard/actions/runs/36311878212",
+  "lanes": {
+    "3.11": {
+      "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "passed": 228,
+      "skipped_no_gpu": 4,
+      "failed": 1,
+      "local_result_reference": "runs/commercial-readiness-035/linux-failure-311/simulation-ce0148c55d23/result.json",
+      "result_sha256": "cb9f8e560bace6a3de91f5224fd4d3675b6fcdb69988cca369d18f740765ab0c",
+      "junit_sha256": "0aae1ad9e80c580e3f38dc3b6069b6d7bacb010f6e2c4b4b22840ad4dd64314c",
+      "test_output_sha256": "3c0c43b2a57abd8911470fa5bfd7979807ac5c3a84eccf057f78fa3e375026b0"
+    },
+    "3.12": {
+      "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "passed": 228,
+      "skipped_no_gpu": 4,
+      "failed": 1,
+      "local_result_reference": "runs/commercial-readiness-035/linux-failure-312/simulation-30b1d48a887d/result.json",
+      "result_sha256": "7d1136ae5c389ae0400f95ea92f03887d041d6acfc1090abc101bb9316b3acfe",
+      "junit_sha256": "eced66971a037a919cc3ff446757bd86b1f2e8b4bc3dadd0728bf12583cca6d8",
+      "test_output_sha256": "e7c24a7505695d169e4393897a1fc945338ad112048b0cac204dd21a1661b1da"
+    }
+  },
+  "failed_test": "tests/test_simulated_failure_boundaries.py::test_worker_exit_during_restore_skips_candidate_after_all_rank_start",
+  "finding": "The integration test required the incomplete-load verdict, but a peer may receive a distributed checkpoint load exception after the other rank exits. Both are durable, manifest-bound failure paths that exclude the candidate. Both hosted lanes observed the explicit exception path and failed the over-specific assertion.",
+  "disposition": "Preserve this failed evidence. Require the integration test to verify the matching durable evidence for either race outcome, keep a deterministic incomplete-load negative test, then rebuild and rerun the full local and hosted gates. The artifacts and local receipts for this commit must not be used as final cross-platform evidence.",
+  "production_release_authorized": false
+}
