@@ -295,7 +295,8 @@ def resume_campaign(directory: Path) -> Path:
         base = ProjectConfig.model_validate(result["config"])
         current = environment_snapshot(base.run.world_size, base.run.device, directory)
         for field in (
-            "source_sha256", "torch", "python", "versions", "installed_distributions"
+            "source_sha256", "torch", "python", "versions", "installed_distributions",
+            "environment_options",
         ):
             if field not in result["environment"]:
                 raise ValueError(f"acceptance runtime {field} identity is missing")

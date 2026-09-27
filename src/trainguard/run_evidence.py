@@ -15,6 +15,7 @@ from trainguard.config import ProjectConfig
 
 RUNTIME_IDENTITY_FIELDS = (
     "source_sha256", "python", "torch", "versions", "installed_distributions",
+    "environment_options",
     "platform", "device", "world_size", "storage", "storage_device",
     "cuda_available", "cuda_version", "cuda_device_count",
 )
@@ -112,6 +113,11 @@ def saved_completed_metadata_errors(status: Any, config: ProjectConfig) -> list[
         environment.get("installed_distributions"), list
     ):
         errors.append("run environment dependency identity is invalid")
+    options = environment.get("environment_options")
+    if not isinstance(options, dict) or set(options) != {
+        "OMP_NUM_THREADS", "MKL_NUM_THREADS", "CUBLAS_WORKSPACE_CONFIG"
+    } or any(value is not None and not isinstance(value, str) for value in options.values()):
+        errors.append("run environment options identity is invalid")
     return errors
 
 

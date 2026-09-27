@@ -168,13 +168,33 @@ def test_supply_chain_rejects_candidate_identity_change(tmp_path: Path) -> None:
     ("supply-chain-sbom.json", "/用户/秘密文件"),
     ("supply-chain-sbom.json", "/équipe/private"),
     ("supply-chain-requirements.txt", "--find-links /用户/秘密文件"),
+    ("supply-chain-installed.json", "\\\\internal-server\\customer\\secret"),
+    ("supply-chain-sbom.json", "//internal-server/customer/secret"),
+    ("supply-chain-requirements.txt", "--find-links \\\\server\\customer"),
+    ("supply-chain-sbom.json", "https:///Users/alice/private-key.pem"),
+    ("supply-chain-sbom.json", "https://localhost:8080/private/customer"),
+    ("supply-chain-sbom.json", "https://127.0.0.1:1234/token"),
+    ("supply-chain-sbom.json", "https://10.2.3.4/customer"),
+    ("supply-chain-sbom.json", "http://127.1/internal/customer"),
+    ("supply-chain-sbom.json", "http://10.1/internal/customer"),
+    ("supply-chain-sbom.json", "http://192.168.1/internal/customer"),
+    ("supply-chain-sbom.json", "http://169.254.1/internal/customer"),
+    ("supply-chain-sbom.json", r"http://127.0.0.1\internal/customer"),
+    ("supply-chain-receipt.json", "file:/private/customer/evidence"),
+    ("supply-chain-receipt.json", "path:/private/customer/evidence"),
     ("supply-chain-receipt.json", "file:///private/customer/evidence"),
 ], ids=[
     "requirements-url", "audit-posix-path", "installed-windows-path",
     "sbom-secret-url", "sbom-aws-signature", "sbom-google-credential",
     "sbom-azure-signature", "sbom-generic-signature", "sbom-camel-access-token",
     "sbom-camel-client-secret", "sbom-unknown-query", "sbom-unicode-path",
-    "sbom-accented-path", "requirements-unicode-path", "receipt-local-url",
+    "sbom-accented-path", "requirements-unicode-path", "installed-unc-path",
+    "sbom-slash-unc-path", "requirements-unc-path", "sbom-hostless-url",
+    "sbom-localhost-url", "sbom-loopback-url", "sbom-private-ip-url",
+    "sbom-short-loopback", "sbom-short-private-ip", "sbom-short-lan-ip",
+    "sbom-short-linklocal-ip", "sbom-backslash-loopback",
+    "receipt-file-single-slash", "receipt-path-single-slash",
+    "receipt-local-url",
 ])
 def test_supply_chain_rejects_private_output_after_rehash(
     tmp_path: Path, name: str, secret: str,
@@ -235,7 +255,7 @@ def test_sbom_reference_redaction_and_public_urls(tmp_path: Path) -> None:
 @pytest.mark.parametrize("name, secret", [
     ("supply-chain-sbom.json", "https://download.example/?X-Amz-Signature=test"),
     ("supply-chain-audit.json", "/private/customer/checkpoints"),
-])
+], ids=["sbom-signed-url", "audit-local-path"])
 def test_blocked_scan_private_output_is_not_published(
     tmp_path: Path, name: str, secret: str,
 ) -> None:

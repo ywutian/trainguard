@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import platform
@@ -31,9 +32,12 @@ SBOM_TOOL_VERSION = "7.4.0"
 AUDIT_TOOL_VERSION = "2.10.1"
 URL_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+")
 ABSOLUTE_POSIX_PATH = re.compile(
-    r"(?<![\w:./\\])/(?!/)[^\s\"'<>?,;)}\]]+"
+    r"(?<![\w./\\])/(?!/)[^\s\"'<>?,;)}\]]+"
 )
 ABSOLUTE_WINDOWS_PATH = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s\"'<>]+")
+ABSOLUTE_UNC_PATH = re.compile(
+    r"(?<![\w./\\])(?:\\\\|//)[^\s\\/'\"<>]+[\\/][^\s\"'<>]+"
+)
 
 
 class SupplyChainInvalid(ValueError):
@@ -93,16 +97,29 @@ def _load(path: Path) -> object:
 
 def _private_url(url: str) -> bool:
     """Allow only public HTTP links without query or fragment data."""
+    if "\\" in url:
+        return True
     try:
         parsed = urlsplit(url)
     except ValueError:
         return True
+    host = parsed.hostname
     if (
         parsed.scheme.lower() not in {"http", "https"}
         or parsed.username is not None
         or parsed.password is not None
+        or not host
     ):
         return True
+    try:
+        if not ipaddress.ip_address(host).is_global:
+            return True
+    except ValueError:
+        normalized = host.rstrip(".").lower()
+        if "." not in normalized or re.fullmatch(r"[0-9a-fx.]+", normalized) or normalized.endswith(
+            (".localhost", ".local", ".internal", ".lan", ".home", ".corp")
+        ):
+            return True
     return bool(parsed.query or parsed.fragment)
 
 
@@ -130,9 +147,9 @@ def _verify_output_privacy(directory: Path) -> None:
                 if _private_url(match.group().rstrip(".,;)]}")):
                     raise SupplyChainInvalid(f"supply-chain output contains a private URL: {name}")
             without_urls = URL_PATTERN.sub("", value)
-            if ABSOLUTE_POSIX_PATH.search(without_urls) or ABSOLUTE_WINDOWS_PATH.search(
-                without_urls
-            ):
+            if any(pattern.search(without_urls) for pattern in (
+                ABSOLUTE_POSIX_PATH, ABSOLUTE_WINDOWS_PATH, ABSOLUTE_UNC_PATH,
+            )):
                 raise SupplyChainInvalid(f"supply-chain output contains a local path: {name}")
 
 

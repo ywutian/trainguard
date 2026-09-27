@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -154,6 +155,12 @@ def test_resume_rejects_indirect_version_or_wheel_metadata_change(
             with pytest.raises(ValueError, match="installed_distributions differs"):
                 resume(run_dir)
         assert not (run_dir / "attempts").exists()
+    current_threads = os.environ.get("OMP_NUM_THREADS")
+    with monkeypatch.context() as patch:
+        patch.setenv("OMP_NUM_THREADS", "999" if current_threads != "999" else "998")
+        with pytest.raises(ValueError, match="environment_options differs"):
+            resume(run_dir)
+    assert not (run_dir / "attempts").exists()
     assert resume(run_dir), (run_dir / "launcher.log").read_text()
 
 
