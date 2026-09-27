@@ -1,16 +1,17 @@
 {
-  "candidate_source_sha256": "48e7bb77ba360fb7885c8ea2c5e25553efce38c3e79cc9d38db4c5770ea4a1ca",
+  "candidate_execution_inputs_sha256": "3e1cabbb36836b1945ae57aeed790c4c5803e851a4c79499fce13910b0975e9f",
+  "candidate_source_sha256": "57ccd6e42a516fb1ca4df70a88aa0c96c5b11d70922647745252815d4b66fe79",
   "gates": [
     {
-      "evidence": "docs/commercial/evidence/local_package-0.3.5-r2.json",
+      "evidence": "docs/commercial/evidence/local-0.3.6-r1/local_package.json",
       "id": "local_package",
-      "sha256": "fd84c76797c5a31627466df963b6bd78d76fd4af948c3e366a2d044e0a44f4dc",
+      "sha256": "b2730ec7ec1c4cea9cf27f2681988edc158e1b0d3a71251c424f2539c619718e",
       "status": "PASS"
     },
     {
-      "evidence": "docs/commercial/evidence/local_cpu-0.3.5-r2.json",
+      "evidence": "docs/commercial/evidence/local-0.3.6-r1/local_cpu.json",
       "id": "local_cpu",
-      "sha256": "fc0fa8a77e423dc401d18f9270042d3b4bd66a3011bbb0e2a863e797ca4f641f",
+      "sha256": "824422e916371673a19b38f1460a1280bf533aa43958781dc29d5f5fac1e5053",
       "status": "PASS"
     },
     {
