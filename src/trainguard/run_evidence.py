@@ -21,6 +21,7 @@ from trainguard.checkpoint import (
     validate_checkpoint,
 )
 from trainguard.config import ProjectConfig
+from trainguard.privacy import key_for_run
 from trainguard.restore_failures import failed_restore_candidates
 
 RUNTIME_IDENTITY_FIELDS = (
@@ -242,6 +243,11 @@ def _completed_checkpoint_errors(
         or re.fullmatch(r"[0-9a-f]{64}", final["manifest_sha256"]) is None
     ):
         return ["post-run final checkpoint identity is invalid"]
+    if config.run.profile == "guarded":
+        try:
+            key_for_run(run_dir)
+        except ValueError as exc:
+            return [f"guarded checkpoint evidence cannot be verified: {exc}"]
     if config.checkpoint.reference_store_path is not None:
         return []
     run_id = status.get("run_id")

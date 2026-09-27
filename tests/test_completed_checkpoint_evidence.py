@@ -78,6 +78,17 @@ def test_guarded_completed_evidence_rechecks_final_and_backup(
     excess.unlink()
     assert validate_runs(run_dir, run_dir)["passed"] is True
 
+    with monkeypatch.context() as patch:
+        patch.delenv("TRAINGUARD_SAMPLE_HMAC_KEY_FILE")
+        _assert_rejected(run_dir)
+    original_key = key.read_bytes()
+    key.write_bytes(b"another-customer-sample-key-with-enough-bytes")
+    _assert_rejected(run_dir)
+    key.write_bytes(original_key)
+    assert validate_runs(run_dir, run_dir)["passed"] is True
+    assert build_support_bundle(run_dir)["status"] == "SUCCEEDED"
+    assert run_evidence.trusted_measurement(run_dir) is not None
+
 
 def test_experiment_completed_evidence_rechecks_final_checkpoint(tmp_path: Path) -> None:
     run_dir, succeeded = controller.run(
