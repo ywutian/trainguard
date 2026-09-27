@@ -60,7 +60,7 @@ The v2 file defines `WORKLOAD_API_VERSION = 2`, `build_model(config)`, `build_op
 
 Each candidate is stored under `runs/<run-id>/checkpoints/step-<step>-<attempt>/`. DCP writes model and optimizer state. Every rank writes its scheduler, Python/NumPy/Torch CPU and optional CUDA RNG, scaler, update and consumed-batch counters, and compatibility fingerprints. Rank 0 validates all expected files, records sizes and SHA-256 hashes in `manifest.json`, then publishes `COMMITTED`. Recovery scans these files and ignores incomplete, incompatible, or corrupted candidates, falling back to the newest valid older checkpoint.
 
-The run directory also contains `run.json`, a SQLite index (`run.sqlite3`), `launcher.log`, per-attempt rank event logs and summaries, and a final `summary.json`. The committed manifest is the checkpoint validity source if the controller stops before updating SQLite.
+The run directory also contains `run.json`, a SQLite index (`run.sqlite3`), `launcher.log`, per-attempt rank event logs and summaries, and a final `summary.json`. In the default local mode, the committed manifest is the checkpoint validity source if the controller stops before updating SQLite. In the same-host reference experiment, only HEAD-referenced generations are eligible for recovery.
 
 ### Same-host reference checkpoint experiment
 
