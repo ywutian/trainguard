@@ -12,7 +12,6 @@ import uuid
 from pathlib import Path
 
 import torch
-from verify_sdist import verify_build_inputs
 
 from trainguard import __version__
 from trainguard.environment import source_sha256
@@ -148,6 +147,8 @@ def main() -> int:
         for name, command in commands:
             if name == "package":
                 try:
+                    from verify_sdist import verify_build_inputs
+
                     verify_build_inputs(Path.cwd())
                 except ValueError as exc:
                     output = directory / "package.txt"

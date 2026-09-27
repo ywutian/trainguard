@@ -23,6 +23,7 @@ jobs:
           path: |
             verification/simulation-*/result.json
             verification/simulation-*/report.md
+            verification/simulation-*/pytest.xml
             verification/simulation-*/static.txt
             verification/simulation-*/tests.txt
             verification/simulation-*/cpu-acceptance.txt
