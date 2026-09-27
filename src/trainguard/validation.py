@@ -367,7 +367,7 @@ def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
         ("reference", reference_dir, reference_config, reference_status),
         ("recovered", recovered_dir, recovered_config, recovered_status),
     ):
-        if status.get("config") != config.model_dump():
+        if not config.matches_saved_config(status.get("config")):
             differences.append(f"{name} saved run configuration differs")
         if config.external_workload is not None:
             try:

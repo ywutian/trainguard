@@ -495,21 +495,25 @@ class RemoteCheckpointProtocol:
             not isinstance(head, dict)
             or set(head) != {"schema_version", "epoch", "commits"}
             or type(head["schema_version"]) is not int
-            or head["schema_version"] != 1
+            or head["schema_version"] not in {1, 2}
             or type(head["epoch"]) is not int
             or head["epoch"] < 1
             or not isinstance(head["commits"], list)
         ):
             raise InvalidRemoteCheckpoint("run head structure differs")
         previous_step = None
+        previous_sequence = None
         seen = set()
         for row in head["commits"]:
-            if not isinstance(row, dict) or set(row) != {
+            required = {
                 "generation_id",
                 "global_step",
                 "epoch",
                 "manifest_sha256",
-            }:
+            }
+            if head["schema_version"] == 2:
+                required.add("sequence")
+            if not isinstance(row, dict) or set(row) != required:
                 raise InvalidRemoteCheckpoint("head candidate structure differs")
             try:
                 _name(row["generation_id"])
@@ -524,14 +528,30 @@ class RemoteCheckpointProtocol:
                 or not isinstance(row["manifest_sha256"], str)
                 or not _SHA.fullmatch(row["manifest_sha256"])
                 or row["generation_id"] in seen
-                or (previous_step is not None and row["global_step"] >= previous_step)
+                or (
+                    head["schema_version"] == 1
+                    and previous_step is not None
+                    and row["global_step"] >= previous_step
+                )
+                or (
+                    head["schema_version"] == 2
+                    and (
+                        type(row["sequence"]) is not int
+                        or row["sequence"] < 1
+                        or (previous_sequence is not None and row["sequence"] != previous_sequence - 1)
+                    )
+                )
             ):
                 raise InvalidRemoteCheckpoint("head candidate order or identity differs")
             seen.add(row["generation_id"])
             previous_step = row["global_step"]
+            if head["schema_version"] == 2:
+                previous_sequence = row["sequence"]
         return head, stored
 
-    def publish(self, token: FencingToken, generation_id: str) -> PublishedCheckpoint:
+    def publish(
+        self, token: FencingToken, generation_id: str, *, allow_recovery: bool = False
+    ) -> PublishedCheckpoint:
         self.authority.require(token, role="controller")
         if token.run_id != self.run_id:
             raise FencedOut("token belongs to another run")
@@ -550,21 +570,33 @@ class RemoteCheckpointProtocol:
                 raise FencedOut("takeover epoch has no head barrier")
             previous: list[dict] = []
             old_etag = None
+            schema_version = 2 if allow_recovery else 1
         else:
             head, stored = current
             if head["epoch"] != token.epoch:
                 raise FencedOut("run head belongs to another epoch")
             previous = head["commits"]
             old_etag = stored.etag
-            if proposed in previous:
+            schema_version = 2 if allow_recovery else head["schema_version"]
+            if any(all(row.get(key) == value for key, value in proposed.items()) for row in previous):
                 return PublishedCheckpoint(
                     generation_id, manifest["global_step"], token.epoch, manifest_hash
                 )
-            if previous and manifest["global_step"] <= previous[0]["global_step"]:
+            if (
+                previous and not allow_recovery
+                and manifest["global_step"] <= previous[0]["global_step"]
+            ):
                 raise PublishConflict("checkpoint step must advance monotonically")
+        if schema_version == 2:
+            if previous and "sequence" not in previous[0]:
+                previous = [
+                    {**row, "sequence": len(previous) - index}
+                    for index, row in enumerate(previous)
+                ]
+            proposed["sequence"] = previous[0]["sequence"] + 1 if previous else 1
         data = _encode(
             {
-                "schema_version": 1,
+                "schema_version": schema_version,
                 "epoch": token.epoch,
                 "commits": [proposed, *previous][: self.history_limit],
             }
@@ -577,7 +609,10 @@ class RemoteCheckpointProtocol:
                 self.store.put(self._head_key, data, if_match=old_etag)
         except (PreconditionFailed, ResponseLost) as exc:
             observed = self._head()
-            if observed is not None and proposed in observed[0]["commits"]:
+            if observed is not None and any(
+                all(row.get(key) == value for key, value in proposed.items())
+                for row in observed[0]["commits"]
+            ):
                 return PublishedCheckpoint(
                     generation_id, manifest["global_step"], token.epoch, manifest_hash
                 )
@@ -602,17 +637,19 @@ class RemoteCheckpointProtocol:
                 old_etag = None
                 commits: list[dict] = []
                 old_epoch = token.epoch - 1
+                schema_version = 1
             else:
                 head, stored = current
                 old_etag = stored.etag
                 commits = head["commits"]
                 old_epoch = head["epoch"]
+                schema_version = head["schema_version"]
             if old_epoch == token.epoch:
                 self.authority.activate_takeover(token)
                 return token
             if old_epoch != token.epoch - 1:
                 raise FencedOut("head and authority epochs disagree")
-            data = _encode({"schema_version": 1, "epoch": token.epoch, "commits": commits})
+            data = _encode({"schema_version": schema_version, "epoch": token.epoch, "commits": commits})
             try:
                 if old_etag is None:
                     self.store.put(self._head_key, data, if_none_match=True)
@@ -627,6 +664,92 @@ class RemoteCheckpointProtocol:
             self.authority.activate_takeover(token)
             return token
         raise PublishConflict("epoch barrier could not be published")
+
+    def synchronize_head_epoch(self, token: FencingToken) -> None:
+        """Advance HEAD after a durable authority has fenced the previous owner.
+
+        The caller must independently establish exclusive control before claiming
+        the new epoch. A crash between that claim and this CAS can be retried by a
+        later owner, including when more than one epoch was skipped.
+        """
+        self.authority.require(token, role="controller")
+        if token.run_id != self.run_id:
+            raise FencedOut("token belongs to another run")
+        for _ in range(8):
+            current = self._head()
+            if current is None:
+                if token.epoch == 1:
+                    return
+                old_etag = None
+                commits: list[dict] = []
+                schema_version = 1
+            else:
+                head, stored = current
+                if head["epoch"] == token.epoch:
+                    return
+                if head["epoch"] > token.epoch:
+                    raise FencedOut("run head has a newer epoch")
+                old_etag = stored.etag
+                commits = head["commits"]
+                schema_version = head["schema_version"]
+            data = _encode({"schema_version": schema_version, "epoch": token.epoch, "commits": commits})
+            self.authority.require(token, role="controller")
+            try:
+                if old_etag is None:
+                    self.store.put(self._head_key, data, if_none_match=True)
+                else:
+                    self.store.put(self._head_key, data, if_match=old_etag)
+            except (PreconditionFailed, ResponseLost):
+                observed = self._head()
+                if observed is not None and observed[0]["epoch"] == token.epoch:
+                    return
+                continue
+            self.authority.require(token, role="controller")
+            return
+        raise PublishConflict("head epoch barrier could not be confirmed")
+
+    def published_candidates(self) -> tuple[PublishedCheckpoint, ...]:
+        """Return HEAD references without treating unreferenced objects as committed."""
+        current = self._head()
+        if current is None:
+            return ()
+        return tuple(
+            PublishedCheckpoint(
+                row["generation_id"], row["global_step"], row["epoch"],
+                row["manifest_sha256"],
+            )
+            for row in current[0]["commits"]
+        )
+
+    def head_epoch(self) -> int | None:
+        """Read the verified HEAD epoch without changing publication state."""
+        current = self._head()
+        return None if current is None else current[0]["epoch"]
+
+    def read_published_payloads(self, candidate: PublishedCheckpoint) -> dict[str, bytes]:
+        """Read one HEAD-bound generation, checking the exact returned bytes."""
+        if candidate not in self.published_candidates():
+            raise InvalidRemoteCheckpoint("generation is not referenced by HEAD")
+        manifest, manifest_hash = self._read_manifest(
+            candidate.generation_id, candidate.manifest_sha256
+        )
+        if (
+            manifest_hash != candidate.manifest_sha256
+            or manifest["global_step"] != candidate.global_step
+            or manifest["epoch"] != candidate.epoch
+        ):
+            raise InvalidRemoteCheckpoint("manifest and head progress differ")
+        payloads = {}
+        for row in manifest["payloads"]:
+            stored = self.store.get(self.payload_key(candidate.generation_id, row["path"]))
+            if (
+                stored is None
+                or len(stored.data) != row["size"]
+                or _sha256(stored.data) != row["sha256"]
+            ):
+                raise InvalidRemoteCheckpoint(f"payload changed during read: {row['path']}")
+            payloads[row["path"]] = stored.data
+        return payloads
 
     def select_latest(self) -> Selection:
         """Validate each published candidate in order and fall back on corruption."""

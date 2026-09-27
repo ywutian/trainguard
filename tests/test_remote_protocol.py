@@ -140,6 +140,23 @@ def test_corrupt_or_missing_latest_payload_falls_back_with_reason():
     assert protocol.select_latest().chosen.generation_id == "generation-a"
 
 
+def test_recovery_can_republish_a_step_after_rollback_without_losing_head_order():
+    _, _, _, protocol, controller, worker = _setup()
+    _publish(protocol, controller, worker, "generation-a", 1)
+    _publish(protocol, controller, worker, "generation-b", 2)
+    _stage(protocol, controller, worker, "generation-c", 2)
+    with pytest.raises(PublishConflict, match="monotonically"):
+        protocol.publish(controller, "generation-c")
+    recovered = protocol.publish(controller, "generation-c", allow_recovery=True)
+    assert protocol.select_latest().chosen == recovered
+    assert [item.generation_id for item in protocol.published_candidates()] == [
+        "generation-c", "generation-b", "generation-a"
+    ]
+    assert protocol.publish(controller, "generation-c", allow_recovery=True) == recovered
+    _publish(protocol, controller, worker, "generation-d", 3)
+    assert protocol.select_latest().chosen.generation_id == "generation-d"
+
+
 def test_manifest_mutation_and_all_invalid_candidates_fail_closed():
     store, _, _, protocol, controller, worker = _setup()
     _publish(protocol, controller, worker, "generation-a", 10)

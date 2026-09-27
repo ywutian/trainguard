@@ -41,6 +41,7 @@ class TrainingSettings(StrictModel):
 
 class CheckpointSettings(StrictModel):
     mode: Literal["none", "sync", "async"] = "none"
+    reference_store_path: str | None = None
     interval_steps: int = Field(default=1, ge=1)
     poll_interval_steps: int = Field(default=5, ge=1)
     save_timeout_seconds: int = Field(default=120, ge=1)
@@ -156,6 +157,19 @@ class ProjectConfig(StrictModel):
 
     @model_validator(mode="after")
     def validate_fault(self) -> ProjectConfig:
+        if self.checkpoint.reference_store_path is not None:
+            if not Path(self.checkpoint.reference_store_path).is_absolute():
+                raise ValueError("local reference database path must be absolute")
+            if (
+                self.run.profile != "experiment"
+                or self.run.world_size != 2
+                or self.run.backend != "gloo"
+                or self.run.device != "cpu"
+                or self.run.strategy != "ddp"
+                or self.checkpoint.mode != "sync"
+                or self.checkpoint.keep_last_k is not None
+            ):
+                raise ValueError("local reference backend requires two-rank CPU sync experiment")
         if self.external_workload is not None:
             if self.run.device != "cpu" or self.run.strategy != "ddp":
                 raise ValueError(f"external workload v{self.external_workload.version} requires CPU DDP")
@@ -223,6 +237,8 @@ class ProjectConfig(StrictModel):
 
     def fingerprint(self) -> str:
         value = self.model_dump()
+        if value["checkpoint"]["reference_store_path"] is None:
+            value["checkpoint"].pop("reference_store_path")
         for key in ("max_checkpoint_bytes", "min_free_bytes", "max_event_log_bytes"):
             if value["checkpoint"][key] is None:
                 value["checkpoint"].pop(key)
@@ -230,6 +246,18 @@ class ProjectConfig(StrictModel):
             value["external_workload"].pop("dependencies")
             value["external_workload"].pop("data_files")
         return self._digest(value)
+
+    def matches_saved_config(self, saved: object) -> bool:
+        """Accept the omitted pre-reference default only for local runs."""
+        expected = self.model_dump()
+        if (
+            self.checkpoint.reference_store_path is None
+            and isinstance(saved, dict)
+            and isinstance(saved.get("checkpoint"), dict)
+            and "reference_store_path" not in saved["checkpoint"]
+        ):
+            expected["checkpoint"].pop("reference_store_path")
+        return saved == expected
 
     def external_identity(self) -> dict | None:
         if self.external_workload is None:

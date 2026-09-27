@@ -60,11 +60,13 @@ def run(
     config: Annotated[Path, typer.Option("--config", exists=True, file_okay=True, dir_okay=False)],
     output_root: Annotated[Path, typer.Option("--output-root")] = DEFAULT_OUTPUT_ROOT,
     allow_experiment: Annotated[bool, typer.Option("--allow-experiment")] = False,
+    reference_store: Annotated[Path | None, typer.Option("--reference-store")] = None,
 ) -> None:
     """Run a fixed-size training workload with bounded recovery."""
     try:
         run_dir, succeeded = launch_run(
-            config, output_root, allow_experiment=allow_experiment
+            config, output_root, allow_experiment=allow_experiment,
+            reference_store_path=reference_store,
         )
     except ExperimentNotAuthorizedError as exc:
         typer.echo(f"{exc}; pass --allow-experiment in an isolated test", err=True)

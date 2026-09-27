@@ -61,7 +61,7 @@ def saved_completed_metadata_errors(status: Any, config: ProjectConfig) -> list[
         r"attempt-[0-9]{3,}", status["attempt_id"]
     ) is None:
         errors.append("final attempt identity is invalid")
-    if status.get("config") != config.model_dump() or status.get(
+    if not config.matches_saved_config(status.get("config")) or status.get(
         "config_fingerprint"
     ) != config.fingerprint():
         errors.append("run configuration differs from saved configuration")
@@ -194,6 +194,10 @@ def completed_index_errors(run_dir: Path, status: dict, config: ProjectConfig) -
     else:
         if run[4] != expected_measurement:
             errors.append("original measurement differs from run index")
+    if config.checkpoint.reference_store_path is not None:
+        from trainguard.reference_backend import reference_final_errors
+
+        errors.extend(reference_final_errors(run_dir, status, config))
     return errors
 
 

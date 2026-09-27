@@ -32,6 +32,8 @@ from trainguard.events import append_event, utc_now, write_json_atomic
 from trainguard.lifecycle import prune_checkpoints
 from trainguard.privacy import key_for_run, load_sample_key, sample_key_id
 from trainguard.records import parse_event
+from trainguard.reference_backend import LocalReferenceSession, check_reference_mode
+from trainguard.remote_protocol import InvalidRemoteCheckpoint, RemoteProtocolError
 from trainguard.restore_failures import (
     failed_restore_candidates,
     record_group_ended,
@@ -218,8 +220,40 @@ def _max_step(run_dir: Path, attempt_id: str, run_id: str, world_size: int) -> i
 
 
 def _scan_checkpoints(
-    run_dir: Path, config: ProjectConfig, run_id: str, store: RunStore, audit: bool = False
+    run_dir: Path, config: ProjectConfig, run_id: str, store: RunStore, audit: bool = False,
+    reference: LocalReferenceSession | None = None,
 ) -> CheckpointRecord | None:
+    if reference is not None:
+        failed = failed_restore_candidates(
+            run_dir, run_id, config.run.world_size, store.attempts(run_id)
+        )
+        records = []
+        selected = None
+        for candidate in reference.published_candidates():
+            try:
+                record = reference.materialize(candidate)
+            except (CheckpointInvalid, InvalidRemoteCheckpoint, OSError, ValueError) as exc:
+                records.append((
+                    str(reference.cache_root / candidate.generation_id), run_id,
+                    None, candidate.global_step, "INVALID", str(exc),
+                ))
+                continue
+            if record.manifest_sha256 in failed.explicit.get(record.path, set()):
+                reason = "worker restore failed for this manifest"
+            elif record.manifest_sha256 in failed.incomplete.get(record.path, set()):
+                reason = "worker restore incomplete for this manifest"
+            else:
+                reason = None
+            records.append((
+                str(record.path), run_id, record.attempt_id, record.global_step,
+                "INVALID" if reason else "VALID", reason,
+            ))
+            if reason is None and selected is None:
+                selected = record
+                if not audit:
+                    break
+        store.record_checkpoints(records)
+        return selected
     root = run_dir / "checkpoints"
     if not root.is_dir():
         return None
@@ -282,6 +316,7 @@ def _launch_attempt(
     attempt_id: str,
     resume_checkpoint: CheckpointRecord | None,
     store: RunStore,
+    reference: LocalReferenceSession | None = None,
 ) -> AttemptResult:
     command = [
         sys.executable,
@@ -324,6 +359,7 @@ def _launch_attempt(
     reason = "launcher exited before completion"
     exit_code = None
     commits_seen: set[str] = set()
+    reference_published: set[Path] = set()
 
     def milestone(event_type: str, **fields) -> None:
         append_event(
@@ -361,6 +397,12 @@ def _launch_attempt(
                     completed,
                 ):
                     last_progress = time.monotonic()
+                if reference is not None:
+                    _publish_reference_commits(
+                        reference, run_dir, config, run_id, attempt_id,
+                        reference_published, milestone,
+                        recovery=resume_checkpoint is not None,
+                    )
                 if config.checkpoint.keep_last_k is not None:
                     commits = {
                         str(path.parent) for path in (run_dir / "checkpoints").glob("*/COMMITTED")
@@ -404,6 +446,13 @@ def _launch_attempt(
             orphaned_workers = bool(_owned_group_members(run_dir, run_id, attempt_id))
             if orphaned_workers:
                 reason = "launcher exited while owned workers remained"
+            elif reference is not None:
+                # A final commit can become visible after the last polling scan.
+                _publish_reference_commits(
+                    reference, run_dir, config, run_id, attempt_id,
+                    reference_published, milestone,
+                    recovery=resume_checkpoint is not None,
+                )
             _read_events(
                 run_dir, attempt_id, run_id, config.run.world_size, offsets, steps, completed
             )
@@ -439,6 +488,34 @@ def _launch_attempt(
             except BaseException as cleanup:
                 raise RunActiveError(f"{reason}; worker cleanup failed: {cleanup}") from cleanup
     return AttemptResult(False, reason, process.poll(), max(steps.values(), default=0))
+
+
+def _publish_reference_commits(
+    reference: LocalReferenceSession,
+    run_dir: Path,
+    config: ProjectConfig,
+    run_id: str,
+    attempt_id: str,
+    published: set[Path],
+    milestone,
+    *, recovery: bool,
+) -> None:
+    """Publish complete local transactions in increasing step order."""
+    candidates = [
+        path for path in ordered_candidates(run_dir)
+        if path.name.endswith(f"-{attempt_id}") and (path / "COMMITTED").is_file()
+    ]
+    for path in reversed(candidates):
+        if path in published:
+            continue
+        remote = reference.publish_local(path, recovery=recovery)
+        published.add(path)
+        milestone(
+            "reference_checkpoint_published",
+            generation_id=remote.generation_id,
+            global_step=remote.global_step,
+            manifest_sha256=remote.manifest_sha256,
+        )
 
 
 def _capture_measurement(status: dict) -> None:
@@ -511,6 +588,7 @@ def _invalidate_completed_run(
 def _finalize_completed_attempt(
     run_dir: Path, status: dict, store: RunStore, config: ProjectConfig,
     attempt_id: str, reason: str,
+    reference: LocalReferenceSession | None = None,
 ) -> bool:
     run_id = status["run_id"]
     audit = {
@@ -523,7 +601,12 @@ def _finalize_completed_attempt(
     store.set_run_status(run_id, "FINALIZING")
     try:
         if config.checkpoint.mode != "none":
-            selected = _scan_checkpoints(run_dir, config, run_id, store, audit=True)
+            if reference is None:
+                selected = _scan_checkpoints(run_dir, config, run_id, store, audit=True)
+            else:
+                selected = _scan_checkpoints(
+                    run_dir, config, run_id, store, audit=True, reference=reference
+                )
             if selected is None:
                 raise RuntimeError("no valid checkpoint remains after training")
             if (
@@ -536,6 +619,19 @@ def _finalize_completed_attempt(
                 "global_step": selected.global_step,
                 "manifest_sha256": selected.manifest_sha256,
             }
+            if reference is not None:
+                head_candidates = reference.published_candidates()
+                if (
+                    not head_candidates
+                    or head_candidates[0].generation_id != selected.path.parent.name
+                    or head_candidates[0].global_step != selected.global_step
+                ):
+                    raise RuntimeError("final checkpoint differs from reference HEAD")
+                audit["final_checkpoint"].update(
+                    generation_id=head_candidates[0].generation_id,
+                    protocol_manifest_sha256=head_candidates[0].manifest_sha256,
+                )
+                audit["checkpoint_backend"] = "same_host_reference_experiment"
             retention = prune_checkpoints(run_dir, config, run_id)
             audit["retention_enabled"] = retention.get("enabled")
             audit["budget_satisfied"] = retention.get("budget_satisfied")
@@ -570,7 +666,10 @@ def _finalize_completed_attempt(
     return True
 
 
-def _drive(run_dir: Path, status: dict, store: RunStore, config: ProjectConfig) -> bool:
+def _drive(
+    run_dir: Path, status: dict, store: RunStore, config: ProjectConfig,
+    reference: LocalReferenceSession | None = None,
+) -> bool:
     run_id = status["run_id"]
     attempts = store.attempts(run_id)
     _assert_no_owned_workers(run_dir, run_id, attempts)
@@ -589,6 +688,7 @@ def _drive(run_dir: Path, status: dict, store: RunStore, config: ProjectConfig) 
             return _finalize_completed_attempt(
                 run_dir, status, store, config, last["attempt_id"],
                 "completed before controller exit",
+                reference,
             )
         if last["status"] == "SUCCEEDED" or status.get("status") == "FINALIZING":
             store.set_run_status(run_id, "FAILED")
@@ -621,7 +721,12 @@ def _drive(run_dir: Path, status: dict, store: RunStore, config: ProjectConfig) 
                 store.set_run_status(run_id, "FAILED")
                 _set_status(run_dir, status, "FAILED", reason)
                 return False
-            selected = _scan_checkpoints(run_dir, config, run_id, store)
+            if reference is None:
+                selected = _scan_checkpoints(run_dir, config, run_id, store)
+            else:
+                selected = _scan_checkpoints(
+                    run_dir, config, run_id, store, reference=reference
+                )
             if selected is None:
                 reason = "no valid checkpoint remains for recovery"
                 store.set_run_status(run_id, "FAILED")
@@ -669,7 +774,12 @@ def _drive(run_dir: Path, status: dict, store: RunStore, config: ProjectConfig) 
                 selected.global_step,
                 max(0, previous_max - selected.global_step),
             )
-        result = _launch_attempt(run_dir, config, run_id, attempt_id, selected, store)
+        if reference is None:
+            result = _launch_attempt(run_dir, config, run_id, attempt_id, selected, store)
+        else:
+            result = _launch_attempt(
+                run_dir, config, run_id, attempt_id, selected, store, reference
+            )
         if not result.succeeded and selected is not None:
             record_restore_incomplete(
                 run_dir, run_id, attempt_id, selected.path, config.run.world_size,
@@ -683,7 +793,7 @@ def _drive(run_dir: Path, status: dict, store: RunStore, config: ProjectConfig) 
         )
         if result.succeeded:
             return _finalize_completed_attempt(
-                run_dir, status, store, config, attempt_id, result.reason
+                run_dir, status, store, config, attempt_id, result.reason, reference
             )
         if result.reason.startswith("controller "):
             store.set_run_status(run_id, "FAILED")
@@ -697,7 +807,8 @@ def _drive(run_dir: Path, status: dict, store: RunStore, config: ProjectConfig) 
 
 
 def run(
-    config_path: Path, output_root: Path, *, allow_experiment: bool = False
+    config_path: Path, output_root: Path, *, allow_experiment: bool = False,
+    reference_store_path: Path | None = None,
 ) -> tuple[Path, bool]:
     execution_started = time.monotonic()
     execution_load_before = list(os.getloadavg())
@@ -708,6 +819,28 @@ def run(
         )
     run_id = uuid.uuid4().hex[:12]
     run_dir = (output_root / run_id).resolve()
+    configured_reference = config.checkpoint.reference_store_path
+    if reference_store_path is not None:
+        resolved_reference = str(Path(reference_store_path).resolve())
+        if configured_reference is not None and str(Path(configured_reference).resolve()) != resolved_reference:
+            raise ValueError("reference database path differs from configuration")
+        settings = config.model_dump()
+        settings["checkpoint"]["reference_store_path"] = resolved_reference
+        config = ProjectConfig.model_validate(settings)
+    elif configured_reference is not None:
+        settings = config.model_dump()
+        settings["checkpoint"]["reference_store_path"] = str(
+            Path(configured_reference).resolve()
+        )
+        config = ProjectConfig.model_validate(settings)
+    if config.checkpoint.reference_store_path is not None and not allow_experiment:
+        raise ExperimentNotAuthorizedError(
+            "local reference checkpoint experiment requires explicit authorization"
+        )
+    reference_path = (
+        check_reference_mode(config, run_dir, Path(config.checkpoint.reference_store_path))
+        if config.checkpoint.reference_store_path is not None else None
+    )
     sample_key = load_sample_key(run_dir) if config.run.profile == "guarded" else None
     workload_source = preflight(config)
     run_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -736,6 +869,8 @@ def run(
         "execution_started_monotonic": execution_started,
         "execution_load_before": execution_load_before,
     }
+    if reference_path is not None:
+        status["local_reference_store"] = str(reference_path)
     if sample_key is not None:
         status["sample_key_id"] = sample_key_id(sample_key)
     write_json_atomic(run_dir / "run.json", status)
@@ -744,7 +879,21 @@ def run(
         (run_dir / "run.sqlite3").chmod(0o600)
         store.create_run(run_id, config.fingerprint(), started_at, evidence_schema_version=2)
         with _controller_lock(run_dir):
-            succeeded = _drive(run_dir, status, store, config)
+            try:
+                reference = (
+                    LocalReferenceSession(run_dir, reference_path, config, run_id, resume=False)
+                    if reference_path is not None else None
+                )
+            except (OSError, ValueError, sqlite3.Error, RuntimeError) as exc:
+                reason = f"reference database initialization failed: {type(exc).__name__}: {exc}"
+                store.set_run_status(run_id, "FAILED")
+                _set_status(run_dir, status, "FAILED", reason)
+                succeeded = False
+            else:
+                if reference is None:
+                    succeeded = _drive(run_dir, status, store, config)
+                else:
+                    succeeded = _drive(run_dir, status, store, config, reference)
     finally:
         store.close()
     return run_dir, succeeded
@@ -779,6 +928,7 @@ def resume(run_dir: Path) -> bool:
         key_for_run(run_dir)
     if (
         config.fault.kind != "none" or config.recovery.omit_state != "none"
+        or config.checkpoint.reference_store_path is not None
     ) and status.get("experiment_authorized") is not True:
         raise ExperimentNotAuthorizedError("saved experiment authorization is missing")
     current = json.loads(json.dumps(
@@ -802,6 +952,19 @@ def resume(run_dir: Path) -> bool:
         preflight(config)
     if config.fingerprint() != status["config_fingerprint"]:
         raise ValueError("saved config fingerprint differs from run metadata")
+    configured_reference = config.checkpoint.reference_store_path
+    reference_path = status.get("local_reference_store")
+    if reference_path != configured_reference:
+        raise ValueError("saved local reference database identity differs")
+    if configured_reference is not None:
+        try:
+            reference_path = check_reference_mode(config, run_dir, Path(configured_reference))
+        except (OSError, ValueError):
+            if status["status"] == "SUCCEEDED":
+                return _invalidate_completed_run(
+                    run_dir, status, "completed reference database path is invalid"
+                )
+            raise
     if not isinstance(status.get("run_id"), str) or not isinstance(
         status.get("started_at"), str
     ):
@@ -835,11 +998,6 @@ def resume(run_dir: Path) -> bool:
             ):
                 raise ValueError("run index identity differs from run metadata")
             _assert_no_owned_workers(run_dir, status["run_id"], store.attempts(status["run_id"]))
-            if status["status"] != "SUCCEEDED":
-                # A different controller cannot reconstruct the original wall-time window.
-                status.pop("execution_started_monotonic", None)
-                status.pop("execution_load_before", None)
-                status.pop("measurement", None)
             if status["status"] == "SUCCEEDED":
                 attempts = store.attempts(status["run_id"])
                 if (
@@ -854,6 +1012,26 @@ def resume(run_dir: Path) -> bool:
                     return _invalidate_completed_run(
                         run_dir, status, "completion evidence missing or invalid", lock_held=True
                     )
-            return _drive(run_dir, status, store, config)
+            try:
+                reference = (
+                    LocalReferenceSession(
+                        run_dir, reference_path, config, status["run_id"], resume=True
+                    ) if reference_path is not None else None
+                )
+            except (OSError, ValueError, sqlite3.Error, RemoteProtocolError):
+                if status["status"] == "SUCCEEDED":
+                    return _invalidate_completed_run(
+                        run_dir, status, "completed reference authority is invalid",
+                        lock_held=True,
+                    )
+                raise
+            if status["status"] != "SUCCEEDED":
+                # A different controller cannot reconstruct the original wall-time window.
+                status.pop("execution_started_monotonic", None)
+                status.pop("execution_load_before", None)
+                status.pop("measurement", None)
+            if reference is None:
+                return _drive(run_dir, status, store, config)
+            return _drive(run_dir, status, store, config, reference)
     finally:
         store.close()

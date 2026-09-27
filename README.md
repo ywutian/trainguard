@@ -6,7 +6,7 @@ TrainGuard tests whether fixed-size distributed PyTorch training resumes from a 
 
 The CPU recovery path is implemented and tested with two Gloo workers. It supports synchronous and native asynchronous Distributed Checkpoint (DCP), application-level checkpoint commits, bounded full-group restarts, explicit resume, deterministic fault injection, correctness validation, and repeated local benchmarks. CUDA DDP and FSDP2 adapters are implemented but require real-device acceptance. Multi-node/object-storage recovery and host-power-loss durability remain open gates.
 
-Version 0.3.3 added a single-file external CPU DDP workload interface for local evaluation. A nonbuilt-in regression example runs through the same reference, crash/recovery, and omitted-state comparisons. The interface still uses the fixed AdamW optimizer and Cosine scheduler; its source hash covers only the adapter file. The local SQLite object-store implementation exercises same-host conditional-write protocol behavior and is not connected to checkpoint storage in the training path. Version 0.3.4 restricts the source distribution to reviewed repository files and checks every archive member against the checkout.
+Version 0.3.3 added a single-file external CPU DDP workload interface for local evaluation. A nonbuilt-in regression example runs through the same reference, crash/recovery, and omitted-state comparisons. The interface still uses the fixed AdamW optimizer and Cosine scheduler; its source hash covers only the adapter file. Version 0.3.4 restricts the source distribution to reviewed repository files and checks every archive member against the checkout.
 
 Version 0.3.6 is a candidate with a bounded v2 external workload contract for local two-rank CPU/Gloo evaluation. It tests an external one-group SGD optimizer with momentum, external StepLR, complete stream state, and extra loss state. A reference run, worker-exit recovery, and omitted-state controls compare exact final state. This remains a local experiment and does not change customer or production gates.
 
@@ -61,6 +61,21 @@ The v2 file defines `WORKLOAD_API_VERSION = 2`, `build_model(config)`, `build_op
 Each candidate is stored under `runs/<run-id>/checkpoints/step-<step>-<attempt>/`. DCP writes model and optimizer state. Every rank writes its scheduler, Python/NumPy/Torch CPU and optional CUDA RNG, scaler, update and consumed-batch counters, and compatibility fingerprints. Rank 0 validates all expected files, records sizes and SHA-256 hashes in `manifest.json`, then publishes `COMMITTED`. Recovery scans these files and ignores incomplete, incompatible, or corrupted candidates, falling back to the newest valid older checkpoint.
 
 The run directory also contains `run.json`, a SQLite index (`run.sqlite3`), `launcher.log`, per-attempt rank event logs and summaries, and a final `summary.json`. The committed manifest is the checkpoint validity source if the controller stops before updating SQLite.
+
+### Same-host reference checkpoint experiment
+
+The optional reference mode connects real two-rank CPU/Gloo synchronous DCP saves to a separate same-host SQLite store:
+
+```bash
+mkdir -p runs/reference-private
+chmod 700 runs/reference-private
+uv run trainguard run --config configs/recovery_demo.yaml --allow-experiment \
+  --reference-store runs/reference-private/objects.sqlite3
+```
+
+This mode accepts only the experiment profile, two CPU/Gloo DDP ranks, synchronous checkpoints, and no local retention setting. The database must remain outside the run directory, inside a private directory owned by the current user. The controller uploads each fully committed checkpoint, then confirms a conditional HEAD publication before recording it as published. A later `trainguard resume <run-directory>` reads the saved store path and selects only HEAD-referenced generations. Removing `<run-directory>/checkpoints/` after a stopped worker group still permits recovery from HEAD; the rest of the run directory and the separate database must remain. The protocol retains at most eight HEAD candidates. A self-consistent candidate that fails the actual distributed load is marked by durable restore evidence and the next candidate is tried. If HEAD has no usable candidate, recovery fails closed even when local COMMITTED directories exist.
+
+SQLite WAL, the run-directory process lock, and the persisted local epoch identity are same-host experiment mechanisms. This mode does not establish a production object service, cross-host fencing, independent isolation after host failure, or power-loss durability. The reference store holds complete checkpoint bytes without an automatic capacity budget; use bounded test workloads and preserve the database for review.
 
 Experiment run evidence can contain raw sample identifiers and paths. Guarded rank events replace raw sample IDs with ordered, customer-keyed HMAC commitments and record only a key identifier; the customer keeps the key in a private file outside the run directory. The key holder can re-sign evidence, and custom workload output or unstructured launcher logs are outside this protection. Keep all run data in a restricted customer-controlled directory. `trainguard support-bundle runs/<run-id> --output support.json` produces a read-only summary with allowlisted scalar fields; the customer should review and approve it before sharing.
 
