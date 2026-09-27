@@ -47,11 +47,12 @@
       "repository_summary_status": "enabled"
     },
     "default_branch_dependency_graph": {
-      "checked_at_utc": "2026-09-27T15:34:05Z",
+      "checked_at_utc": "2026-09-27T15:35:50Z",
       "git_commit": "b8da9719d2d7acf79cb05b688e4590a56a52a19c",
       "lock_sha256": "9f86582ab1ab67eebb99f80bc17480f8a733bc8241b6d224a24f7408498e1b04",
       "locked_packages": 50,
-      "graph_packages": 50,
+      "graph_packages": 51,
+      "matched_lock_entries": 50,
       "third_party_missing": 0,
       "root_package_label": "com.github.ywutian/trainguard"
     },
