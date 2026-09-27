@@ -1,0 +1,1 @@
+{"version": "0.2.2", "source_sha256": "325c65626ab05aafc13c66a91f10525efff98233ce79dcdadd9462b3837750e4", "passed": true}

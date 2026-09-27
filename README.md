@@ -98,3 +98,4 @@ uv run python scripts/verify_wheel.py dist/trainguard-0.2.2-py3-none-any.whl
 ```
 
 See the [full closure assessment](docs/analysis/closure-assessment-2026-09-26.md) for the supported boundary, infrastructure gates and next acceptance steps.
+The [0.2.2 local acceptance report](docs/experiments/closure-2026-09-26.md) contains the test, campaign, build and package evidence.

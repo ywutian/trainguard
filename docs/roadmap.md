@@ -83,3 +83,4 @@ Evidence: [local hardening and measurement](experiments/local-hardening-2026-09-
 - [ ] Inject actual ENOSPC/EIO/readonly filesystem errors and verify recovery on the selected Linux storage.
 
 The full supported-scope and infrastructure plan is in the [closure assessment](analysis/closure-assessment-2026-09-26.md).
+The [0.2.2 local acceptance](experiments/closure-2026-09-26.md) archives the completed CPU campaign and package checks.

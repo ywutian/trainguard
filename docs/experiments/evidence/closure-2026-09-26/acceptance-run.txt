@@ -1,0 +1,1 @@
+Acceptance report: /Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/closure-0.2.2/acceptance-3a77e562fd16/report.md
