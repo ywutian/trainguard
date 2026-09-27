@@ -4,7 +4,11 @@ from pathlib import Path
 import pytest
 
 from trainguard import benchmark
-from trainguard.run_evidence import measurement_sha256
+from trainguard.run_evidence import (
+    RUNTIME_IDENTITY_FIELDS,
+    measurement_sha256,
+    runtime_identity_sha256,
+)
 from trainguard.run_store import RunStore
 
 
@@ -103,12 +107,17 @@ def pending_slot(tmp_path, monkeypatch, measurement=None):
     slot = results["slots"][-1]
     run_dir = Path(slot["run_dir"])
     (run_dir / "config.json").write_text((directory / f"{slot['mode']}-config.json").read_text())
+    environment = {field: None for field in RUNTIME_IDENTITY_FIELDS}
     (run_dir / "run.json").write_text(json.dumps({
         "run_id": "saved-run", "status": "SUCCEEDED", "measurement": measurement,
+        "environment": environment,
     }))
     store = RunStore(run_dir / "run.sqlite3")
     try:
-        store.create_run("saved-run", "0" * 64, "now", evidence_schema_version=2)
+        store.create_run(
+            "saved-run", "0" * 64, "now", evidence_schema_version=3,
+            environment_sha256=runtime_identity_sha256(environment),
+        )
         store.set_run_success("saved-run", measurement_sha256(measurement))
     finally:
         store.close()

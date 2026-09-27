@@ -349,7 +349,7 @@ def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
     ):
         if status.get("status") == "SUCCEEDED" and (
             status.get("run_schema_version") == 2
-            or indexed_schema_version(directory, status.get("run_id")) == 2
+            or indexed_schema_version(directory, status.get("run_id")) in {2, 3}
         ):
             differences.extend(
                 f"{name} {error}" for error in saved_completed_metadata_errors(status, config)

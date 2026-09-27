@@ -188,8 +188,8 @@ def test_resume_requires_current_platform_and_storage_identity(tmp_path, field):
     status["environment"][field] = value
     path.write_text(json.dumps(status))
     assert not validate_runs(reference, directory)["passed"]
-    with pytest.raises(ValueError, match=field):
-        controller.resume(directory)
+    assert not controller.resume(directory)
+    assert json.loads(path.read_text())["status"] == "FAILED"
 
 
 @pytest.mark.parametrize("failure", ["scan", "prune"])

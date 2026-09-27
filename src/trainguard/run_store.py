@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import stat
 from pathlib import Path
@@ -64,7 +65,8 @@ class RunStore:
         for query in (
             (
                 "SELECT run_id, status, config_fingerprint, started_at, updated_at, "
-                "evidence_schema_version, measurement_sha256 FROM runs LIMIT 0"
+                "evidence_schema_version, measurement_sha256, environment_sha256 "
+                "FROM runs LIMIT 0"
             ),
             (
                 "SELECT attempt_id, run_id, number, status, resume_checkpoint, resume_step, "
@@ -95,7 +97,8 @@ class RunStore:
                 config_fingerprint TEXT NOT NULL,
                 started_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                evidence_schema_version INTEGER NOT NULL DEFAULT 1
+                evidence_schema_version INTEGER NOT NULL DEFAULT 1,
+                environment_sha256 TEXT
             );
             CREATE TABLE IF NOT EXISTS attempts (
                 attempt_id TEXT PRIMARY KEY,
@@ -146,18 +149,29 @@ class RunStore:
             )
         if "measurement_sha256" not in run_columns:
             self.database.execute("ALTER TABLE runs ADD COLUMN measurement_sha256 TEXT")
+        if "environment_sha256" not in run_columns:
+            self.database.execute("ALTER TABLE runs ADD COLUMN environment_sha256 TEXT")
         self.database.commit()
 
     def close(self) -> None:
         self.database.close()
 
     def create_run(
-        self, run_id: str, fingerprint: str, started_at: str, *, evidence_schema_version: int = 1
+        self, run_id: str, fingerprint: str, started_at: str, *, evidence_schema_version: int = 1,
+        environment_sha256: str | None = None,
     ) -> None:
+        if evidence_schema_version == 3 and (
+            not isinstance(environment_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", environment_sha256) is None
+        ):
+            raise ValueError("new run evidence requires a runtime identity digest")
         self.database.execute(
             "INSERT INTO runs (run_id, status, config_fingerprint, started_at, updated_at, "
-            "evidence_schema_version) VALUES (?, ?, ?, ?, ?, ?)",
-            (run_id, "RUNNING", fingerprint, started_at, started_at, evidence_schema_version),
+            "evidence_schema_version, environment_sha256) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                run_id, "RUNNING", fingerprint, started_at, started_at,
+                evidence_schema_version, environment_sha256,
+            ),
         )
         self.database.commit()
 

@@ -21,6 +21,22 @@ RUNTIME_IDENTITY_FIELDS = (
 )
 
 
+def runtime_identity_sha256(value: Any) -> str:
+    """Digest only stable runtime identity fields from a saved environment snapshot."""
+    if not isinstance(value, dict) or any(
+        field not in value for field in RUNTIME_IDENTITY_FIELDS
+    ):
+        raise ValueError("run environment identity is incomplete")
+    selected = {field: value[field] for field in RUNTIME_IDENTITY_FIELDS}
+    try:
+        payload = json.dumps(
+            selected, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise ValueError("run environment identity cannot be encoded") from exc
+    return hashlib.sha256(payload).hexdigest()
+
+
 def measurement_sha256(value: Any) -> str | None:
     """Return a digest only for the controller's complete, finite timing record."""
     if value is None:
@@ -160,9 +176,12 @@ def completed_index_errors(run_dir: Path, status: dict, config: ProjectConfig) -
     try:
         with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True) as database:
             database.execute("PRAGMA query_only=ON")
+            columns = {row[1] for row in database.execute("PRAGMA table_info(runs)")}
+            if "environment_sha256" not in columns:
+                return ["run index evidence schema predates runtime identity binding"]
             run = database.execute(
                 "SELECT status, config_fingerprint, started_at, evidence_schema_version, "
-                "measurement_sha256 "
+                "measurement_sha256, environment_sha256 "
                 "FROM runs WHERE run_id=?", (run_id,)
             ).fetchone()
             attempts = database.execute(
@@ -174,7 +193,7 @@ def completed_index_errors(run_dir: Path, status: dict, config: ProjectConfig) -
     errors: list[str] = []
     if run is None:
         return ["run index has no matching run"]
-    if type(run[3]) is not int or run[3] != 2:
+    if type(run[3]) is not int or run[3] != 3:
         errors.append("run index evidence schema differs from metadata")
     if run[0] != "SUCCEEDED" or run[1] != config.fingerprint() or run[2] != status.get(
         "started_at"
@@ -212,6 +231,13 @@ def completed_index_errors(run_dir: Path, status: dict, config: ProjectConfig) -
     else:
         if run[4] != expected_measurement:
             errors.append("original measurement differs from run index")
+    try:
+        expected_environment = runtime_identity_sha256(status.get("environment"))
+    except ValueError as exc:
+        errors.append(str(exc))
+    else:
+        if run[5] != expected_environment:
+            errors.append("run environment identity differs from run index")
     if config.checkpoint.reference_store_path is not None:
         from trainguard.reference_backend import reference_final_errors
 
@@ -242,10 +268,15 @@ def trusted_measurement(run_dir: Path) -> dict | None:
     try:
         with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True) as database:
             row = database.execute(
-                "SELECT status, evidence_schema_version, measurement_sha256 "
+                "SELECT status, evidence_schema_version, measurement_sha256, "
+                "environment_sha256 "
                 "FROM runs WHERE run_id=?",
                 (status["run_id"],),
             ).fetchone()
     except sqlite3.Error:
         return None
-    return value if row == ("SUCCEEDED", 2, digest) else None
+    try:
+        environment_digest = runtime_identity_sha256(status.get("environment"))
+    except ValueError:
+        return None
+    return value if row == ("SUCCEEDED", 3, digest, environment_digest) else None

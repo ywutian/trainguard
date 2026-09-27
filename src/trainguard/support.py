@@ -143,7 +143,7 @@ def build_support_bundle(run_dir: Path) -> dict:
         ):
             raise SupportBundleError("completion summary differs from saved run configuration")
         if status["status"] == "SUCCEEDED" and (
-            status.get("run_schema_version") == 2 or identity[3] == 2
+            status.get("run_schema_version") == 2 or identity[3] in {2, 3}
         ):
             errors = saved_completed_metadata_errors(status, config)
             errors.extend(completed_index_errors(run_dir, status, config))

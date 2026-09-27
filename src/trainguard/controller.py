@@ -43,6 +43,7 @@ from trainguard.run_evidence import (
     RUNTIME_IDENTITY_FIELDS,
     completed_index_errors,
     measurement_sha256,
+    runtime_identity_sha256,
     saved_completed_metadata_errors,
 )
 from trainguard.run_store import RunStore
@@ -886,7 +887,10 @@ def run(
         return run_dir, False
     try:
         (run_dir / "run.sqlite3").chmod(0o600)
-        store.create_run(run_id, config.fingerprint(), started_at, evidence_schema_version=2)
+        store.create_run(
+            run_id, config.fingerprint(), started_at, evidence_schema_version=3,
+            environment_sha256=runtime_identity_sha256(status["environment"]),
+        )
         with _controller_lock(run_dir):
             try:
                 reference = (
@@ -927,6 +931,7 @@ def resume(run_dir: Path) -> bool:
         raise
     if status.get("status") == "SUCCEEDED":
         errors = saved_completed_metadata_errors(status, config)
+        errors.extend(completed_index_errors(run_dir, status, config))
         if errors:
             return _invalidate_completed_run(
                 run_dir, status, "completed run metadata is invalid: " + "; ".join(errors)
@@ -994,7 +999,8 @@ def resume(run_dir: Path) -> bool:
                     raise ValueError("run index is missing after training may have started")
                 store.create_run(
                     status["run_id"], status["config_fingerprint"], status["started_at"],
-                    evidence_schema_version=2,
+                    evidence_schema_version=3,
+                    environment_sha256=runtime_identity_sha256(status["environment"]),
                 )
             elif (
                 identity["config_fingerprint"] != status["config_fingerprint"]

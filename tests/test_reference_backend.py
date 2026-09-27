@@ -491,6 +491,84 @@ def test_completed_reference_claim_rejects_saved_identity_or_authorization_chang
         assert index.execute("SELECT status FROM runs").fetchone() == ("FAILED",)
 
 
+def test_completed_reference_environment_identity_is_bound_to_run_index(
+    tmp_path: Path,
+) -> None:
+    run_dir, ok = controller.run(
+        _sync_without_fault(tmp_path), tmp_path / "runs",
+        allow_experiment=True, reference_store_path=tmp_path / "objects.sqlite3",
+    )
+    assert ok, (run_dir / "launcher.log").read_text()
+    status_path = run_dir / "run.json"
+    saved = json.loads(status_path.read_text())
+    original = saved["environment"]["startup_identity_sha256"]
+    saved["environment"]["startup_identity_sha256"] = (
+        "0" * 64 if original != "0" * 64 else "1" * 64
+    )
+    write_json_atomic(status_path, saved)
+    comparison = validate_runs(run_dir, run_dir)
+    assert comparison["passed"] is False
+    assert any(
+        "run environment identity differs from run index" in item
+        for item in comparison["differences"]
+    )
+    with pytest.raises(SupportBundleError, match="environment identity differs"):
+        build_support_bundle(run_dir)
+    assert not controller.resume(run_dir)
+    assert json.loads(status_path.read_text())["status"] == "FAILED"
+    with sqlite3.connect(run_dir / "run.sqlite3") as index:
+        assert index.execute("SELECT status FROM runs").fetchone() == ("FAILED",)
+
+
+def test_dynamic_environment_observations_do_not_change_run_identity(
+    tmp_path: Path,
+) -> None:
+    run_dir, ok = controller.run(
+        _sync_without_fault(tmp_path), tmp_path / "runs",
+        allow_experiment=True, reference_store_path=tmp_path / "objects.sqlite3",
+    )
+    assert ok, (run_dir / "launcher.log").read_text()
+    status_path = run_dir / "run.json"
+    saved = json.loads(status_path.read_text())
+    saved["environment"]["disk_free_bytes"] += 1
+    saved["environment"]["git_dirty"] = not saved["environment"]["git_dirty"]
+    write_json_atomic(status_path, saved)
+    assert validate_runs(run_dir, run_dir)["passed"]
+    assert build_support_bundle(run_dir)["status"] == "SUCCEEDED"
+    assert controller.resume(run_dir)
+
+
+@pytest.mark.parametrize("damage", ["old-version", "missing-column"])
+def test_old_index_does_not_gain_runtime_identity_proof(
+    tmp_path: Path, damage: str
+) -> None:
+    run_dir, ok = controller.run(
+        _sync_without_fault(tmp_path), tmp_path / "runs",
+        allow_experiment=True, reference_store_path=tmp_path / "objects.sqlite3",
+    )
+    assert ok, (run_dir / "launcher.log").read_text()
+    index_path = run_dir / "run.sqlite3"
+    with sqlite3.connect(index_path) as index:
+        if damage == "old-version":
+            index.execute(
+                "UPDATE runs SET evidence_schema_version=2, environment_sha256=NULL"
+            )
+        else:
+            index.execute("ALTER TABLE runs DROP COLUMN environment_sha256")
+    comparison = validate_runs(run_dir, run_dir)
+    assert comparison["passed"] is False
+    with pytest.raises(SupportBundleError):
+        build_support_bundle(run_dir)
+    assert not controller.resume(run_dir)
+    assert json.loads((run_dir / "run.json").read_text())["status"] == "FAILED"
+    with sqlite3.connect(index_path) as index:
+        columns = {row[1] for row in index.execute("PRAGMA table_info(runs)")}
+        if damage == "missing-column":
+            assert "environment_sha256" not in columns
+        else:
+            assert index.execute("SELECT environment_sha256 FROM runs").fetchone() == (None,)
+
+
 @pytest.mark.parametrize(
     "damage",
     ["missing", "external-symlink", "corrupt", "missing-measurement-column"],
@@ -528,7 +606,7 @@ def test_completed_reference_run_rejects_unsafe_or_incomplete_index_without_repa
     assert not controller.resume(run_dir)
     saved = json.loads((run_dir / "run.json").read_text())
     assert saved["status"] == "FAILED"
-    assert "saved run index is missing or unsafe" in saved["reason"]
+    assert "run index" in saved["reason"]
     if damage == "missing":
         assert not index_path.exists()
     elif damage == "external-symlink":
