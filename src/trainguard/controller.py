@@ -74,7 +74,7 @@ def _available_local_port() -> int:
 
 
 def _owned_group_members(
-    run_dir: Path, run_id: str, attempt_id: str, group_id: int | None = None
+    run_dir: Path, run_id: str, attempt_id: str | None, group_id: int | None = None
 ) -> list[int]:
     result = subprocess.run(
         ["ps", "axww", "-o", "pid=", "-o", "pgid=", "-o", "command="],
@@ -96,7 +96,10 @@ def _owned_group_members(
             re.search(r"(?:^|\s)(?:trainguard.trainer|torch.distributed.run)(?:\s|$)", command)
             and re.search(r"--run-dir " + re.escape(str(run_dir)) + r"(?=\s--|$)", command)
             and re.search(r"--run-id " + re.escape(run_id) + r"(?=\s|$)", command)
-            and re.search(r"--attempt-id " + re.escape(attempt_id) + r"(?=\s|$)", command)
+            and re.search(
+                r"--attempt-id " + (re.escape(attempt_id) if attempt_id is not None else r"\S+")
+                + r"(?=\s|$)", command,
+            )
         ):
             members.append(int(pid_text))
     return members
@@ -823,7 +826,24 @@ def _settle_control_failure(
 ) -> bool:
     """Close a stopped run after a controller or index operation fails."""
     run_id = status["run_id"]
-    attempts = store.attempts(run_id)
+    try:
+        attempts = store.attempts(run_id)
+    except (OSError, sqlite3.Error) as index_error:
+        if _owned_group_members(run_dir, run_id, None):
+            raise RunActiveError("run still owns a worker process") from index_error
+        status["run_index_terminal_unverified"] = True
+        reason = (
+            "controller interrupted before attempt completion" if interrupted
+            else f"controller {type(exc).__name__}: {exc}"
+        )
+        reason += f"; run index attempt inspection failed: {type(index_error).__name__}"
+        for write_attempt in range(2):
+            try:
+                _set_status(run_dir, status, "INTERRUPTED" if interrupted else "FAILED", reason)
+                return False
+            except OSError:
+                if write_attempt:
+                    raise
     _assert_no_owned_workers(run_dir, run_id, attempts)
     known_attempts = {attempt["attempt_id"] for attempt in attempts}
     pending_attempt = status.get("attempt_id")
@@ -846,10 +866,16 @@ def _settle_control_failure(
         else f"controller {type(exc).__name__}: {exc}"
     )
     index_terminal_unverified = False
-    identity = store.run_identity(run_id)
-    if identity is None:
-        reason += "; run index row was not established"
+    try:
+        identity = store.run_identity(run_id)
+    except (OSError, sqlite3.Error) as index_error:
+        identity = None
+        reason += f"; run index identity inspection failed: {type(index_error).__name__}"
         index_terminal_unverified = True
+    if identity is None:
+        if not index_terminal_unverified:
+            reason += "; run index row was not established"
+            index_terminal_unverified = True
     elif (
         identity["config_fingerprint"] != status["config_fingerprint"]
         or identity["started_at"] != status["started_at"]
@@ -876,8 +902,13 @@ def _settle_control_failure(
             reason += "; attempt row was not established"
     if index_terminal_unverified:
         status["run_index_terminal_unverified"] = True
-    _set_status(run_dir, status, "INTERRUPTED" if interrupted else "FAILED", reason)
-    return False
+    for write_attempt in range(2):
+        try:
+            _set_status(run_dir, status, "INTERRUPTED" if interrupted else "FAILED", reason)
+            return False
+        except OSError:
+            if write_attempt:
+                raise
 
 
 def _drive_with_failure_closure(
@@ -889,8 +920,10 @@ def _drive_with_failure_closure(
         if reference is None:
             return _drive(run_dir, status, store, config)
         return _drive(run_dir, status, store, config, reference)
-    except RunActiveError:
-        raise
+    except RunActiveError as exc:
+        if status.get("status") == "FINALIZING":
+            raise
+        return _settle_control_failure(run_dir, status, store, exc)
     except KeyboardInterrupt as exc:
         if status.get("status") == "FINALIZING":
             raise
@@ -1109,11 +1142,26 @@ def resume(run_dir: Path) -> bool:
                     )
                 except (OSError, ValueError, sqlite3.Error, RuntimeError) as exc:
                     return _settle_control_failure(run_dir, status, store, exc)
-            elif (
+                try:
+                    identity = store.run_identity(status["run_id"])
+                except (OSError, sqlite3.Error) as exc:
+                    return _settle_control_failure(run_dir, status, store, exc)
+            if identity is None or (
                 identity["config_fingerprint"] != status["config_fingerprint"]
                 or identity["started_at"] != status["started_at"]
             ):
                 raise ValueError("run index identity differs from run metadata")
+            if status["status"] == "RUNNING" and identity["status"] != "RUNNING":
+                status["run_index_terminal_unverified"] = True
+                try:
+                    _set_status(
+                        run_dir, status, "FAILED",
+                        "active run metadata conflicts with the run index status",
+                    )
+                except OSError:
+                    # A persistently unwritable JSON file must not allow another attempt.
+                    pass
+                return False
             attempts = store.attempts(status["run_id"])
             _assert_no_owned_workers(run_dir, status["run_id"], attempts)
 

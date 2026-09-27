@@ -166,6 +166,112 @@ def test_unverified_terminal_index_write_blocks_resume(
     assert _no_owned_workers(run_dir)
 
 
+@pytest.mark.parametrize("failure_limit", [1, 3])
+def test_terminal_json_write_failure_never_restarts_stale_running_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_limit: int,
+) -> None:
+    original = controller.write_json_atomic
+    failed = 0
+
+    def fail_terminal_write(path, value):
+        nonlocal failed
+        if (path.name == "run.json" and value.get("status") == "FAILED"
+                and failed < failure_limit):
+            failed += 1
+            raise PermissionError("injected terminal JSON failure")
+        return original(path, value)
+
+    def fail_prune(*args, **kwargs):
+        raise RuntimeError("injected prelaunch failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(controller, "prune_checkpoints", fail_prune)
+        patch.setattr(controller, "write_json_atomic", fail_terminal_write)
+        if failure_limit == 1:
+            run_dir, succeeded = controller.run(CPU_DEMO, tmp_path / "runs")
+            assert not succeeded
+            assert _status(run_dir)["status"] == "FAILED"
+        else:
+            with pytest.raises(PermissionError, match="injected terminal JSON failure"):
+                controller.run(CPU_DEMO, tmp_path / "runs")
+            run_dir = next((tmp_path / "runs").iterdir())
+            assert _status(run_dir)["status"] == "RUNNING"
+            assert not controller.resume(run_dir)
+            assert _status(run_dir)["status"] == "RUNNING"
+        assert _index(run_dir) == (["FAILED"], [])
+        assert _no_owned_workers(run_dir)
+    if failure_limit == 3:
+        assert not controller.resume(run_dir)
+        status = _status(run_dir)
+        assert status["status"] == "FAILED"
+        assert status["run_index_terminal_unverified"] is True
+        assert _index(run_dir) == (["FAILED"], [])
+
+
+@pytest.mark.parametrize("read_point", ["attempts", "identity"])
+def test_index_read_failure_records_blocking_json_when_no_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, read_point: str,
+) -> None:
+    method = "attempts" if read_point == "attempts" else "run_identity"
+    original = getattr(RunStore, method)
+    settling = False
+    failed = False
+
+    def fail_prune(*args, **kwargs):
+        nonlocal settling
+        settling = True
+        raise RuntimeError("injected prelaunch failure")
+
+    def fail_read(self, *args, **kwargs):
+        nonlocal failed
+        if settling and not failed:
+            failed = True
+            raise sqlite3.OperationalError("injected index read failure")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(controller, "prune_checkpoints", fail_prune)
+    monkeypatch.setattr(RunStore, method, fail_read)
+    run_dir, succeeded = controller.run(CPU_DEMO, tmp_path / "runs")
+    assert failed and not succeeded
+    status = _status(run_dir)
+    assert status["status"] == "FAILED"
+    assert status["run_index_terminal_unverified"] is True
+    assert "index" in status["reason"]
+    assert _index(run_dir) == (["RUNNING"], [])
+    assert _no_owned_workers(run_dir)
+    assert not controller.resume(run_dir)
+
+
+def test_unreadable_attempt_index_cannot_hide_live_worker(
+    tmp_path: Path,
+) -> None:
+    class UnreadableStore:
+        def attempts(self, _run_id):
+            raise sqlite3.OperationalError("injected attempt query failure")
+
+    worker = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)",
+         "trainguard.trainer", "--run-dir", str(tmp_path),
+         "--run-id", "run-one", "--attempt-id", "attempt-001"],
+        start_new_session=True,
+    )
+    try:
+        for _ in range(50):
+            if controller._owned_group_members(tmp_path, "run-one", None):
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("owned test worker did not appear")
+        with pytest.raises(RunActiveError, match="still owns a worker"):
+            controller._settle_control_failure(
+                tmp_path, {"run_id": "run-one"}, UnreadableStore(), RuntimeError("failed")
+            )
+        assert not (tmp_path / "run.json").exists()
+    finally:
+        worker.terminate()
+        worker.wait(timeout=5)
+
+
 @pytest.mark.parametrize(
     ("failure_point", "expected_status"),
     [
@@ -303,6 +409,22 @@ def test_launcher_creation_failure_closes_attempt_and_run(
     status = _status(run_dir)
     assert status["status"] == "FAILED"
     assert "injected process creation failure" in status["reason"]
+    assert _index(run_dir) == (["FAILED"], [("attempt-001", "FAILED")])
+    assert _no_owned_workers(run_dir)
+
+
+def test_group_end_record_failure_after_worker_exit_closes_attempt_and_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_group_end(*args, **kwargs):
+        raise PermissionError("injected group-end record failure")
+
+    monkeypatch.setattr(controller, "record_group_ended", fail_group_end)
+    run_dir, succeeded = controller.run(CPU_DEMO, tmp_path / "runs")
+    assert not succeeded
+    status = _status(run_dir)
+    assert status["status"] == "FAILED"
+    assert "injected group-end record failure" in status["reason"]
     assert _index(run_dir) == (["FAILED"], [("attempt-001", "FAILED")])
     assert _no_owned_workers(run_dir)
 
