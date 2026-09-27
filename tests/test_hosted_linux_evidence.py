@@ -24,7 +24,8 @@ def _acceptance(source: str, python: str, commit: str, platform: str) -> dict:
     cases = [
         {"name": f"{mode}-{fault}", "mode": mode, "fault": fault,
          "omit_state": "none", "expected_exact": True, "status": "PASSED",
-         "recovery_count": 1, "fault_attributed": True, "validation": {"passed": True}}
+         "recovery_count": 1, "fault_attributed": True,
+         "validation": {"passed": True, "differences": []}}
         for mode, fault in (
             ("sync", "worker_exit"), ("async", "worker_exit"),
             ("sync", "save_interrupt"), ("async", "save_interrupt"),
@@ -34,7 +35,17 @@ def _acceptance(source: str, python: str, commit: str, platform: str) -> dict:
     cases.extend(
         {"name": f"omit-{state}", "mode": "sync", "fault": "worker_exit",
          "omit_state": state, "expected_exact": False, "status": "PASSED",
-         "recovery_count": 1, "fault_attributed": True, "validation": {"passed": False}}
+         "recovery_count": 1, "fault_attributed": True,
+         "validation": {"passed": False, "differences": [
+             "final model_sha256 differs",
+             *(
+                 [
+                     f"rank {rank} {kind} differs"
+                     for rank in range(2)
+                     for kind in ("effective sample sequence", "consumed batch sequence")
+                 ] if state == "cursor" else []
+             ),
+         ]}}
         for state in ("rng", "optimizer", "cursor")
     )
     return {
@@ -282,6 +293,17 @@ def test_hosted_linux_evidence_rejects_missing_cpu_negative_control(evidence) ->
     result["acceptance"]["cases"] = [
         case for case in result["acceptance"]["cases"] if case["name"] != "omit-rng"
     ]
+    _write_json(run / "result.json", result)
+    with pytest.raises(ValueError, match="CPU fault matrix is incomplete"):
+        _verify(evidence)
+
+
+def test_hosted_linux_evidence_rejects_missing_cpu_negative_difference(evidence) -> None:
+    run = evidence[2]["3.11"] / "simulation-run"
+    result = json.loads((run / "result.json").read_text())
+    case = next(case for case in result["acceptance"]["cases"]
+                if case["name"] == "omit-cursor")
+    case["validation"]["differences"] = ["final model_sha256 differs"]
     _write_json(run / "result.json", result)
     with pytest.raises(ValueError, match="CPU fault matrix is incomplete"):
         _verify(evidence)

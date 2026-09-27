@@ -81,6 +81,10 @@ def test_local_cpu_receipt_rejects_self_consistent_case_tampering(
     )
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
     (root / "pyproject.toml").write_text('[project]\nversion = "0.3.6"\n')
+    (root / "configs").mkdir()
+    (root / "configs/cpu_demo.yaml").write_bytes(
+        (Path(__file__).parents[1] / "configs/cpu_demo.yaml").read_bytes()
+    )
     for name in (
         "scripts/supply-chain-tools.txt", "SECURITY.md", "LICENSE",
         "docs/commercial/security-channel-2026-09-27.json",
@@ -102,23 +106,46 @@ def test_local_cpu_receipt_rejects_self_consistent_case_tampering(
         "git_commit": "a" * 40, "version": "0.3.5",
         "wheel_sha256": "6" * 64, "lock_sha256": "7" * 64,
     }
+    def difference_hashes(name: str) -> list[str]:
+        if not name.startswith("omit-"):
+            return []
+        messages = ["final model_sha256 differs"]
+        if name == "omit-cursor":
+            messages.extend(
+                f"rank {rank} {kind} differs"
+                for rank in range(2)
+                for kind in ("effective sample sequence", "consumed batch sequence")
+            )
+        return [hashlib.sha256(message.encode()).hexdigest() for message in messages]
+
     cases = [
         {
             "name": name, "mode": mode, "fault": fault, "omit_state": omitted,
             "expected_exact": exact, "status": "PASSED", "recovery_count": 1,
-            "fault_attributed": True, "validation": {"passed": exact},
+            "fault_attributed": True, "validation": {
+                "passed": exact, "difference_sha256": difference_hashes(name),
+            },
         }
         for name, mode, fault, omitted, exact in module.LOCAL_CPU_CASES
     ]
     acceptance = {
         "status": "SUCCEEDED", "reference_status": "VALIDATED",
-        "environment": {"git_commit": commit}, "cases": cases,
+        "config_sha256": module._local_cpu_config_sha256(root),
+        "run": {"device": "cpu", "backend": "gloo", "world_size": 2, "total_steps": 4},
+        "environment": {
+            "git_commit": commit, "source_sha256": source_digest,
+            "python": "3.12.12", "torch": "2.14.0",
+            "platform_sha256": hashlib.sha256(b"Darwin-test").hexdigest(),
+            "world_size": 2, "device": "cpu", "storage": "local filesystem",
+        }, "cases": cases,
     }
     result = {
         "status": "SUCCEEDED", "version": "0.3.6", "source_sha256": source_digest,
         "execution_inputs_sha256": input_digest,
         "execution_inputs_after_sha256": input_digest,
         "execution_commit": commit, "execution_commit_after": commit,
+        "python": "3.12.12", "torch": "2.14.0",
+        "platform_sha256": hashlib.sha256(b"Darwin-test").hexdigest(),
         "artifact_sha256": {name: digest for name, digest in artifacts.items()
                             if name != "uv.lock"},
         "lock_sha256": artifacts["uv.lock"],
@@ -195,6 +222,33 @@ def test_local_cpu_receipt_rejects_self_consistent_case_tampering(
     duplicated["cases"][1] = deepcopy(duplicated["cases"][0])
     with pytest.raises(ValueError, match="CPU acceptance matrix"):
         check(duplicated)
+    for damage in (
+        "missing-rng-difference", "missing-cursor-sequences", "spurious-positive-difference",
+        "wrong-config-hash", "single-rank", "wrong-source", "wrong-platform",
+    ):
+        changed = deepcopy(acceptance)
+        changed_cases = {case["name"]: case for case in changed["cases"]}
+        if damage == "missing-rng-difference":
+            changed_cases["omit-rng"]["validation"]["difference_sha256"] = []
+        elif damage == "missing-cursor-sequences":
+            changed_cases["omit-cursor"]["validation"]["difference_sha256"] = [
+                hashlib.sha256(b"final model_sha256 differs").hexdigest()
+            ]
+        elif damage == "spurious-positive-difference":
+            changed_cases["sync-worker_exit"]["validation"]["difference_sha256"] = [
+                hashlib.sha256(b"final model_sha256 differs").hexdigest()
+            ]
+        elif damage == "wrong-config-hash":
+            changed["config_sha256"] = "0" * 64
+        elif damage == "single-rank":
+            changed["run"]["world_size"] = 1
+            changed["environment"]["world_size"] = 1
+        elif damage == "wrong-source":
+            changed["environment"]["source_sha256"] = "0" * 64
+        else:
+            changed["environment"]["platform_sha256"] = "0" * 64
+        with pytest.raises(ValueError, match="CPU acceptance matrix"):
+            check(changed)
 
 
 def test_local_test_gate_rejects_skip_inflation(tmp_path: Path) -> None:

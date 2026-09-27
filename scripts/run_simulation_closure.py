@@ -219,7 +219,34 @@ def _persist(directory: Path, result: dict) -> None:
     (directory / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _case_differences_complete(case: dict) -> bool:
+    validation = case.get("validation")
+    if not isinstance(validation, dict):
+        return False
+    differences = validation.get("differences")
+    if not isinstance(differences, list) or any(type(item) is not str for item in differences):
+        return False
+    observed = set(differences)
+    if len(observed) != len(differences):
+        return False
+    if not case["name"].startswith("omit-"):
+        return not observed
+    allowed = {"final model_sha256 differs", "final optimizer_sha256 differs"}
+    required = {"final model_sha256 differs"}
+    if case["name"] == "omit-cursor":
+        sequences = {
+            f"rank {rank} {name} differs"
+            for rank in range(2)
+            for name in ("effective sample sequence", "consumed batch sequence")
+        }
+        allowed |= sequences
+        required |= sequences
+    return required <= observed <= allowed
+
+
 def _acceptance_complete(acceptance: dict) -> bool:
+    if not isinstance(acceptance, dict):
+        return False
     expected = {
         f"{mode}-{fault}": (mode, fault, "none", True)
         for mode, fault in [
@@ -232,10 +259,17 @@ def _acceptance_complete(acceptance: dict) -> bool:
         f"omit-{state}": ("sync", "worker_exit", state, False)
         for state in ("rng", "optimizer", "cursor")
     })
+    config = acceptance.get("config")
+    settings = config.get("run") if isinstance(config, dict) else None
     cases = acceptance.get("cases")
     if (
         acceptance.get("status") != "SUCCEEDED"
         or acceptance.get("reference_status") != "VALIDATED"
+        or not isinstance(settings, dict)
+        or settings.get("device") != "cpu"
+        or settings.get("backend") != "gloo"
+        or type(settings.get("world_size")) is not int
+        or settings["world_size"] != 2
         or not isinstance(cases, list)
         or len(cases) != len(expected)
         or not all(isinstance(case, dict) and isinstance(case.get("name"), str)
@@ -245,12 +279,16 @@ def _acceptance_complete(acceptance: dict) -> bool:
         return False
     return all(
         case.get("status") == "PASSED"
-        and (case.get("mode"), case.get("fault"), case.get("omit_state"),
-             case.get("expected_exact")) == expected[case["name"]]
-        and case.get("recovery_count") == 1
+        and (case.get("mode"), case.get("fault"), case.get("omit_state")) == (
+            expected[case["name"]][:3]
+        )
+        and case.get("expected_exact") is expected[case["name"]][3]
+        and type(case.get("recovery_count")) is int
+        and case["recovery_count"] == 1
         and case.get("fault_attributed") is True
         and isinstance(case.get("validation"), dict)
         and case["validation"].get("passed") is case["expected_exact"]
+        and _case_differences_complete(case)
         for case in cases
     )
 

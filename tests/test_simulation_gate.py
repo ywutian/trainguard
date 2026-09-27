@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import signal
 import subprocess
@@ -20,6 +21,59 @@ def test_success_status_without_complete_cpu_matrix_is_rejected() -> None:
     assert not module._acceptance_complete({
         "status": "SUCCEEDED", "reference_status": "VALIDATED", "cases": [],
     })
+
+
+def test_cpu_matrix_rejects_missing_or_extra_negative_control_differences() -> None:
+    source = Path(__file__).parents[1] / "scripts/run_simulation_closure.py"
+    spec = importlib.util.spec_from_file_location("run_simulation_closure", source)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    names = (
+        "sync-worker_exit", "async-worker_exit", "sync-save_interrupt",
+        "async-save_interrupt", "sync-corrupt", "async-corrupt", "sync-hang",
+        "omit-rng", "omit-optimizer", "omit-cursor",
+    )
+    cases = []
+    for name in names:
+        if name.startswith("omit-"):
+            mode, fault, omitted, exact = "sync", "worker_exit", name.removeprefix("omit-"), False
+            differences = ["final model_sha256 differs"]
+            if omitted == "cursor":
+                differences.extend(
+                    f"rank {rank} {kind} differs"
+                    for rank in range(2)
+                    for kind in ("effective sample sequence", "consumed batch sequence")
+                )
+        else:
+            mode, fault = name.split("-", 1)
+            omitted, exact, differences = "none", True, []
+        cases.append({
+            "name": name, "mode": mode, "fault": fault, "omit_state": omitted,
+            "expected_exact": exact, "status": "PASSED", "recovery_count": 1,
+            "fault_attributed": True,
+            "validation": {"passed": exact, "differences": differences},
+        })
+    acceptance = {
+        "status": "SUCCEEDED", "reference_status": "VALIDATED",
+        "config": {"run": {"device": "cpu", "backend": "gloo", "world_size": 2}},
+        "cases": cases,
+    }
+    assert module._acceptance_complete(acceptance)
+    for name, differences in (
+        ("omit-rng", []),
+        ("omit-optimizer", ["final model_sha256 differs", "unrelated difference"]),
+        ("omit-cursor", ["final model_sha256 differs"]),
+        ("sync-worker_exit", ["final model_sha256 differs"]),
+    ):
+        changed = json.loads(json.dumps(acceptance))
+        next(case for case in changed["cases"] if case["name"] == name)["validation"][
+            "differences"
+        ] = differences
+        assert not module._acceptance_complete(changed), name
+    changed = json.loads(json.dumps(acceptance))
+    changed["config"]["run"]["world_size"] = 1
+    assert not module._acceptance_complete(changed)
 
 
 def test_gate_timeout_is_recorded_and_process_stops(tmp_path: Path) -> None:

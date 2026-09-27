@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from xml.etree import ElementTree
 
+from trainguard.config import ProjectConfig, load_config
 from trainguard.events import write_json_atomic
 from trainguard.evidence_lineage import require_evidence_only_descendant
 from trainguard.execution_inputs import execution_inputs_sha256
@@ -296,6 +297,45 @@ def _validate_pytest_result(raw_dir: Path, details: dict) -> None:
         raise ValueError("local raw test suite is incomplete, failing, or over-skipped")
 
 
+def _expected_local_cpu_config(root: Path) -> dict:
+    base = load_config(root / "configs/cpu_demo.yaml")
+    raw = base.model_dump()
+    raw["model"]["dropout"] = max(raw["model"]["dropout"], 0.2)
+    return ProjectConfig.model_validate(raw).model_dump()
+
+
+def _local_cpu_config_sha256(root: Path) -> str:
+    content = json.dumps(_expected_local_cpu_config(root), sort_keys=True,
+                         separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _local_case_difference_hashes_complete(case: dict) -> bool:
+    validation = case.get("validation")
+    hashes = validation.get("difference_sha256") if isinstance(validation, dict) else None
+    if not isinstance(hashes, list) or any(not _is_sha256(value) for value in hashes):
+        return False
+    observed = set(hashes)
+    if len(observed) != len(hashes):
+        return False
+    if not case["name"].startswith("omit-"):
+        return not observed
+    allowed = {"final model_sha256 differs", "final optimizer_sha256 differs"}
+    required = {"final model_sha256 differs"}
+    if case["name"] == "omit-cursor":
+        sequences = {
+            f"rank {rank} {name} differs"
+            for rank in range(2)
+            for name in ("effective sample sequence", "consumed batch sequence")
+        }
+        allowed |= sequences
+        required |= sequences
+    digest = lambda value: hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return {digest(value) for value in required} <= observed <= {
+        digest(value) for value in allowed
+    }
+
+
 def _local_cpu_acceptance_complete(acceptance: object) -> bool:
     """Independently verify each campaign case before local evidence passes."""
     if not isinstance(acceptance, dict) or acceptance.get("status") != "SUCCEEDED" or (
@@ -329,6 +369,7 @@ def _local_cpu_acceptance_complete(acceptance: object) -> bool:
             or case.get("fault_attributed") is not True
             or not isinstance(case.get("validation"), dict)
             or case["validation"].get("passed") is not exact
+            or not _local_case_difference_hashes_complete(case)
         ):
             return False
     return seen == set(expected)
@@ -485,11 +526,25 @@ def _local_evidence(root: Path, details: dict, source_digest: str,
         raise ValueError("local raw result does not prove all required gates")
     _validate_pytest_result(raw_dir, details)
     acceptance = json.loads((raw_dir / "acceptance.json").read_text(encoding="utf-8"))
+    environment = acceptance.get("environment") if isinstance(acceptance, dict) else None
+    expected_config = _expected_local_cpu_config(root)
+    platform_digest = result.get("platform_sha256")
     if (
         not _local_cpu_acceptance_complete(acceptance)
         or result.get("acceptance") != acceptance
-        or not isinstance(acceptance.get("environment"), dict)
-        or acceptance["environment"].get("git_commit") != execution_commit
+        or acceptance.get("config_sha256") != _local_cpu_config_sha256(root)
+        or acceptance.get("run") != {
+            "device": "cpu", "backend": "gloo", "world_size": 2,
+            "total_steps": expected_config["training"]["total_steps"],
+        }
+        or not isinstance(environment, dict)
+        or not _is_sha256(platform_digest)
+        or environment != {
+            "git_commit": execution_commit, "source_sha256": source_digest,
+            "python": result.get("python"), "torch": result.get("torch"),
+            "platform_sha256": platform_digest,
+            "world_size": 2, "device": "cpu", "storage": "local filesystem",
+        }
     ):
         raise ValueError("local raw CPU acceptance matrix is incomplete")
     wheel_name = next(name for name in artifacts if name.endswith(".whl"))

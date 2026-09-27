@@ -22,6 +22,7 @@ from check_release_readiness import (
     package_source_sha256,
 )
 
+from trainguard.config import ProjectConfig, load_config
 from trainguard.evidence_lineage import require_evidence_only_descendant
 from trainguard.execution_inputs import execution_inputs_sha256
 
@@ -121,7 +122,20 @@ def _numeric_metrics(value: object) -> dict:
     return kept
 
 
-def _safe_acceptance(acceptance: dict) -> dict:
+def _expected_cpu_config(root: Path) -> dict:
+    base = load_config(root / "configs/cpu_demo.yaml")
+    raw = base.model_dump()
+    raw["model"]["dropout"] = max(raw["model"]["dropout"], 0.2)
+    return ProjectConfig.model_validate(raw).model_dump()
+
+
+def _canonical_sha256(value: object) -> str:
+    content = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _safe_acceptance(acceptance: dict, expected_config: dict,
+                     result: dict, source_digest: str) -> dict:
     from run_simulation_closure import _acceptance_complete
 
     if not _acceptance_complete(acceptance):
@@ -134,6 +148,29 @@ def _safe_acceptance(acceptance: dict) -> dict:
         or not isinstance(acceptance.get("environment"), dict)
     ):
         raise ValueError("original CPU acceptance result is incomplete")
+    try:
+        exact_config = _canonical_sha256(acceptance.get("config")) == _canonical_sha256(
+            expected_config
+        )
+    except (TypeError, ValueError):
+        exact_config = False
+    environment = acceptance["environment"]
+    platform = result.get("platform")
+    if (
+        not exact_config
+        or not isinstance(platform, str)
+        or not platform
+        or environment.get("source_sha256") != source_digest
+        or environment.get("git_commit") != result.get("execution_commit")
+        or environment.get("python") != result.get("python")
+        or environment.get("torch") != result.get("torch")
+        or environment.get("platform") != platform
+        or type(environment.get("world_size")) is not int
+        or environment["world_size"] != 2
+        or environment.get("device") != "cpu"
+        or environment.get("storage") != "local filesystem"
+    ):
+        raise ValueError("original CPU acceptance config or environment differs")
     cases = []
     for original in acceptance["cases"]:
         if not isinstance(original, dict) or original.get("name") not in EXPECTED_CASES:
@@ -168,7 +205,16 @@ def _safe_acceptance(acceptance: dict) -> dict:
         raise ValueError("original CPU environment commit is invalid")
     return {
         "status": "SUCCEEDED", "reference_status": "VALIDATED",
-        "environment": {"git_commit": commit}, "cases": cases,
+        "config_sha256": _canonical_sha256(expected_config),
+        "run": {"device": "cpu", "backend": "gloo", "world_size": 2,
+                "total_steps": expected_config["training"]["total_steps"]},
+        "environment": {
+            "git_commit": commit, "source_sha256": source_digest,
+            "python": result["python"], "torch": result["torch"],
+            "platform_sha256": hashlib.sha256(platform.encode("utf-8")).hexdigest(),
+            "world_size": 2, "device": "cpu", "storage": "local filesystem",
+        },
+        "cases": cases,
     }
 
 
@@ -239,6 +285,10 @@ def _safe_result(result: dict, acceptance: dict) -> dict:
         value = output[field]
         if not isinstance(value, str) or re.fullmatch(r"[0-9][0-9A-Za-z.+-]{0,63}", value) is None:
             raise ValueError("original local runtime identity is unsafe")
+    platform = result.get("platform")
+    if not isinstance(platform, str) or not platform:
+        raise ValueError("original local platform identity is invalid")
+    output["platform_sha256"] = hashlib.sha256(platform.encode("utf-8")).hexdigest()
     for field in ("started_at", "finished_at"):
         value = output[field]
         if not isinstance(value, str):
@@ -542,7 +592,8 @@ def archive(source: Path, label: str, root: Path) -> Path:
     ):
         raise ValueError("original package artifact hashes differ")
     previous = _json_file(root / "docs/commercial/release-gates.json")["previous_release"]
-    safe_acceptance = _safe_acceptance(acceptance)
+    safe_acceptance = _safe_acceptance(acceptance, _expected_cpu_config(root), result,
+                                       source_digest)
     safe_result = _safe_result(result, safe_acceptance)
     junit, tests = _safe_junit(originals["pytest.xml"])
     summary = next(

@@ -25,6 +25,10 @@ def archive_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     project = Path(__file__).parents[1]
     for name in ("pyproject.toml", "uv.lock"):
         (root / name).write_bytes((project / name).read_bytes())
+    (root / "configs").mkdir()
+    (root / "configs/cpu_demo.yaml").write_bytes(
+        (project / "configs/cpu_demo.yaml").read_bytes()
+    )
     for name in ("SECURITY.md", "LICENSE", "scripts/supply-chain-tools.txt",
                  "docs/commercial/security-channel-2026-09-27.json"):
         destination = root / name
@@ -59,9 +63,29 @@ def archive_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         mode, fault = name.split("-", 1)
         return mode, fault, "none", True
 
+    def case_differences(name: str) -> list[str]:
+        if not name.startswith("omit-"):
+            return []
+        differences = ["final model_sha256 differs"]
+        if name == "omit-cursor":
+            differences.extend(
+                f"rank {rank} {kind} differs"
+                for rank in range(2)
+                for kind in ("effective sample sequence", "consumed batch sequence")
+            )
+        return differences
+
+    expected_config = archiver._expected_cpu_config(root)
+
     acceptance = {
         "status": "SUCCEEDED", "reference_status": "VALIDATED",
-        "environment": {"git_commit": commit, "host_path": "/Users/private/secret.key"},
+        "config": expected_config,
+        "environment": {
+            "git_commit": commit, "source_sha256": "1" * 64,
+            "python": "3.12.12", "torch": "2.14.0", "platform": "Darwin-test",
+            "world_size": 2, "device": "cpu", "storage": "local filesystem",
+            "host_path": "/Users/private/secret.key",
+        },
         "cases": [
             {
                 "name": name, "mode": case_contract(name)[0],
@@ -73,7 +97,7 @@ def archive_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                 "reason": "TOPSECRET-KEY-MATERIAL",
                 "metrics": {"recovery_rto_seconds": 1.5, "host_path": "/Users/private"},
                 "validation": {"passed": case_contract(name)[3],
-                               "differences": ["TOPSECRET-KEY-MATERIAL"]},
+                               "differences": case_differences(name)},
             }
             for name in names
         ],
@@ -96,7 +120,8 @@ def archive_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "source_sha256": "1" * 64, "execution_inputs_sha256": "2" * 64,
         "execution_inputs_after_sha256": "2" * 64,
         "execution_commit": commit, "execution_commit_after": commit,
-        "python": "3.12.12", "torch": "2.14.0", "gates": gates,
+        "python": "3.12.12", "torch": "2.14.0", "platform": "Darwin-test",
+        "gates": gates,
         "artifact_sha256": artifacts,
         "lock_sha256": digest((root / "uv.lock").read_bytes()),
         "acceptance_path": str(original_acceptance), "acceptance": acceptance,
@@ -217,6 +242,17 @@ def test_archive_keeps_original_hashes_and_removes_private_test_text(archive_fix
     original_hash = hashlib.sha256((source / "result.json").read_bytes()).hexdigest()
     output = archiver.archive(source, "0.3.6-r1", root)
     record = json.loads((output / "local-validation.json").read_text())
+    sanitized = json.loads((output / "raw/acceptance.json").read_text())
+    assert sanitized["config_sha256"] == archiver._canonical_sha256(
+        archiver._expected_cpu_config(root)
+    )
+    assert sanitized["run"] == {
+        "device": "cpu", "backend": "gloo", "world_size": 2, "total_steps": 4,
+    }
+    assert sanitized["environment"]["source_sha256"] == "1" * 64
+    assert sanitized["environment"]["platform_sha256"] == hashlib.sha256(
+        b"Darwin-test"
+    ).hexdigest()
     assert record["unredacted_source_sha256"]["result.json"] == original_hash
     requirements = (source / "supply-chain-requirements.txt").read_bytes()
     assert (output / "raw/supply-chain-requirements.txt").read_bytes() == requirements
@@ -245,6 +281,7 @@ def test_archive_keeps_original_hashes_and_removes_private_test_text(archive_fix
     assert b"/Users/private" not in contents
     assert b"customer-sample.key" not in contents
     assert b"private-host" not in contents
+    assert b"Darwin-test" not in contents
     from supply_chain import verify_supply_chain
 
     chain_record = json.loads((output / "raw/supply-chain-receipt.json").read_text())
@@ -392,6 +429,60 @@ def test_archive_rejects_swapped_cpu_case_contract(archive_fixture) -> None:
     acceptance_path.write_text(json.dumps(result["acceptance"]))
     result_path.write_text(json.dumps(result))
     with pytest.raises(ValueError, match="case contract"):
+        archiver.archive(source, "0.3.6-r1", root)
+    assert not (root / "docs/commercial/evidence/local-0.3.6-r1").exists()
+
+
+@pytest.mark.parametrize("damage", [
+    "missing-rng-difference", "missing-cursor-sequences", "spurious-positive-difference",
+    "single-rank", "changed-model-config", "changed-source", "changed-python",
+    "changed-device",
+])
+def test_archive_rejects_self_consistent_cpu_identity_or_difference_tampering(
+    archive_fixture, damage: str,
+) -> None:
+    archiver, root, source = archive_fixture
+    result_path = source / "result.json"
+    result = json.loads(result_path.read_text())
+    acceptance = result["acceptance"]
+    cases = {case["name"]: case for case in acceptance["cases"]}
+    if damage == "missing-rng-difference":
+        cases["omit-rng"]["validation"]["differences"] = []
+    elif damage == "missing-cursor-sequences":
+        cases["omit-cursor"]["validation"]["differences"] = [
+            "final model_sha256 differs"
+        ]
+    elif damage == "spurious-positive-difference":
+        cases["sync-worker_exit"]["validation"]["differences"] = [
+            "final model_sha256 differs"
+        ]
+    elif damage == "single-rank":
+        acceptance["config"]["run"]["world_size"] = 1
+        acceptance["environment"]["world_size"] = 1
+    elif damage == "changed-model-config":
+        acceptance["config"]["model"]["dropout"] = 0.4
+    elif damage == "changed-source":
+        acceptance["environment"]["source_sha256"] = "9" * 64
+    elif damage == "changed-python":
+        acceptance["environment"]["python"] = "3.11.12"
+    else:
+        acceptance["environment"]["device"] = "cuda"
+    Path(result["acceptance_path"]).write_text(json.dumps(acceptance))
+    result_path.write_text(json.dumps(result))
+    with pytest.raises(ValueError, match="CPU acceptance"):
+        archiver.archive(source, "0.3.6-r1", root)
+    assert not (root / "docs/commercial/evidence/local-0.3.6-r1").exists()
+
+
+def test_archive_rejects_self_reported_source_identity(archive_fixture) -> None:
+    archiver, root, source = archive_fixture
+    result_path = source / "result.json"
+    result = json.loads(result_path.read_text())
+    result["source_sha256"] = "9" * 64
+    result["acceptance"]["environment"]["source_sha256"] = "9" * 64
+    Path(result["acceptance_path"]).write_text(json.dumps(result["acceptance"]))
+    result_path.write_text(json.dumps(result))
+    with pytest.raises(ValueError, match="simulation status, source"):
         archiver.archive(source, "0.3.6-r1", root)
     assert not (root / "docs/commercial/evidence/local-0.3.6-r1").exists()
 
