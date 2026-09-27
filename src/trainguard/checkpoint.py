@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import random
@@ -13,6 +14,8 @@ from typing import Any
 
 import numpy as np
 import torch
+from torch.distributed.checkpoint import FileSystemReader
+from torch.distributed.checkpoint.metadata import Metadata
 
 from trainguard import __version__
 from trainguard.config import ProjectConfig
@@ -208,15 +211,69 @@ def _check_rank_states(
         raise CheckpointInvalid("rank consumed batch boundaries differ at checkpoint")
 
 
-def _check_dcp_files(path: Path, config: ProjectConfig) -> None:
-    if not (path / "dcp" / ".metadata").is_file():
+def _check_dcp_files(path: Path, config: ProjectConfig, *, decode_payload: bool = False) -> None:
+    dcp_dir = path / "dcp"
+    metadata_path = dcp_dir / ".metadata"
+    if dcp_dir.is_symlink() or metadata_path.is_symlink():
+        raise CheckpointInvalid("DCP directory or metadata is a symbolic link")
+    if not metadata_path.is_file():
         raise CheckpointInvalid("DCP metadata is missing")
-    if (path / "dcp" / ".metadata").stat().st_size == 0:
+    if metadata_path.stat().st_size == 0:
         raise CheckpointInvalid("DCP metadata is empty")
     for rank in range(config.run.world_size):
-        rank_files = list((path / "dcp").glob(f"__{rank}_*.distcp"))
-        if not rank_files or any(entry.stat().st_size == 0 for entry in rank_files):
+        rank_files = list(dcp_dir.glob(f"__{rank}_*.distcp"))
+        if not rank_files or any(entry.is_symlink() or entry.stat().st_size == 0 for entry in rank_files):
             raise CheckpointInvalid(f"DCP rank {rank} files are missing")
+    try:
+        metadata = FileSystemReader(dcp_dir).read_metadata()
+    except Exception as exc:
+        raise CheckpointInvalid(f"DCP metadata cannot be read: {type(exc).__name__}") from exc
+    if (
+        not isinstance(metadata, Metadata)
+        or not isinstance(metadata.state_dict_metadata, dict)
+        or not isinstance(metadata.storage_data, dict)
+        or not metadata.state_dict_metadata
+        or not metadata.storage_data
+    ):
+        raise CheckpointInvalid("DCP metadata has no valid state or storage map")
+    for index, location in metadata.storage_data.items():
+        relative_name = getattr(location, "relative_path", None)
+        offset = getattr(location, "offset", None)
+        length = getattr(location, "length", None)
+        if (
+            getattr(index, "fqn", None) not in metadata.state_dict_metadata
+            or not isinstance(relative_name, str)
+            or not relative_name
+            or PurePosixPath(relative_name).is_absolute()
+            or ".." in PurePosixPath(relative_name).parts
+            or type(offset) is not int
+            or type(length) is not int
+            or offset < 0
+            or length <= 0
+        ):
+            raise CheckpointInvalid("DCP metadata contains an invalid storage reference")
+        shard = dcp_dir / relative_name
+        if (
+            not shard.is_file()
+            or shard.is_symlink()
+            or shard.suffix != ".distcp"
+            or offset + length > shard.stat().st_size
+        ):
+            raise CheckpointInvalid("DCP metadata refers to a missing or short shard")
+        if decode_payload:
+            try:
+                with shard.open("rb") as stream:
+                    stream.seek(offset)
+                    chunk = stream.read(length)
+                if len(chunk) != length:
+                    raise CheckpointInvalid("DCP shard became short during payload read")
+                torch.load(io.BytesIO(chunk), map_location="cpu", weights_only=True)
+            except CheckpointInvalid:
+                raise
+            except Exception as exc:
+                raise CheckpointInvalid(
+                    f"DCP payload cannot be decoded: {type(exc).__name__}"
+                ) from exc
 
 
 def _write_marker_atomic(path: Path, value: str) -> None:
@@ -281,7 +338,9 @@ def commit_checkpoint(
     return CheckpointRecord(path, step, attempt_id, manifest)
 
 
-def validate_checkpoint(path: Path, config: ProjectConfig, run_id: str) -> CheckpointRecord:
+def validate_checkpoint(
+    path: Path, config: ProjectConfig, run_id: str, *, decode_payload: bool = False
+) -> CheckpointRecord:
     if (
         path.parent.is_symlink()
         or path.is_symlink()
@@ -327,8 +386,6 @@ def validate_checkpoint(path: Path, config: ProjectConfig, run_id: str) -> Check
         raise CheckpointInvalid("checkpoint step or attempt is invalid")
     if path.name != f"step-{step:06d}-{attempt_id}":
         raise CheckpointInvalid("checkpoint directory name differs from manifest")
-    _check_rank_states(path, config, run_id, attempt_id, step)
-    _check_dcp_files(path, config)
     listed = manifest.get("files")
     if not isinstance(listed, list):
         raise CheckpointInvalid("checkpoint file list is missing")
@@ -348,6 +405,8 @@ def validate_checkpoint(path: Path, config: ProjectConfig, run_id: str) -> Check
             raise CheckpointInvalid(f"checkpoint file {relative} size or hash differs")
     if names != actual:
         raise CheckpointInvalid("checkpoint file list differs from directory")
+    _check_rank_states(path, config, run_id, attempt_id, step)
+    _check_dcp_files(path, config, decode_payload=decode_payload)
     return CheckpointRecord(path, step, attempt_id, manifest)
 
 
@@ -359,7 +418,7 @@ def latest_valid_checkpoint(
         return None
     for path in ordered_candidates(run_dir):
         try:
-            return validate_checkpoint(path, config, run_id)
+            return validate_checkpoint(path, config, run_id, decode_payload=True)
         except (CheckpointInvalid, OSError):
             continue
     return None

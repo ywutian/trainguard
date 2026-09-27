@@ -1,0 +1,124 @@
+{
+  "attempts": [
+    [
+      "attempt-001",
+      "INTERRUPTED",
+      null,
+      0
+    ],
+    [
+      "attempt-002",
+      "SUCCEEDED",
+      "/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/simulation-closure/simulation-03dd217fc632/test-artifacts/test_self_consistent_unloadabl0/recovery-runs/d3bdf6ccdb10/checkpoints/step-000001-attempt-001",
+      1
+    ]
+  ],
+  "candidate_order_after_resume": [
+    "/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/simulation-closure/simulation-03dd217fc632/test-artifacts/test_self_consistent_unloadabl0/recovery-runs/d3bdf6ccdb10/checkpoints/step-000004-attempt-002",
+    "/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/simulation-closure/simulation-03dd217fc632/test-artifacts/test_self_consistent_unloadabl0/recovery-runs/d3bdf6ccdb10/checkpoints/step-000003-attempt-002",
+    "/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/simulation-closure/simulation-03dd217fc632/test-artifacts/test_self_consistent_unloadabl0/recovery-runs/d3bdf6ccdb10/checkpoints/step-000002-attempt-002",
+    "/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/simulation-closure/simulation-03dd217fc632/test-artifacts/test_self_consistent_unloadabl0/recovery-runs/d3bdf6ccdb10/checkpoints/step-000002-attempt-001",
+    "/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/simulation-closure/simulation-03dd217fc632/test-artifacts/test_self_consistent_unloadabl0/recovery-runs/d3bdf6ccdb10/checkpoints/step-000001-attempt-001"
+  ],
+  "comparison": {
+    "comparison": {
+      "method": "exact SHA-256 of rank states and effective sample/batch IDs",
+      "tensor_atol": 0.0,
+      "tensor_rtol": 0.0
+    },
+    "differences": [],
+    "effective_batches": {
+      "0": {
+        "recovered_batches": 4,
+        "reference_batches": 4
+      },
+      "1": {
+        "recovered_batches": 4,
+        "reference_batches": 4
+      }
+    },
+    "effective_samples": {
+      "0": {
+        "recovered_sha256": "eccc60e99ef44e9f50e01bc6b7c4b0274ab525ac89907e3f6e3ec2743e3031f7",
+        "recovered_steps": 4,
+        "reference_sha256": "eccc60e99ef44e9f50e01bc6b7c4b0274ab525ac89907e3f6e3ec2743e3031f7",
+        "reference_steps": 4
+      },
+      "1": {
+        "recovered_sha256": "8d48865067d175613b6b48ba60e288cadbe7608873eeeab4b973218cbfebcb95",
+        "recovered_steps": 4,
+        "reference_sha256": "8d48865067d175613b6b48ba60e288cadbe7608873eeeab4b973218cbfebcb95",
+        "reference_steps": 4
+      }
+    },
+    "passed": true,
+    "recovered_run_id": "d3bdf6ccdb10",
+    "reference_run_id": "2d1d36ed91c8"
+  },
+  "loaded": {
+    "0": {
+      "state_loaded": [
+        {
+          "attempt_id": "attempt-002",
+          "consumed_batches": 1,
+          "event_type": "state_loaded",
+          "global_step": 1,
+          "load_seconds": 0.0273487499980547,
+          "rank": 0,
+          "run_id": "d3bdf6ccdb10",
+          "time": "2026-09-27T04:07:43.721496+00:00"
+        }
+      ],
+      "training_started": [
+        {
+          "attempt_id": "attempt-002",
+          "consumed_batches": 1,
+          "event_type": "training_started",
+          "global_step": 1,
+          "parameter_count": 99264,
+          "rank": 0,
+          "resumed_from": "/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/simulation-closure/simulation-03dd217fc632/test-artifacts/test_self_consistent_unloadabl0/recovery-runs/d3bdf6ccdb10/checkpoints/step-000001-attempt-001",
+          "run_id": "d3bdf6ccdb10",
+          "time": "2026-09-27T04:07:43.721739+00:00",
+          "world_size": 2
+        }
+      ]
+    },
+    "1": {
+      "state_loaded": [
+        {
+          "attempt_id": "attempt-002",
+          "consumed_batches": 1,
+          "event_type": "state_loaded",
+          "global_step": 1,
+          "load_seconds": 0.02721774999736226,
+          "rank": 1,
+          "run_id": "d3bdf6ccdb10",
+          "time": "2026-09-27T04:07:43.721492+00:00"
+        }
+      ],
+      "training_started": [
+        {
+          "attempt_id": "attempt-002",
+          "consumed_batches": 1,
+          "event_type": "training_started",
+          "global_step": 1,
+          "parameter_count": 99264,
+          "rank": 1,
+          "resumed_from": "/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/simulation-closure/simulation-03dd217fc632/test-artifacts/test_self_consistent_unloadabl0/recovery-runs/d3bdf6ccdb10/checkpoints/step-000001-attempt-001",
+          "run_id": "d3bdf6ccdb10",
+          "time": "2026-09-27T04:07:43.721744+00:00",
+          "world_size": 2
+        }
+      ]
+    }
+  },
+  "recoveries": [
+    [
+      "attempt-002",
+      "/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/simulation-closure/simulation-03dd217fc632/test-artifacts/test_self_consistent_unloadabl0/recovery-runs/d3bdf6ccdb10/checkpoints/step-000001-attempt-001",
+      1
+    ]
+  ],
+  "succeeded": true
+}

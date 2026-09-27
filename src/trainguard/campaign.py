@@ -102,6 +102,24 @@ def _case_evidence(reference, run_dir, case, expected):
         count = database.execute(
             "SELECT COUNT(*) FROM recoveries WHERE run_id=?", (status["run_id"],)
         ).fetchone()[0]
+        attempts = database.execute(
+            "SELECT status FROM attempts WHERE run_id=? ORDER BY number", (status["run_id"],)
+        ).fetchall()
+    fault_log = run_dir / "attempts" / "attempt-001" / f"rank-{expected.fault.rank}.jsonl"
+    injections = (
+        [
+            json.loads(line)
+            for line in fault_log.read_text(encoding="utf-8").splitlines()
+            if json.loads(line).get("event_type") == "fault_injected"
+        ]
+        if fault_log.is_file()
+        else []
+    )
+    fault_attributed = (
+        len(injections) == 1
+        and injections[0].get("fault_kind") == case["fault"]
+        and injections[0].get("global_step") == expected.fault.step
+    )
     validation = validate_runs(reference, run_dir)
     differences = set(validation["differences"])
     expected_difference = validation["passed"] == case["expected_exact"]
@@ -117,8 +135,18 @@ def _case_evidence(reference, run_dir, case, expected):
             allowed |= sequences
             required |= sequences
         expected_difference = required <= differences <= allowed
-    case.update(validation=validation, recovery_count=count, metrics=_run_metrics(run_dir))
-    return count >= 1 and expected_difference
+    case.update(
+        validation=validation,
+        recovery_count=count,
+        fault_attributed=fault_attributed,
+        metrics=_run_metrics(run_dir),
+    )
+    return (
+        count == 1
+        and [row[0] for row in attempts] == ["FAILED", "SUCCEEDED"]
+        and fault_attributed
+        and expected_difference
+    )
 
 
 def _execute_cases(directory: Path, result: dict) -> Path:

@@ -28,6 +28,12 @@ def sync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def sync_event_file(path: Path) -> None:
+    with path.open("rb") as stream:
+        os.fsync(stream.fileno())
+    sync_directory(path.parent)
+
+
 def write_json_atomic(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")

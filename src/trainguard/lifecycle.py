@@ -29,7 +29,7 @@ def prune_checkpoints(
     valid = []
     for path in ordered_candidates(run_dir):
         try:
-            valid.append(validate_checkpoint(path, config, run_id))
+            valid.append(validate_checkpoint(path, config, run_id, decode_payload=True))
         except (CheckpointInvalid, OSError):
             continue
     retained = valid[:keep]

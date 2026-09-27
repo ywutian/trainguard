@@ -76,6 +76,11 @@ class RunStore:
         )
         self.database.commit()
 
+    def run_identity(self, run_id: str) -> sqlite3.Row | None:
+        return self.database.execute(
+            "SELECT run_id, config_fingerprint, started_at FROM runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+
     def set_run_status(self, run_id: str, status: str) -> None:
         self.database.execute(
             "UPDATE runs SET status=?, updated_at=? WHERE run_id=?",

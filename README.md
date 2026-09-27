@@ -99,3 +99,18 @@ uv run python scripts/verify_wheel.py dist/trainguard-0.2.2-py3-none-any.whl
 
 See the [full closure assessment](docs/analysis/closure-assessment-2026-09-26.md) for the supported boundary, infrastructure gates and next acceptance steps.
 The [0.2.2 local acceptance report](docs/experiments/closure-2026-09-26.md) contains the test, campaign, build and package evidence.
+
+## Version 0.3.0 local simulation closure
+
+Run the complete local gate from the repository root:
+
+```bash
+uv sync --locked --group dev
+uv run python scripts/run_simulation_closure.py --output-root runs/simulation-closure
+```
+
+The gate retains static checks, the full test suite, JUnit and raw test recovery directories, a fresh ten-case CPU acceptance campaign, a wheel and source distribution, and a wheel/source identity check in a uniquely named result directory. Its `result.json` and `report.md` record the outcome even if a gate fails. The CPU campaign requires the intended fault, exactly one recovery, the expected attempt statuses, and either exact agreement with the uninterrupted reference or the specified negative-control difference.
+
+The suite also exercises two independent local launchers with a real two-rank Gloo group, hard process exits across checkpoint publication boundaries, rank-coordinated async cancellation and deadlines, event-log durability ordering, and candidate fallback when DCP metadata or payload cannot be loaded. An isolated in-memory protocol model exercises immutable remote generations, conditional head publication, response-loss reconciliation, and epoch takeover after an independent isolation assertion. Bridge tests publish actual DCP checkpoint bytes through the model, damage the newer version, and restore the older one; a two-rank training run resumes from the downloaded version after all local candidates are removed. The model is not a production remote backend or a real object service.
+
+See the [simulation analysis](docs/analysis/simulation-closure-2026-09-26.md) and [local result](docs/experiments/simulation-closure-2026-09-26.md). Actual CUDA devices, multiple hosts, a selected object service and isolation authority, and controlled host power loss still require their own acceptance runs.

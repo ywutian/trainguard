@@ -1,0 +1,25 @@
+{
+  "candidate_order_before_resume": [
+    "/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/simulation-closure/simulation-03dd217fc632/test-artifacts/test_self_consistent_unloadabl1/recovery-runs/97bcf30b8f78/checkpoints/step-000002-attempt-001",
+    "/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/simulation-closure/simulation-03dd217fc632/test-artifacts/test_self_consistent_unloadabl1/recovery-runs/97bcf30b8f78/checkpoints/step-000001-attempt-001"
+  ],
+  "checkpoint": "/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/simulation-closure/simulation-03dd217fc632/test-artifacts/test_self_consistent_unloadabl1/recovery-runs/97bcf30b8f78/checkpoints/step-000002-attempt-001",
+  "commit_marker_after": "e903ea3ca7fd889c1a1894961a859c654b308e8b13a08cc14e56b0d92440e30a",
+  "fault": "short_shard",
+  "known_loadable_fallback": "/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/simulation-closure/simulation-03dd217fc632/test-artifacts/test_self_consistent_unloadabl1/recovery-runs/97bcf30b8f78/checkpoints/step-000001-attempt-001",
+  "manifest_sha256_after": "e903ea3ca7fd889c1a1894961a859c654b308e8b13a08cc14e56b0d92440e30a",
+  "manifest_sha256_before": "e7901d1ac4de9f4345bc697aabc4e47d43a8add499c25cbd0ce5d3cb8e9a0592",
+  "metadata_key": "model.embedding.weight",
+  "metadata_sha256_after": "0881ee07692defbb7e7d97275c1acf3f4c97b102fcaede45f1b2de907e12a4e7",
+  "run_id": "97bcf30b8f78",
+  "storage_after": {
+    "length": 638292,
+    "offset": 0,
+    "relative_path": "__0_0.distcp"
+  },
+  "storage_before": {
+    "length": 34345,
+    "offset": 0,
+    "relative_path": "__0_0.distcp"
+  }
+}

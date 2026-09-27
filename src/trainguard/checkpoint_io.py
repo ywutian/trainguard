@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import CancelledError
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,7 @@ from trainguard.checkpoint import (
     restore_rng,
 )
 from trainguard.config import ProjectConfig
-from trainguard.events import append_event, write_json_atomic
+from trainguard.events import append_event, sync_event_file, write_json_atomic
 from trainguard.training_state import TrainingState
 
 
@@ -43,9 +44,14 @@ class PendingSave:
 
 def save_ready(pending: PendingSave, process_group: dist.ProcessGroup) -> bool:
     done = pending.future is None or pending.future.done()
-    failed = done and pending.future is not None and pending.future.exception() is not None
+    failed = False
+    if done and pending.future is not None:
+        try:
+            failed = pending.future.cancelled() or pending.future.exception() is not None
+        except CancelledError:
+            failed = True
     expired = pending.deadline is not None and (
-        (not done and time.monotonic() > pending.deadline)
+        (pending.upload_finished is None and time.monotonic() > pending.deadline)
         or (pending.upload_finished is not None and pending.upload_finished > pending.deadline)
     )
     status = torch.tensor([int(not done), int(failed), int(expired)], dtype=torch.int64)
@@ -124,6 +130,16 @@ def finish_save(
             time.sleep(0.001)
         pending.future.result()
     dist.barrier(group=group)
+    # A durable commit must not outrun the step and sample evidence that led to it.
+    evidence_failed = False
+    try:
+        sync_event_file(event_path)
+    except OSError:
+        evidence_failed = True
+    evidence_status = torch.tensor([int(evidence_failed)], dtype=torch.int64)
+    dist.all_reduce(evidence_status, op=dist.ReduceOp.SUM, group=group)
+    if evidence_status.item():
+        raise RuntimeError("checkpoint event evidence could not be persisted on every rank")
     main_wait = time.monotonic() - waited
     upload_finished = pending.upload_finished or time.monotonic()
     metrics = torch.tensor(

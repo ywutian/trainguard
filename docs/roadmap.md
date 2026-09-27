@@ -84,3 +84,19 @@ Evidence: [local hardening and measurement](experiments/local-hardening-2026-09-
 
 The full supported-scope and infrastructure plan is in the [closure assessment](analysis/closure-assessment-2026-09-26.md).
 The [0.2.2 local acceptance](experiments/closure-2026-09-26.md) archives the completed CPU campaign and package checks.
+
+## 8. Version 0.3.0 local simulation closure
+
+- [x] Run two independently launched local Gloo agents through a real two-rank failure, group restart, DCP restore, and exact final-state/sample comparison.
+- [x] Hard-exit child processes across payload, rank-sidecar, manifest, commit-marker and index-publication cutpoints; select and load with production recovery code.
+- [x] Reject DCP candidates whose metadata, referenced shard range or payload decoding is invalid even when the manifest hashes are internally consistent; protect a valid older fallback during retention.
+- [x] Coordinate cancelled and deadline-expired async saves across ranks before commit, and synchronize per-rank event files and directory entries before publishing a checkpoint.
+- [x] Require an attributable injected fault and exactly one recovery in each CPU acceptance case; retain full-gate raw output and JUnit records.
+- [x] Model conditional object publication and independently isolated epoch takeover with deterministic conflict, lost-response and stale-actor tests.
+- [x] Pass real DCP checkpoint bytes through the remote model, damage the newer generation and validate a downloaded older version with the production checkpoint reader.
+- [x] Remove all local candidates after a real two-rank training fault, download the selected older remote generation and complete recovery through the production controller with exact reference comparison.
+- [ ] Connect the remote protocol to an actual object-service adapter, scheduler/node lifecycle and independent isolation authority, then repeat the reference/fault/negative-control matrix across hosts.
+- [ ] Run CUDA DDP/FSDP2 cases on actual accelerators and repeat power-loss and I/O-error cases on the chosen Linux filesystem.
+- [ ] Run the verification workflow on its remote Linux runner and archive its independent output.
+
+The [simulation analysis](analysis/simulation-closure-2026-09-26.md) distinguishes executed training paths from the isolated remote protocol model. The [local acceptance result](experiments/simulation-closure-2026-09-26.md) records the gate and raw evidence.

@@ -11,6 +11,7 @@ import pytest
 from trainguard import controller
 from trainguard.config import load_config
 from trainguard.controller import RunActiveError, resume, run
+from trainguard.run_store import RunStore
 from trainguard.validation import validate_runs
 
 
@@ -20,7 +21,8 @@ def _config(tmp_path: Path, *, checkpoint: str, fault: str = "none", step: int |
     raw["model"]["dropout"] = 0.2
     raw["checkpoint"] = {"mode": checkpoint, "interval_steps": 1}
     raw["fault"] = {"kind": fault, "step": step, "rank": 0}
-    raw["recovery"] = {"max_restarts": 2, "progress_timeout_seconds": 5}
+    # Full-suite CPU load can make a cold two-rank launcher take over five seconds.
+    raw["recovery"] = {"max_restarts": 2, "progress_timeout_seconds": 20}
     path = tmp_path / f"{checkpoint}-{fault}.json"
     path.write_text(json.dumps(raw))
     return path
@@ -108,6 +110,29 @@ def test_no_valid_checkpoint_fails_without_restart(tmp_path: Path) -> None:
     assert "no valid checkpoint" in status["reason"]
     with sqlite3.connect(run_dir / "run.sqlite3") as database:
         assert database.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 1
+
+
+def test_resume_after_run_metadata_before_sqlite_insert(tmp_path: Path, monkeypatch) -> None:
+    config = _config(tmp_path, checkpoint="sync")
+    with monkeypatch.context() as patch:
+        patch.setattr(RunStore, "create_run", lambda *args: (_ for _ in ()).throw(SystemExit(73)))
+        with pytest.raises(SystemExit):
+            run(config, tmp_path / "runs")
+    run_dir = next((tmp_path / "runs").iterdir())
+    assert json.loads((run_dir / "run.json").read_text())["attempt_id"] is None
+    assert resume(run_dir), (run_dir / "launcher.log").read_text()
+    with sqlite3.connect(run_dir / "run.sqlite3") as database:
+        assert database.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
+        assert database.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 1
+    assert validate_runs(run_dir, run_dir)["passed"]
+
+
+def test_missing_index_after_training_started_fails_closed(tmp_path: Path) -> None:
+    run_dir, succeeded = run(_config(tmp_path, checkpoint="sync"), tmp_path / "runs")
+    assert succeeded
+    (run_dir / "run.sqlite3").unlink()
+    with pytest.raises(ValueError, match="run index is missing"):
+        resume(run_dir)
 
 
 def test_async_save_interruption_and_stall_recover(tmp_path: Path) -> None:

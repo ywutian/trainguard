@@ -86,6 +86,17 @@ def test_pending_upload_expires_at_coordinated_boundary(single_group, tmp_path):
         checkpoint_io.save_ready(pending, single_group)
 
 
+def test_completed_upload_without_callback_timestamp_cannot_pass_expired_deadline(
+    single_group, tmp_path
+):
+    future = Future()
+    future.set_result(None)
+    pending = checkpoint_io.PendingSave(tmp_path, 1, 0, 0, future)
+    pending.deadline = time.monotonic() - 1
+    with pytest.raises(TimeoutError, match="deadline"):
+        checkpoint_io.save_ready(pending, single_group)
+
+
 def test_final_flush_coordinates_upload_failure(single_group, tmp_path):
     settings = load_config(Path(__file__).parents[1] / 'configs/cpu_demo.yaml')
     future = Future()
@@ -114,6 +125,7 @@ def _commit_failure_worker(rank: int, directory: str) -> None:
                 raise OSError("injected commit I/O failure")
 
             checkpoint_io.commit_checkpoint = fail_commit
+        (root / f"rank-{rank}.jsonl").write_text("{}\n")
         started = time.monotonic()
         try:
             checkpoint_io.finish_save(
@@ -135,4 +147,38 @@ def test_commit_failure_reaches_every_rank_before_group_timeout(tmp_path):
         result = json.loads((tmp_path / f"result-{rank}.json").read_text())
         assert "injected commit I/O failure" in result["error"]
         assert "Timed out" not in result["error"]
+    assert not (tmp_path / "candidate" / "COMMITTED").exists()
+
+
+def _cancelled_upload_worker(rank: int, directory: str) -> None:
+    root = Path(directory)
+    dist.init_process_group(
+        "gloo", init_method=f"file://{root / 'cancel-group'}", rank=rank, world_size=2,
+        timeout=timedelta(seconds=8),
+    )
+    try:
+        future = Future()
+        if rank == 0:
+            future.cancel()
+        else:
+            future.set_result(None)
+        pending = checkpoint_io.PendingSave(root / "candidate", 1, 0, 0, future)
+        started = time.monotonic()
+        try:
+            checkpoint_io.save_ready(pending, dist.group.WORLD)
+        except RuntimeError as exc:
+            result = {"error": str(exc), "elapsed_seconds": time.monotonic() - started}
+        else:
+            result = {"error": None, "elapsed_seconds": time.monotonic() - started}
+        (root / f"cancel-result-{rank}.json").write_text(json.dumps(result))
+    finally:
+        dist.destroy_process_group()
+
+
+def test_cancelled_upload_notifies_every_rank_before_group_timeout(tmp_path):
+    mp.spawn(_cancelled_upload_worker, args=(str(tmp_path),), nprocs=2, join=True)
+    for rank in (0, 1):
+        result = json.loads((tmp_path / f"cancel-result-{rank}.json").read_text())
+        assert "checkpoint upload failed" in result["error"]
+        assert result["elapsed_seconds"] < 8
     assert not (tmp_path / "candidate" / "COMMITTED").exists()

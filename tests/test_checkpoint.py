@@ -1,11 +1,15 @@
 import hashlib
+import io
 import json
+import pickle
 import random
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import torch
+from torch.distributed.checkpoint.metadata import BytesStorageMetadata, Metadata, MetadataIndex
 
 from trainguard.checkpoint import (
     CheckpointInvalid,
@@ -20,13 +24,27 @@ from trainguard.config import load_config
 from trainguard.events import write_json_atomic
 
 
-def _candidate(root: Path, step: int) -> tuple[Path, object]:
-    config = load_config(Path(__file__).parents[1] / "configs" / "cpu_demo.yaml")
+def _candidate(root: Path, step: int, config=None) -> tuple[Path, object]:
+    config = config or load_config(Path(__file__).parents[1] / "configs" / "cpu_demo.yaml")
     path = candidate_path(root, "attempt-001", step)
     (path / "dcp").mkdir(parents=True)
-    (path / "dcp" / ".metadata").write_bytes(b"metadata")
+    payloads = []
     for rank in range(config.run.world_size):
-        (path / "dcp" / f"__{rank}_0.distcp").write_bytes(f"rank {rank}".encode())
+        stream = io.BytesIO()
+        torch.save(torch.tensor([rank, step]), stream)
+        data = stream.getvalue()
+        payloads.append(data)
+        (path / "dcp" / f"__{rank}_0.distcp").write_bytes(data)
+    metadata = Metadata(
+        {"model.placeholder": BytesStorageMetadata()},
+        storage_data={
+            MetadataIndex("model.placeholder"): SimpleNamespace(
+                relative_path="__0_0.distcp", offset=0, length=len(payloads[0])
+            )
+        },
+    )
+    (path / "dcp" / ".metadata").write_bytes(pickle.dumps(metadata))
+    for rank in range(config.run.world_size):
         state = capture_rank_state(config, "run-one", "attempt-001", rank, step, {})
         write_json_atomic(path / f"rank-{rank}.json", state)
     return path, config
@@ -203,3 +221,72 @@ def test_payload_change_during_publication_cannot_report_success(tmp_path, monke
         commit_checkpoint(path, config, "run-one", "attempt-001", 1)
     with pytest.raises(CheckpointInvalid, match="hash"):
         validate_checkpoint(path, config, "run-one")
+
+
+def _refresh_metadata_hash(path: Path) -> None:
+    manifest_path = path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    metadata = path / "dcp/.metadata"
+    for entry in manifest["files"]:
+        if entry["path"] == "dcp/.metadata":
+            entry["size"] = metadata.stat().st_size
+            entry["sha256"] = hashlib.sha256(metadata.read_bytes()).hexdigest()
+    write_json_atomic(manifest_path, manifest)
+    (path / "COMMITTED").write_text(hashlib.sha256(manifest_path.read_bytes()).hexdigest() + "\n")
+
+
+@pytest.mark.parametrize("damage", ["unreadable", "missing_shard", "short_shard"])
+def test_self_consistent_but_unloadable_metadata_falls_back(tmp_path: Path, damage: str) -> None:
+    older, config = _candidate(tmp_path, 1)
+    commit_checkpoint(older, config, "run-one", "attempt-001", 1)
+    newer, _ = _candidate(tmp_path, 2)
+    commit_checkpoint(newer, config, "run-one", "attempt-001", 2)
+    metadata_path = newer / "dcp/.metadata"
+    if damage == "unreadable":
+        metadata_path.write_bytes(b"not a DCP metadata pickle")
+    else:
+        metadata = pickle.loads(metadata_path.read_bytes())
+        location = next(iter(metadata.storage_data.values()))
+        if damage == "missing_shard":
+            location.relative_path = "missing.distcp"
+        else:
+            location.length = 10_000
+        metadata_path.write_bytes(pickle.dumps(metadata))
+    _refresh_metadata_hash(newer)
+    with pytest.raises(CheckpointInvalid, match="DCP metadata"):
+        validate_checkpoint(newer, config, "run-one")
+    assert latest_valid_checkpoint(tmp_path, config, "run-one").path == older
+
+
+def test_self_consistent_but_undecodable_payload_falls_back_and_preserves_retention(
+    tmp_path: Path,
+) -> None:
+    from trainguard.lifecycle import prune_checkpoints
+
+    base = load_config(Path(__file__).parents[1] / "configs" / "cpu_demo.yaml")
+    raw = base.model_dump()
+    raw["checkpoint"]["keep_last_k"] = 2
+    config = type(base).model_validate(raw)
+    older, _ = _candidate(tmp_path, 1, config)
+    commit_checkpoint(older, config, "run-one", "attempt-001", 1)
+    middle, _ = _candidate(tmp_path, 2, config)
+    commit_checkpoint(middle, config, "run-one", "attempt-001", 2)
+    newest, _ = _candidate(tmp_path, 3, config)
+    commit_checkpoint(newest, config, "run-one", "attempt-001", 3)
+    payload = newest / "dcp/__0_0.distcp"
+    changed = bytearray(payload.read_bytes())
+    changed[:4] = b"bad!"
+    payload.write_bytes(changed)
+    manifest_path = newest / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    entry = next(item for item in manifest["files"] if item["path"] == "dcp/__0_0.distcp")
+    entry["sha256"] = hashlib.sha256(changed).hexdigest()
+    write_json_atomic(manifest_path, manifest)
+    (newest / "COMMITTED").write_text(hashlib.sha256(manifest_path.read_bytes()).hexdigest() + "\n")
+
+    assert validate_checkpoint(newest, config, "run-one").global_step == 3
+    with pytest.raises(CheckpointInvalid, match="cannot be decoded"):
+        validate_checkpoint(newest, config, "run-one", decode_payload=True)
+    assert latest_valid_checkpoint(tmp_path, config, "run-one").path == middle
+    prune_checkpoints(tmp_path, config, "run-one")
+    assert older.exists() and middle.exists()

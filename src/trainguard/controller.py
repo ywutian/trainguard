@@ -203,7 +203,7 @@ def _scan_checkpoints(
     selected = None
     for path in ordered_candidates(run_dir):
         try:
-            record = validate_checkpoint(path, config, run_id)
+            record = validate_checkpoint(path, config, run_id, decode_payload=True)
         except (CheckpointInvalid, OSError) as exc:
             records.append((str(path), run_id, None, None, "INVALID", str(exc)))
         else:
@@ -557,6 +557,30 @@ def resume(run_dir: Path) -> bool:
     store = RunStore(run_dir / "run.sqlite3")
     try:
         with _controller_lock(run_dir):
+            identity = store.run_identity(status["run_id"])
+            if identity is None:
+                # The controller can exit after publishing run.json but before inserting
+                # the first SQLite row. Rebuild only that empty, never-launched state.
+                attempts_root = run_dir / "attempts"
+                checkpoints_root = run_dir / "checkpoints"
+                pristine = (
+                    status.get("attempt_id") is None
+                    and status.get("status") == "RUNNING"
+                    and not (run_dir / "controller.jsonl").exists()
+                    and not (run_dir / "summary.json").exists()
+                    and (not attempts_root.exists() or not any(attempts_root.iterdir()))
+                    and (not checkpoints_root.exists() or not any(checkpoints_root.iterdir()))
+                )
+                if not pristine:
+                    raise ValueError("run index is missing after training may have started")
+                store.create_run(
+                    status["run_id"], status["config_fingerprint"], status["started_at"]
+                )
+            elif (
+                identity["config_fingerprint"] != status["config_fingerprint"]
+                or identity["started_at"] != status["started_at"]
+            ):
+                raise ValueError("run index identity differs from run metadata")
             if status["status"] != "SUCCEEDED":
                 # A different controller cannot reconstruct the original wall-time window.
                 status.pop("execution_started_monotonic", None)

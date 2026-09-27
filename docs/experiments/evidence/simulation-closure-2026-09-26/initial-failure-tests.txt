@@ -1,0 +1,98 @@
+........................................................................ [ 51%]
+...ssss........F.....F..............................................     [100%]
+=================================== FAILURES ===================================
+_________________ test_worker_exit_recovery_matches_reference __________________
+
+tmp_path = PosixPath('/private/var/folders/j6/24jqjdsn6_lbgks5lq452l0r0000gn/T/pytest-of-yitianwu/pytest-52/test_worker_exit_recovery_matc0')
+
+    def test_worker_exit_recovery_matches_reference(tmp_path: Path) -> None:
+        reference, reference_ok = run(_config(tmp_path, checkpoint="none"), tmp_path / "runs")
+        recovered, recovered_ok = run(
+            _config(tmp_path, checkpoint="sync", fault="worker_exit", step=2),
+            tmp_path / "runs",
+        )
+>       assert reference_ok
+E       assert False
+
+tests/test_recovery_integration.py:40: AssertionError
+________________ test_validator_detects_omitted_recovery_state _________________
+
+tmp_path = PosixPath('/private/var/folders/j6/24jqjdsn6_lbgks5lq452l0r0000gn/T/pytest-of-yitianwu/pytest-52/test_validator_detects_omitted0')
+
+    def test_validator_detects_omitted_recovery_state(tmp_path: Path) -> None:
+        reference, reference_ok = run(_config(tmp_path, checkpoint="none"), tmp_path / "runs")
+        assert reference_ok
+        for omitted in ("rng", "optimizer", "cursor"):
+            config = _config(tmp_path, checkpoint="sync", fault="worker_exit", step=2)
+            raw = json.loads(config.read_text())
+            raw["recovery"]["omit_state"] = omitted
+            config.write_text(json.dumps(raw))
+            recovered, recovered_ok = run(config, tmp_path / "runs")
+>           assert recovered_ok, (recovered / "launcher.log").read_text()
+E           AssertionError:
+E             === attempt-001 ===
+E             W0926 20:47:10.884000 49172 .venv/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/redirects.py:35] NOTE: Redirects are currently not supported in MacOs.
+E             W0926 20:47:14.183000 49204 .venv/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/redirects.py:35] NOTE: Redirects are currently not supported in MacOs.
+E             W0926 20:47:14.316000 49205 .venv/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/redirects.py:35] NOTE: Redirects are currently not supported in MacOs.
+E             W0926 20:47:15.344000 49172 .venv/lib/python3.12/site-packages/torch/distributed/elastic/agent/server/api.py:753] Received 15 death signal, shutting down workers
+E             W0926 20:47:15.349000 49172 .venv/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/api.py:1028] Sending process 49204 closing signal SIGTERM
+E             W0926 20:47:15.349000 49172 .venv/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/api.py:1028] Sending process 49205 closing signal SIGTERM
+E             Traceback (most recent call last):
+E               File "<frozen runpy>", line 198, in _run_module_as_main
+E               File "<frozen runpy>", line 88, in _run_code
+E               File "/Users/yitianwu/Documents/TrainGuard-recovery-validation/.venv/lib/python3.12/site-packages/torch/distributed/run.py", line 1142, in <module>
+E                 main()
+E               File "/Users/yitianwu/Documents/TrainGuard-recovery-validation/.venv/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 380, in wrapper
+E                 return f(*args, **kwargs)
+E                        ^^^^^^^^^^^^^^^^^^
+E               File "/Users/yitianwu/Documents/TrainGuard-recovery-validation/.venv/lib/python3.12/site-packages/torch/distributed/run.py", line 1138, in main
+E                 run(args)
+E               File "/Users/yitianwu/Documents/TrainGuard-recovery-validation/.venv/lib/python3.12/site-packages/torch/distributed/run.py", line 1129, in run
+E                 elastic_launch(
+E               File "/Users/yitianwu/Documents/TrainGuard-recovery-validation/.venv/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 197, in __call__
+E                 return launch_agent(
+E                        ^^^^^^^^^^^^^
+E               File "/Users/yitianwu/Documents/TrainGuard-recovery-validation/.venv/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 377, in launch_agent
+E                 result = agent.run()
+E                          ^^^^^^^^^^^
+E               File "/Users/yitianwu/Documents/TrainGuard-recovery-validation/.venv/lib/python3.12/site-packages/torch/distributed/elastic/metrics/api.py", line 134, in wrapper
+E                 result = f(*args, **kwargs)
+E                          ^^^^^^^^^^^^^^^^^^
+E               File "/Users/yitianwu/Documents/TrainGuard-recovery-validation/.venv/lib/python3.12/site-packages/torch/distributed/elastic/agent/server/api.py", line 745, in run
+E                 result = self._invoke_run(role)
+E                          ^^^^^^^^^^^^^^^^^^^^^^
+E               File "/Users/yitianwu/Documents/TrainGuard-recovery-validation/.venv/lib/python3.12/site-packages/torch/distributed/elastic/agent/server/api.py", line 923, in _invoke_run
+E                 time.sleep(monitor_interval)
+E               File "/Users/yitianwu/Documents/TrainGuard-recovery-validation/.venv/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/api.py", line 86, in _terminate_process_handler
+E                 raise SignalException(f"Process {os.getpid()} got signal: {sigval}", sigval=sigval)
+E             torch.distributed.elastic.multiprocessing.api.SignalException: Process 49172 got signal: 15
+E
+E           assert False
+
+tests/test_recovery_integration.py:167: AssertionError
+=============================== warnings summary ===============================
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[during_payload_fsync]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_rank_sidecar]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[during_payload_scan]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_manifest]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_marker_replace]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_marker_durable]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_commit_before_index]
+  /Users/yitianwu/Documents/TrainGuard-recovery-validation/.venv/lib/python3.12/site-packages/torch/distributed/checkpoint/utils.py:488: UserWarning: torch.distributed is disabled, unavailable or uninitialized, assuming the intent is to save in a single process.
+    return func(*args, **kwargs)
+
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[during_payload_fsync]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_rank_sidecar]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[during_payload_scan]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_manifest]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_marker_replace]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_marker_durable]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_commit_before_index]
+  /Users/yitianwu/Documents/TrainGuard-recovery-validation/.venv/lib/python3.12/site-packages/torch/distributed/checkpoint/utils.py:488: UserWarning: torch.distributed is disabled, unavailable or uninitialized, assuming the intent is to load in a single process.
+    return func(*args, **kwargs)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_recovery_integration.py::test_worker_exit_recovery_matches_reference
+FAILED tests/test_recovery_integration.py::test_validator_detects_omitted_recovery_state
+2 failed, 134 passed, 4 skipped, 14 warnings in 363.60s (0:06:03)

@@ -21,7 +21,7 @@ from torch.nn.parallel import DistributedDataParallel
 from trainguard.checkpoint_io import finish_save, load_training_state, save_ready, start_save
 from trainguard.config import load_config
 from trainguard.data import BatchStream
-from trainguard.events import append_event, write_json_atomic
+from trainguard.events import append_event, sync_event_file, write_json_atomic
 from trainguard.model import TinyTransformer
 from trainguard.strategy import bind_device, state_digest, wrap_model
 from trainguard.training_state import TrainingState, complete_update
@@ -91,6 +91,12 @@ def train(
             event_type=event_type,
             **fields,
         )
+
+    def inject(kind: str, active: bool, step: int, checkpoint_path: Path | None = None) -> None:
+        if active:
+            event("fault_injected", global_step=step, fault_kind=kind)
+            sync_event_file(event_path)
+        _inject_fault(kind, active, checkpoint_path)
 
     try:
         model = TinyTransformer(config.model)
@@ -225,11 +231,12 @@ def train(
                         control_group,
                     )
                     if config.fault.kind == "corrupt":
-                        _inject_fault(
+                        inject(
                             "corrupt",
                             _fault_active(
                                 attempt_id, rank, config.fault.rank, pending.step, config.fault.step
                             ),
+                            pending.step,
                             pending.path,
                         )
                     pending = None
@@ -237,9 +244,7 @@ def train(
                 attempt_id, rank, config.fault.rank, completed, config.fault.step
             )
             if config.fault.kind in {"worker_exit", "hang"}:
-                if active:
-                    event("fault_injected", global_step=completed, fault_kind=config.fault.kind)
-                _inject_fault(config.fault.kind, active)
+                inject(config.fault.kind, active, completed)
             if config.checkpoint.mode != "none" and (
                 completed % config.checkpoint.interval_steps == 0
                 or completed == config.training.total_steps
@@ -256,11 +261,12 @@ def train(
                         control_group,
                     )
                     if config.fault.kind == "corrupt":
-                        _inject_fault(
+                        inject(
                             "corrupt",
                             _fault_active(
                                 attempt_id, rank, config.fault.rank, pending.step, config.fault.step
                             ),
+                            pending.step,
                             pending.path,
                         )
                 pending = start_save(
@@ -277,9 +283,7 @@ def train(
                     state,
                 )
                 if config.fault.kind == "save_interrupt":
-                    if active:
-                        event("fault_injected", global_step=completed, fault_kind=config.fault.kind)
-                    _inject_fault("save_interrupt", active)
+                    inject("save_interrupt", active, completed)
                 if config.checkpoint.mode == "sync":
                     finish_save(
                         pending,
@@ -292,18 +296,19 @@ def train(
                         control_group,
                     )
                     if config.fault.kind == "corrupt":
-                        _inject_fault("corrupt", active, pending.path)
+                        inject("corrupt", active, pending.step, pending.path)
                     pending = None
         if pending is not None:
             finish_save(
                 pending, config, run_id, attempt_id, rank, event_path, completed, control_group
             )
             if config.fault.kind == "corrupt":
-                _inject_fault(
+                inject(
                     "corrupt",
                     _fault_active(
                         attempt_id, rank, config.fault.rank, pending.step, config.fault.step
                     ),
+                    pending.step,
                     pending.path,
                 )
         if device.type == "cuda":
@@ -361,6 +366,15 @@ def train(
             global_step=state.optimizer_updates,
             consumed_batches=state.consumed_batches,
         )
+        completion_sync_failed = False
+        try:
+            sync_event_file(event_path)
+        except OSError:
+            completion_sync_failed = True
+        completion_status = torch.tensor([int(completion_sync_failed)], dtype=torch.int64)
+        dist.all_reduce(completion_status, op=dist.ReduceOp.SUM, group=control_group)
+        if completion_status.item():
+            raise RuntimeError("training completion evidence could not be persisted")
     finally:
         if stream is not None:
             stream.close()

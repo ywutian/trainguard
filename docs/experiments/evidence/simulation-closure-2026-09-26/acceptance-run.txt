@@ -1,0 +1,2 @@
+W0926 21:08:32.360000 75036 torch/distributed/elastic/multiprocessing/redirects.py:35] NOTE: Redirects are currently not supported in MacOs.
+Acceptance report: /Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/simulation-closure/simulation-03dd217fc632/acceptance/acceptance-f920ea326409/report.md
