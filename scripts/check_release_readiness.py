@@ -135,6 +135,8 @@ REQUIRED_TEST_IDENTITIES = {
     ("tests.test_capacity", "test_guarded_checkpoint_limit_includes_manifest_and_commit_marker"),
     ("tests.test_completion_upgrade", "test_malformed_rank_digest_invalidates_previous_success"),
     ("tests.test_completion_upgrade", "test_malformed_attempt_identity_invalidates_previous_success"),
+    ("tests.test_completion_upgrade", "test_succeeded_run_rejects_mismatched_saved_status_identity[attempt_id]"),
+    ("tests.test_completion_upgrade", "test_succeeded_run_rejects_mismatched_saved_status_identity[config]"),
     ("tests.test_checkpoint_crash_matrix",
      "test_process_exit_at_checkpoint_publication_boundary[after_commit_before_index]"),
     ("tests.test_external_workload", "test_external_two_rank_recovery_and_omitted_state_controls"),

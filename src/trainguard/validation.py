@@ -337,10 +337,12 @@ def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
             "recovered_run_id": None,
         }
     differences = []
-    for name, directory, config in (
-        ("reference", reference_dir, reference_config),
-        ("recovered", recovered_dir, recovered_config),
+    for name, directory, config, status in (
+        ("reference", reference_dir, reference_config, reference_status),
+        ("recovered", recovered_dir, recovered_config, recovered_status),
     ):
+        if status.get("config") != config.model_dump():
+            differences.append(f"{name} saved run configuration differs")
         if config.external_workload is not None:
             try:
                 read_verified_source(config, path=frozen_workload_path(directory))

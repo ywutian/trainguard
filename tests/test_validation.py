@@ -24,7 +24,8 @@ def _run(root: Path, name: str) -> Path:
     config = load_config(Path(__file__).parents[1] / "configs" / "cpu_demo.yaml")
     (directory / "config.json").write_text(json.dumps(config.model_dump()))
     (directory / "run.json").write_text(
-        json.dumps({"run_id": name, "status": "SUCCEEDED", "attempt_id": "attempt-001"})
+        json.dumps({"run_id": name, "status": "SUCCEEDED", "attempt_id": "attempt-001",
+                    "config": config.model_dump()})
     )
     rank_states = [
         {

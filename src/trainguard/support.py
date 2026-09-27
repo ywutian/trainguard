@@ -128,7 +128,9 @@ def build_support_bundle(run_dir: Path) -> dict:
             config = load_config(run_dir / "config.json")
         except (OSError, TypeError, ValueError) as exc:
             raise SupportBundleError("saved run configuration is unreadable") from exc
-        if config.fingerprint() != fingerprint or summary_errors(
+        if status.get("config") != config.model_dump() or (
+            config.fingerprint() != fingerprint
+        ) or summary_errors(
             summary, config, run_id, attempts[-1][0]
         ):
             raise SupportBundleError("completion summary differs from saved run configuration")

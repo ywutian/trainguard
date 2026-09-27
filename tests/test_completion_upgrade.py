@@ -12,7 +12,7 @@ from trainguard import controller
 from trainguard.checkpoint import candidate_path
 from trainguard.config import load_config
 from trainguard.run_store import RunStore
-from trainguard.support import build_support_bundle
+from trainguard.support import SupportBundleError, build_support_bundle
 
 
 def config():
@@ -78,6 +78,27 @@ def test_malformed_attempt_identity_invalidates_previous_success(tmp_path):
     status = json.loads((directory / "run.json").read_text())
     assert status["status"] == "FAILED"
     assert status["post_run_audit"]["status"] == "INVALIDATED"
+
+
+@pytest.mark.parametrize("field", ["attempt_id", "config"])
+def test_succeeded_run_rejects_mismatched_saved_status_identity(tmp_path, field):
+    source = Path(__file__).parents[1] / "configs/cpu_demo.yaml"
+    directory, ok = controller.run(source, tmp_path)
+    assert ok
+    path = directory / "run.json"
+    status = json.loads(path.read_text())
+    status[field] = "attempt-999" if field == "attempt_id" else {"run": {"device": "cuda"}}
+    path.write_text(json.dumps(status))
+    from trainguard.validation import validate_runs
+
+    assert not validate_runs(directory, directory)["passed"]
+    if field == "config":
+        with pytest.raises(SupportBundleError, match="saved run configuration"):
+            build_support_bundle(directory)
+    assert not controller.resume(directory)
+    failed = json.loads(path.read_text())
+    assert failed["status"] == "FAILED"
+    assert failed["post_run_audit"]["status"] == "INVALIDATED"
 
 
 @pytest.mark.parametrize("failure", ["scan", "prune"])

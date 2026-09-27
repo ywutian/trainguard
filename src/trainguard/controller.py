@@ -767,7 +767,9 @@ def resume(run_dir: Path) -> bool:
             if status["status"] == "SUCCEEDED":
                 attempts = store.attempts(status["run_id"])
                 if (
-                    not attempts
+                    status.get("config") != config.model_dump()
+                    or not attempts
+                    or status.get("attempt_id") != attempts[-1]["attempt_id"]
                     or _valid_attempt_summary(
                         run_dir, attempts[-1]["attempt_id"], config, status["run_id"]
                     )
