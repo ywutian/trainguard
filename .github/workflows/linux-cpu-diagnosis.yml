@@ -23,6 +23,58 @@ jobs:
         with:
           version: "0.9.10"
       - run: uv sync --locked --dev
+      - name: Inspect Python startup links
+        run: |
+          uv run python - <<'PY'
+          import hashlib
+          import os
+          import stat
+          import sys
+          from pathlib import Path
+
+          roots = {
+              "venv": Path(sys.prefix).resolve(),
+              "interpreter": Path(sys.base_prefix).resolve(),
+          }
+
+          def label(path):
+              for name, root in roots.items():
+                  if path.is_relative_to(root):
+                      return f"{name}:{path.relative_to(root).parent}"
+              return "outside-install-prefix"
+
+          paths = {Path(entry or os.getcwd()).resolve() for entry in sys.path}
+          names = ("sitecustomize.py", "sitecustomize.pyc", "usercustomize.py", "usercustomize.pyc")
+          for directory in sorted(paths):
+              if not directory.is_dir():
+                  continue
+              candidates = set(directory.glob("*.pth"))
+              candidates.update(directory / name for name in names)
+              for candidate in sorted(candidates):
+                  if not candidate.is_symlink():
+                      continue
+                  target = candidate.resolve(strict=False)
+                  within_venv = target.is_relative_to(roots["venv"])
+                  within_interpreter = target.is_relative_to(roots["interpreter"])
+                  try:
+                      info = target.stat()
+                      regular = stat.S_ISREG(info.st_mode)
+                      digest = hashlib.sha256(target.read_bytes()).hexdigest() if regular else None
+                      size = info.st_size
+                      mode = oct(stat.S_IMODE(info.st_mode))
+                  except OSError:
+                      regular, digest, size, mode = False, None, None, None
+                  print({
+                      "location": label(candidate),
+                      "basename": candidate.name,
+                      "target_in_venv": within_venv,
+                      "target_in_interpreter": within_interpreter,
+                      "target_regular": regular,
+                      "target_size": size,
+                      "target_mode": mode,
+                      "target_sha256": digest,
+                  })
+          PY
       - name: Diagnose synthetic benchmark test
         run: |
           mkdir -p verification/simulation-diagnosis
@@ -30,6 +82,33 @@ jobs:
             --junitxml=verification/simulation-diagnosis/pytest.xml \
             --safe-progress-file=verification/simulation-diagnosis/pytest-progress.json \
             --basetemp=verification/simulation-diagnosis/test-artifacts \
+            tests/test_benchmark.py::test_warmup_runs_are_validated_but_excluded_from_statistics
+      - name: Retry after copy installation
+        if: always()
+        env:
+          UV_LINK_MODE: copy
+        run: |
+          uv sync --locked --dev --reinstall
+          uv run python - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          paths = {Path(entry or os.getcwd()).resolve() for entry in sys.path}
+          names = ("sitecustomize.py", "sitecustomize.pyc", "usercustomize.py", "usercustomize.pyc")
+          count = 0
+          for directory in paths:
+              if not directory.is_dir():
+                  continue
+              candidates = set(directory.glob("*.pth"))
+              candidates.update(directory / name for name in names)
+              count += sum(candidate.is_symlink() for candidate in candidates)
+          print({"startup_symlink_count_after_copy": count})
+          PY
+          uv run pytest -vv --maxfail=1 \
+            --junitxml=verification/simulation-diagnosis/pytest-copy.xml \
+            --safe-progress-file=verification/simulation-diagnosis/pytest-progress-copy.json \
+            --basetemp=verification/simulation-diagnosis/test-artifacts-copy \
             tests/test_benchmark.py::test_warmup_runs_are_validated_but_excluded_from_statistics
       - name: Diagnose CPU recovery test
         run: |
