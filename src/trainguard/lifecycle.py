@@ -19,7 +19,7 @@ from trainguard.restore_failures import failed_restore_candidates
 
 
 def _tree_bytes(path: Path) -> int:
-    """Count actual local files without following links into another namespace."""
+    """Count regular-file logical bytes without following links outside this tree."""
     if path.is_symlink():
         raise ValueError("checkpoint tree contains a symbolic link")
     if path.is_file():
