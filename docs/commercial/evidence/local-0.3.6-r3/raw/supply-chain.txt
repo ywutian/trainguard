@@ -1,0 +1,1 @@
+{"component_count": 24, "known_vulnerability_count": 0, "status": "PASS", "third_party_count": 23, "unlicensed_third_party": [], "unscanned_third_party": [], "wheel_sha256": "b957239cd079a14ccce6a17fdeaf60eb08701700c0a3f910ed220a003989a4af"}

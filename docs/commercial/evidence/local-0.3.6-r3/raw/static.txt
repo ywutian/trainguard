@@ -1,0 +1,1 @@
+Static check succeeded; original output hash is in local-validation.json.
