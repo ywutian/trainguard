@@ -1072,6 +1072,8 @@ def resume(run_dir: Path) -> bool:
             return _invalidate_completed_run(
                 run_dir, status, "completed run metadata is invalid: " + "; ".join(errors)
             )
+    if status.get("run_schema_version") != 2:
+        raise ValueError("run schema is unsupported; use its original source and runtime")
     # A missing or wrong customer-held key prevents this operator from verifying a
     # completed run; it does not by itself prove that the saved run was damaged.
     if config.run.profile == "guarded":
@@ -1082,8 +1084,6 @@ def resume(run_dir: Path) -> bool:
             return _invalidate_completed_run(
                 run_dir, status, "completed run evidence is invalid: " + "; ".join(errors)
             )
-    if status.get("run_schema_version") != 2:
-        raise ValueError("run schema is unsupported; use its original source and runtime")
     if (
         config.fault.kind != "none" or config.recovery.omit_state != "none"
         or config.checkpoint.reference_store_path is not None
