@@ -109,6 +109,113 @@ def _sequence_digest(sequence: list[tuple[int, list[int]]]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _recovery_lineage_errors(run_dir: Path, run_id: str, world_size: int) -> list[str]:
+    """Bind each recovery decision to the state every progressing rank reports loading."""
+    try:
+        with sqlite3.connect(
+            (run_dir / "run.sqlite3").resolve().as_uri() + "?mode=ro", uri=True
+        ) as database:
+            attempts = database.execute(
+                """SELECT attempt_id, number, status, resume_checkpoint,
+                          resume_step, resume_consumed_batches
+                   FROM attempts WHERE run_id=? ORDER BY number""",
+                (run_id,),
+            ).fetchall()
+            recoveries = database.execute(
+                """SELECT from_attempt, to_attempt, checkpoint_path, resume_step
+                   FROM recoveries WHERE run_id=?""",
+                (run_id,),
+            ).fetchall()
+    except sqlite3.Error as exc:
+        return [f"recovery lineage index is unreadable: {exc}"]
+
+    errors: list[str] = []
+    decisions: dict[str, list[tuple]] = {}
+    for recovery in recoveries:
+        decisions.setdefault(recovery[1], []).append(recovery)
+    if len(recoveries) != max(0, len(attempts) - 1):
+        errors.append("recovery decision count differs from attempt history")
+
+    for index, (attempt_id, number, status, checkpoint, step, cursor) in enumerate(attempts):
+        if number != index + 1 or not isinstance(attempt_id, str):
+            errors.append(f"attempt {index + 1}: recovery attempt order is invalid")
+            continue
+        if index == 0:
+            if checkpoint is not None or step != 0 or cursor != 0 or attempt_id in decisions:
+                errors.append(f"{attempt_id}: initial attempt has a recovery decision")
+            continue
+        if (
+            not isinstance(checkpoint, str)
+            or not checkpoint
+            or type(step) is not int
+            or step < 1
+            or type(cursor) is not int
+            or cursor < step
+        ):
+            errors.append(f"{attempt_id}: recovery boundary is invalid")
+            continue
+        matching = decisions.get(attempt_id, [])
+        if len(matching) != 1 or matching[0] != (
+            attempts[index - 1][0], attempt_id, checkpoint, step
+        ):
+            errors.append(f"{attempt_id}: recovery decision differs from selected checkpoint")
+
+        for rank in range(world_size):
+            path = run_dir / "attempts" / attempt_id / f"rank-{rank}.jsonl"
+            if not path.exists():
+                continue
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+            except (OSError, UnicodeError) as exc:
+                errors.append(f"{attempt_id} rank {rank}: recovery log is unreadable: {exc}")
+                continue
+            loaded, started, progressed = [], [], False
+            for line_number, line in enumerate(lines, 1):
+                if not line.endswith("\n") and status != "SUCCEEDED" and line_number == len(lines):
+                    continue
+                try:
+                    event = parse_event(line, run_id, attempt_id, rank)
+                except ValueError:
+                    continue  # The ordinary event audit reports malformed records.
+                if event is None:
+                    continue
+                kind = event["event_type"]
+                if kind == "state_loaded":
+                    loaded.append(event)
+                elif kind == "training_started":
+                    started.append(event)
+                elif kind == "step_completed":
+                    progressed = True
+            if status == "SUCCEEDED" or progressed or started:
+                if len(loaded) != 1:
+                    errors.append(f"{attempt_id} rank {rank}: expected one state_loaded event")
+            elif len(loaded) > 1:
+                errors.append(f"{attempt_id} rank {rank}: duplicate state_loaded events")
+            if status == "SUCCEEDED" or progressed:
+                if len(started) != 1:
+                    errors.append(f"{attempt_id} rank {rank}: expected one training_started event")
+            elif len(started) > 1:
+                errors.append(f"{attempt_id} rank {rank}: duplicate training_started events")
+            for event in loaded:
+                if (
+                    type(event.get("global_step")) is not int
+                    or event["global_step"] != step
+                    or type(event.get("consumed_batches")) is not int
+                    or event["consumed_batches"] != cursor
+                ):
+                    errors.append(f"{attempt_id} rank {rank}: loaded state boundary differs")
+            for event in started:
+                if (
+                    event.get("resumed_from") != checkpoint
+                    or type(event.get("global_step")) is not int
+                    or event["global_step"] != step
+                    or type(event.get("consumed_batches")) is not int
+                    or event["consumed_batches"] != cursor
+                ):
+                    errors.append(f"{attempt_id} rank {rank}: started state differs from recovery decision")
+    return errors
+
+
 def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
     reference_dir = reference_dir.resolve()
     recovered_dir = recovered_dir.resolve()
@@ -138,6 +245,23 @@ def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
         differences.append("recovered run did not succeed")
     if reference_config.workload_fingerprint() != recovered_config.workload_fingerprint():
         differences.append("workload fingerprint differs")
+    if any(
+        status.get("run_schema_version") == 2
+        for status in (reference_status, recovered_status)
+    ):
+        reference_environment = reference_status.get("environment")
+        recovered_environment = recovered_status.get("environment")
+        if not isinstance(reference_environment, dict) or not isinstance(
+            recovered_environment, dict
+        ):
+            differences.append("run environment identity is missing")
+        else:
+            for field in ("source_sha256", "python", "torch", "versions"):
+                if (
+                    reference_environment.get(field) is None
+                    or reference_environment.get(field) != recovered_environment.get(field)
+                ):
+                    differences.append(f"run environment {field} differs")
     for name, summary, config in (
         ("reference", reference_summary, reference_config),
         ("recovered", recovered_summary, recovered_config),
@@ -238,6 +362,7 @@ def completion_errors(
     errors = summary_errors(summary, config, run_id, attempt_id)
     if errors:
         return errors
+    errors.extend(_recovery_lineage_errors(run_dir, run_id, config.run.world_size))
     samples, audit = _effective_samples(run_dir, run_id, config)
     errors.extend(audit)
     expected_steps = list(range(1, config.training.total_steps + 1))

@@ -16,23 +16,24 @@ import torch
 
 def source_sha256() -> str:
     source = Path(__file__).resolve().parent
-    repository = source.parents[1]
     digest = hashlib.sha256()
-    for path in sorted(source.glob("*.py")) + [
-        repository / "pyproject.toml",
-        repository / "uv.lock",
-    ]:
-        if path.is_file():
-            digest.update(path.relative_to(repository).as_posix().encode())
-            digest.update(path.read_bytes())
+    # Package bytes have the same identity in a checkout and an installed wheel.
+    # Resolved dependency versions and Python are checked separately at resume.
+    for path in sorted(source.rglob("*.py")):
+        digest.update(path.relative_to(source).as_posix().encode())
+        digest.update(path.read_bytes())
 
     return digest.hexdigest()
 
 
 def environment_snapshot(world_size: int, device: str, storage_path: Path) -> dict:
     repository = Path(__file__).resolve().parents[2]
+    checkout_source = repository / "src" / "trainguard" / "environment.py"
+    is_checkout = checkout_source.resolve() == Path(__file__).resolve()
 
     def git(*arguments):
+        if not is_checkout:
+            return None
         result = subprocess.run(
             ["git", *arguments], cwd=repository, capture_output=True, text=True, check=False
         )
@@ -52,6 +53,7 @@ def environment_snapshot(world_size: int, device: str, storage_path: Path) -> di
         name: importlib.metadata.version(name)
         for name in ("torch", "numpy", "pydantic", "pyyaml", "typer")
     }
+    git_status = git("status", "--porcelain")
     return {
         "python": sys.version.split()[0],
         "torch": torch.__version__,
@@ -67,7 +69,7 @@ def environment_snapshot(world_size: int, device: str, storage_path: Path) -> di
         "versions": versions,
         "source_sha256": source_sha256(),
         "git_commit": git("rev-parse", "HEAD"),
-        "git_dirty": bool(git("status", "--porcelain")),
+        "git_dirty": None if git_status is None else bool(git_status),
         "environment_options": {
             key: os.environ.get(key)
             for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "CUBLAS_WORKSPACE_CONFIG")

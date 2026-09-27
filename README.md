@@ -89,3 +89,12 @@ uv run pytest tests/test_gpu_acceptance.py
 The JSONL example contains illustrative token rows, not a real-corpus performance claim. Supply an immutable token file and its SHA-256 for real training. See [current acceptance and remaining gates](docs/experiments/full-upgrade-2026-09-26.md).
 
 Version 0.2.1 rejects linked checkpoint roots and inactive retention budgets, and avoids a second full payload read at commit. See the [local hardening and measurement report](docs/experiments/local-hardening-2026-09-26.md). CUDA, multi-node, remote storage, power-loss and dedicated-host performance gates remain open.
+
+Version 0.2.2 binds each recovery decision to every progressing rank's state-load and training-start evidence, rejects cross-run software identity mismatches, and broadcasts commit failures to all ranks. The source fingerprint is computed from package code so an installed wheel and its source checkout have the same identity; resolved runtime versions remain a separate resume check. Verify a built artifact with:
+
+```bash
+uv build --wheel --sdist --out-dir dist
+uv run python scripts/verify_wheel.py dist/trainguard-0.2.2-py3-none-any.whl
+```
+
+See the [full closure assessment](docs/analysis/closure-assessment-2026-09-26.md) for the supported boundary, infrastructure gates and next acceptance steps.

@@ -14,6 +14,8 @@ Version 0.2.1 refuses a symbolic link at the checkpoint root before candidate cr
 
 Async save permits one request in flight. Default CPU staging is synchronous; a separate staging response is awaited before optimizer mutation. A dedicated Gloo save group and independent Gloo control group separate checkpoint traffic from training. At identical update boundaries, all ranks coordinate Future completion, error and deadline status. Ready uploads commit before the next scheduled save point. Forced waits and final flush use the same collective failure rule. Commit publication synchronizes files and parent directories; actual host power-loss behavior remains untested.
 
+If rank 0 encounters an exception while publishing a checkpoint, it broadcasts the failure before leaving the control collective. Every rank then exits that save with an error. The real filesystem's ENOSPC/EIO and power-loss behavior remain separate environment tests.
+
 Retention is disabled by default. `keep_last_k >= 2` keeps verified fallback versions, protects a loading candidate, and excludes unfinished candidates. Optional `max_retained_bytes` is a soft budget: protected versions take precedence and unmet budgets are reported. Durable deletion intent is retried after interruption, but deletion pauses when fewer than two valid fallbacks remain. Lifecycle operations run under the controller's exclusive ownership.
 
 ## Data contract
@@ -27,6 +29,8 @@ This implementation supports this explicit map-style data adapter with 0–16 wo
 A fresh full process group restores the selected boundary. Every attempt has its own identity and logs. The controller checks a strict final summary, rank state digests/counters, all rank completion records and complete effective update/batch evidence before success. Explicit resume rechecks completed runs under a lock, refuses live launchers/orphan workers, and rejects source/runtime/configuration changes. All exceptions after spawn enter group cleanup; controller errors remain terminal diagnostics rather than becoming an unrelated retry error.
 
 Validation reconstructs effective update and consumed-batch sequences after each recorded rollback. Final rank state digests, counters and scaler must match the uninterrupted reference exactly (`atol=0`, `rtol=0`), in the same device/runtime/topology. Bad records and missing evidence fail with diagnostics. Only an incomplete trailing line from a failed attempt can be ignored. Omission controls deliberately use a wrong RNG, optimizer or sample position and must be detected.
+
+Version 0.2.2 also checks that each recovery attempt has one matching recovery decision and that every rank which made progress records a single state load and training start at the selected update and consumed-batch boundary. The training-start path must match the selected checkpoint. Exact cross-run comparison rejects different format 2 source or runtime identities. The source digest now covers installed package Python files consistently across checkout and wheel; Python and resolved dependency versions remain separate resume constraints. This evidence is application-generated and is not a tamper-resistant signature.
 
 ## Compatibility and infrastructure gates
 

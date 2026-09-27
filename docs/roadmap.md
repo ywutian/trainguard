@@ -70,3 +70,16 @@ The last five gates remain open; local CPU results are not substituted for them.
 - [ ] Close the five infrastructure gates above when the required environments are available.
 
 Evidence: [local hardening and measurement](experiments/local-hardening-2026-09-26.md).
+
+## 7. Version 0.2.2 evidence and release identity
+
+- [x] Reject success if a progressing recovery attempt lacks matching per-rank `state_loaded` or `training_started` evidence.
+- [x] Cross-check recovery decision, selected path, update and consumed-batch boundary.
+- [x] Reject exact cross-run comparison when format 2 source or runtime identities differ.
+- [x] Make source identity stable between a source checkout and its installed wheel; distinguish unavailable Git state from a clean checkout.
+- [x] Add a package import check and an automated CPU/static/build verification workflow.
+- [x] Broadcast rank-0 commit failure to every rank before leaving the save collective; verify with two Gloo ranks.
+- [ ] Run the workflow on its remote Linux runner and preserve its output as independent release evidence.
+- [ ] Inject actual ENOSPC/EIO/readonly filesystem errors and verify recovery on the selected Linux storage.
+
+The full supported-scope and infrastructure plan is in the [closure assessment](analysis/closure-assessment-2026-09-26.md).

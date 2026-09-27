@@ -138,12 +138,25 @@ def finish_save(
     dist.all_reduce(metrics, op=dist.ReduceOp.MAX, group=group)
     # Completion times stay local; durations can safely be reduced across hosts.
     commit_started = time.monotonic()
-    commit_metrics = torch.zeros(2, dtype=torch.float64)
+    commit_metrics = torch.zeros(3, dtype=torch.float64)
+    commit_error = None
+    commit_cause: Exception | None = None
     if rank == 0:
-        record = commit_checkpoint(pending.path, config, run_id, attempt_id, pending.step)
-        commit_metrics[0] = time.monotonic() - commit_started
-        commit_metrics[1] = sum(item["size"] for item in record.manifest["files"])
+        try:
+            record = commit_checkpoint(pending.path, config, run_id, attempt_id, pending.step)
+            commit_metrics[0] = time.monotonic() - commit_started
+            commit_metrics[1] = sum(item["size"] for item in record.manifest["files"])
+        except Exception as exc:  # noqa: BLE001 - notify peers before leaving the collective
+            commit_metrics[2] = 1
+            commit_error = f"{type(exc).__name__}: {exc}"
+            commit_cause = exc
     dist.broadcast(commit_metrics, src=0, group=group)
+    if commit_metrics[2].item():
+        failure = [commit_error]
+        dist.broadcast_object_list(failure, src=0, group=group)
+        if commit_cause is not None:
+            raise RuntimeError(f"checkpoint commit failed: {failure[0]}") from commit_cause
+        raise RuntimeError(f"checkpoint commit failed: {failure[0]}")
     eligibility = torch.tensor([max(0.0, time.monotonic() - upload_finished)], dtype=torch.float64)
     dist.all_reduce(eligibility, op=dist.ReduceOp.MAX, group=group)
     append_event(

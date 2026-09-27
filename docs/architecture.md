@@ -29,7 +29,9 @@ flowchart LR
 
 Training communication uses Gloo on CPU or NCCL on CUDA. Save and control each have a dedicated Gloo group. A Future callback records only monotonic completion time; it performs no distributed operation or log write. Main threads coordinate readiness, deadlines and errors, then publish the application transaction. Forced/final waits follow the same coordination rule. Atomic JSON/marker replacement includes file and parent directory synchronization.
 
-Selection uses descending candidate order with full integrity verification until a valid version is found; full-history audit is explicit. `lifecycle.py` applies optional retention under controller ownership, with persisted deletion intent, loading protection, two fallback versions and a reported soft capacity budget. SQLite inspection updates are batched per scan. The save commit still verifies the payload twice; optimization of this read path needs a measured benefit and an independent integrity proof.
+Rank 0 broadcasts the result of checkpoint commit before any rank leaves the save collective. If publication raises an I/O or validation error, all ranks receive the failure and retain the original cause in the rank-0 traceback.
+
+Selection uses descending candidate order with full integrity verification until a valid version is found; full-history audit is explicit. `lifecycle.py` applies optional retention under controller ownership, with persisted deletion intent, loading protection, two fallback versions and a reported soft capacity budget. SQLite inspection updates are batched per scan. Commit hashes each payload once and checks file identity before and after publication; recovery independently rereads every payload before loading it.
 
 ## Measurement and experiments
 

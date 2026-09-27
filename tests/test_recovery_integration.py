@@ -47,6 +47,41 @@ def test_worker_exit_recovery_matches_reference(tmp_path: Path) -> None:
         assert database.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 2
         assert database.execute("SELECT COUNT(*) FROM recoveries").fetchone()[0] == 1
 
+    rank_log = recovered / "attempts" / "attempt-002" / "rank-0.jsonl"
+    original = rank_log.read_text()
+    rank_log.write_text(
+        "".join(
+            line for line in original.splitlines(keepends=True)
+            if json.loads(line).get("event_type") != "state_loaded"
+        )
+    )
+    missing_load = validate_runs(reference, recovered)
+    assert not missing_load["passed"]
+    assert any("state_loaded" in item for item in missing_load["differences"])
+    rank_log.write_text(original)
+
+    with sqlite3.connect(recovered / "run.sqlite3") as database:
+        original_step = database.execute(
+            "SELECT resume_step FROM recoveries WHERE to_attempt='attempt-002'"
+        ).fetchone()[0]
+        database.execute("UPDATE recoveries SET resume_step=0 WHERE to_attempt='attempt-002'")
+    broken_decision = validate_runs(reference, recovered)
+    assert not broken_decision["passed"]
+    assert any("recovery decision" in item for item in broken_decision["differences"])
+    with sqlite3.connect(recovered / "run.sqlite3") as database:
+        database.execute(
+            "UPDATE recoveries SET resume_step=? WHERE to_attempt='attempt-002'",
+            (original_step,),
+        )
+
+    run_path = recovered / "run.json"
+    status = json.loads(run_path.read_text())
+    status["environment"]["source_sha256"] = "0" * 64
+    run_path.write_text(json.dumps(status))
+    wrong_environment = validate_runs(reference, recovered)
+    assert not wrong_environment["passed"]
+    assert any("run environment source_sha256 differs" in item for item in wrong_environment["differences"])
+
 
 def test_corrupted_newest_checkpoint_uses_previous_step(tmp_path: Path) -> None:
     reference, reference_ok = run(_config(tmp_path, checkpoint="none"), tmp_path / "runs")

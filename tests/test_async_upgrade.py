@@ -1,9 +1,12 @@
 import json
+import time
 from concurrent.futures import Future
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 import torch.distributed as dist
+import torch.multiprocessing as mp
 
 from trainguard import checkpoint_io
 from trainguard.config import load_config
@@ -92,3 +95,44 @@ def test_final_flush_coordinates_upload_failure(single_group, tmp_path):
         checkpoint_io.finish_save(pending, settings, 'run', 'attempt-001', 0,
                                   tmp_path / 'events.jsonl', control_group=single_group)
     assert not (tmp_path / 'COMMITTED').exists()
+
+
+def _commit_failure_worker(rank: int, directory: str) -> None:
+    root = Path(directory)
+    dist.init_process_group(
+        "gloo", init_method=f"file://{root / 'group'}", rank=rank, world_size=2,
+        timeout=timedelta(seconds=8),
+    )
+    try:
+        config = load_config(Path(__file__).parents[1] / "configs/cpu_demo.yaml")
+        pending = checkpoint_io.PendingSave(
+            root / "candidate", 1, time.monotonic(), 0.0, None,
+            upload_started=time.monotonic(), upload_finished=time.monotonic(),
+        )
+        if rank == 0:
+            def fail_commit(*args, **kwargs):
+                raise OSError("injected commit I/O failure")
+
+            checkpoint_io.commit_checkpoint = fail_commit
+        started = time.monotonic()
+        try:
+            checkpoint_io.finish_save(
+                pending, config, "run", "attempt-001", rank,
+                root / f"rank-{rank}.jsonl", control_group=dist.group.WORLD,
+            )
+        except (OSError, RuntimeError) as exc:
+            result = {"error": str(exc), "elapsed_seconds": time.monotonic() - started}
+        else:
+            result = {"error": None, "elapsed_seconds": time.monotonic() - started}
+        (root / f"result-{rank}.json").write_text(json.dumps(result))
+    finally:
+        dist.destroy_process_group()
+
+
+def test_commit_failure_reaches_every_rank_before_group_timeout(tmp_path):
+    mp.spawn(_commit_failure_worker, args=(str(tmp_path),), nprocs=2, join=True)
+    for rank in (0, 1):
+        result = json.loads((tmp_path / f"result-{rank}.json").read_text())
+        assert "injected commit I/O failure" in result["error"]
+        assert "Timed out" not in result["error"]
+    assert not (tmp_path / "candidate" / "COMMITTED").exists()

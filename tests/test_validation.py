@@ -180,6 +180,7 @@ def test_rollback_and_truncated_failed_attempt_tail_remain_valid(tmp_path: Path)
     try:
         store.finish_attempt("attempt-001", "FAILED", 71, "worker exited")
         store.start_attempt("recovered", "attempt-002", 2, "checkpoint", 2)
+        store.record_recovery("recovered", "attempt-001", "attempt-002", "checkpoint", 2, 2)
         store.finish_attempt("attempt-002", "SUCCEEDED", 0, "completed")
     finally:
         store.close()
@@ -189,7 +190,20 @@ def test_rollback_and_truncated_failed_attempt_tail_remain_valid(tmp_path: Path)
             stream.write('{"partial"')
         destination = recovered / "attempts/attempt-002" / f"rank-{rank}.jsonl"
         destination.parent.mkdir(parents=True, exist_ok=True)
+        lineage = [
+            {
+                "run_id": "recovered", "attempt_id": "attempt-002", "rank": rank,
+                "event_type": "state_loaded", "global_step": 2, "consumed_batches": 2,
+            },
+            {
+                "run_id": "recovered", "attempt_id": "attempt-002", "rank": rank,
+                "event_type": "training_started", "global_step": 2,
+                "consumed_batches": 2, "resumed_from": "checkpoint",
+            },
+        ]
         destination.write_text(
+            "".join(json.dumps(event) + "\n" for event in lineage)
+            +
             "".join(
                 json.dumps(event | {"attempt_id": "attempt-002"}) + "\n"
                 for event in _events_from_complete_lines(source)
@@ -200,6 +214,58 @@ def test_rollback_and_truncated_failed_attempt_tail_remain_valid(tmp_path: Path)
         path = recovered / filename
         record = json.loads(path.read_text())
         record["attempt_id"] = "attempt-002"
+        path.write_text(json.dumps(record))
+    assert validate_runs(reference, recovered)["passed"]
+
+
+def test_failed_restore_before_training_can_retry(tmp_path: Path) -> None:
+    reference = _run(tmp_path, "reference")
+    recovered = _run(tmp_path, "recovered")
+    store = RunStore(recovered / "run.sqlite3")
+    try:
+        store.finish_attempt("attempt-001", "FAILED", 71, "worker exited")
+        store.start_attempt("recovered", "attempt-002", 2, "checkpoint", 2)
+        store.record_recovery("recovered", "attempt-001", "attempt-002", "checkpoint", 2, 2)
+        store.finish_attempt("attempt-002", "FAILED", 71, "worker exited after loading")
+        store.start_attempt("recovered", "attempt-003", 3, "checkpoint", 2)
+        store.record_recovery("recovered", "attempt-002", "attempt-003", "checkpoint", 2, 0)
+        store.finish_attempt("attempt-003", "SUCCEEDED", 0, "completed")
+    finally:
+        store.close()
+    for rank in (0, 1):
+        source_events = _events(recovered, rank)
+        if rank == 0:
+            partial = source_events[0] | {
+                "attempt_id": "attempt-002",
+                "event_type": "state_loaded",
+                "global_step": 2,
+                "consumed_batches": 2,
+            }
+            path = recovered / "attempts/attempt-002/rank-0.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(partial) + "\n")
+        resumed = [
+            source_events[0] | {
+                "attempt_id": "attempt-003", "event_type": "state_loaded",
+                "global_step": 2, "consumed_batches": 2,
+            },
+            source_events[0] | {
+                "attempt_id": "attempt-003", "event_type": "training_started",
+                "global_step": 2, "consumed_batches": 2, "resumed_from": "checkpoint",
+            },
+        ]
+        resumed.extend(
+            event | {"attempt_id": "attempt-003"}
+            for event in source_events
+            if event.get("global_step", 0) > 2 or event.get("consumed_batches", 0) > 2
+        )
+        path = recovered / f"attempts/attempt-003/rank-{rank}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(json.dumps(event) + "\n" for event in resumed))
+    for filename in ("summary.json", "run.json"):
+        path = recovered / filename
+        record = json.loads(path.read_text())
+        record["attempt_id"] = "attempt-003"
         path.write_text(json.dumps(record))
     assert validate_runs(reference, recovered)["passed"]
 
