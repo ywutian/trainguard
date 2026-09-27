@@ -1,0 +1,79 @@
+{
+  "artifacts": {
+    "trainguard-0.3.6-py3-none-any.whl": "16929a8671adafd799abe12b0c8af2eb0258092896a6e876204b0140e49411d0",
+    "trainguard-0.3.6.tar.gz": "9e9503e487bdd0fbae3093fbf9cd841e281f334976390efdcba1ba28e717b31d",
+    "uv.lock": "644ef845c4a33c6e1cbec3b7de5dc4532e12f3a5fa5ef56f7af69bc6a7386ff3"
+  },
+  "candidate_source_sha256": "0b022166ad57a9ef3f7f18e427a77a1430a68d2c51fbc3afab170ade87e7c925",
+  "checks": {
+    "cpu_fault_matrix": true,
+    "fresh_install": true,
+    "full_suite": true,
+    "supply_chain": true,
+    "upgrade_recovery": true,
+    "wheel_identity": true
+  },
+  "cpu_cases": {
+    "async-corrupt": "PASSED",
+    "async-save_interrupt": "PASSED",
+    "async-worker_exit": "PASSED",
+    "omit-cursor": "PASSED",
+    "omit-optimizer": "PASSED",
+    "omit-rng": "PASSED",
+    "sync-corrupt": "PASSED",
+    "sync-hang": "PASSED",
+    "sync-save_interrupt": "PASSED",
+    "sync-worker_exit": "PASSED"
+  },
+  "execution_commit": "8a37796967dffc1b1bad0bdd3ded94fa01fae77a",
+  "execution_inputs_sha256": "b00cf37503cba8b3ffa9e5d2aeac7d66e492f3a26b44abc5ca8b8329ad5fe8f4",
+  "full_original_result_reference": "simulation:simulation-f7417f5efac3",
+  "human_approval": false,
+  "raw_evidence_dir": "docs/commercial/evidence/local-0.3.6-r2/raw",
+  "raw_files": {
+    "acceptance.json": "9d2cc54328612a6fde99324fadf171650b91849f0eb2e9e377e6d05c61822e53",
+    "cpu-acceptance.txt": "603b6ef158259c5d1a9c33468d86b72e6af2687031d03aebfcbc140ce00778eb",
+    "fresh-install.txt": "0e6416155813115de1967c583095dca3384b70cd5a6e19dc96c6ea185026d7cb",
+    "package.txt": "a12cfa1d3478f62f5a4214f7d0d472aa95e58a9d092881b5b490df7b3da0cde1",
+    "pytest.xml": "e3d8a1c23eafc2021740ce9692c32c901972fed8b124139000cbe109768f46d7",
+    "result.json": "b50ab49b65b10942dba281ea4ae2bc1e374c574f940219ab774ba70ef677ce60",
+    "static.txt": "0032d3beba9a2eabfdeb064376b04ca7d14f1ffb92819dd7fdd7e73ad53efe53",
+    "supply-chain-audit.json": "2d04c7b5d4b7d9c633cafdd853445ad8c7c4ef42d13cb08a4d297fbea085ae93",
+    "supply-chain-installed.json": "b63bc654d7ab8dddff729a93b58d492b5050c05038cd96efe97bfec563a92d91",
+    "supply-chain-licenses.json": "3c59f01d14f24b139ced7beccd09214169d5bb8747cbbe6f7b3b3e6bd939ca6b",
+    "supply-chain-receipt.json": "31e23b9b7ce006a2d2f7829e90ef539bba3c895bb8cc9de27ed8e4ad2ae95e64",
+    "supply-chain-requirements.txt": "770079d0eed5b64371da75fec6c0d3c4ae21325ce1feeba343c0604bd23e809e",
+    "supply-chain-sbom.json": "b96795cf86c6491e2f795428c8d3e78c211aa5e64ed9e8ac47bc9f9fc2bfa218",
+    "supply-chain.txt": "07d4d4be6d6478454c99e0e9c8d6b59649a82378779e5f781ec81a63e0451bfa",
+    "tests.txt": "52e9fdfabbb910b5e7137062fdcdddd66aa932841cd81186693c316b5ac7fc7f",
+    "upgrade-boundary.txt": "72b989435f8a5e9183da360c8b7311fb823b595a117f3406fe331d5dc6e86392",
+    "wheel.txt": "8ecb371eaa2efa3069626e3ec1de84b0de745d25c444844d70bb4be0bf74f8c5"
+  },
+  "redaction": "Structured summaries only; original gate files remain at the recorded simulation reference.",
+  "schema_version": 1,
+  "scope": "local CPU/Gloo; Python 3.12.12; PyTorch 2.14.0",
+  "status": "SUCCEEDED",
+  "tests": {
+    "passed": 512,
+    "skipped_no_gpu": 4
+  },
+  "unredacted_source_sha256": {
+    "acceptance.json": "15366dbc0c024abe6d5be4560bfc90a979f4586d3437c65244db98f15b6b6876",
+    "cpu-acceptance.txt": "4f48740cdc62b373c5bf9426e0f03c647031bf65520613f8b764d5c375750ff1",
+    "fresh-install.txt": "0e6416155813115de1967c583095dca3384b70cd5a6e19dc96c6ea185026d7cb",
+    "package.txt": "6bdd2eb5d4b15250f339fa06cae63b0b80acc898f671238e76eb8ea64af3c396",
+    "pytest.xml": "e913e2704a06a76e2c738249e203507af7b513b0180ce051c83ab1c72728dc86",
+    "result.json": "f98e62340c2acbc1a4e73351102ddc4eda20adb1a70e235026a16eb1e972993e",
+    "static.txt": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+    "supply-chain-audit.json": "c9903eb2efd2cd644d148ed94ea5c99ca62d05b10cde95854c6fae524c1521c5",
+    "supply-chain-installed.json": "b63bc654d7ab8dddff729a93b58d492b5050c05038cd96efe97bfec563a92d91",
+    "supply-chain-licenses.json": "41fa6acf58f40077b4369f7c60c82c698c52e4a459f5a901c6eee502190c07c5",
+    "supply-chain-receipt.json": "0f1caf465bd8e3b0ee0bd12937b9bb8fd3c325b0d567a81006dce692a568ecab",
+    "supply-chain-requirements.txt": "770079d0eed5b64371da75fec6c0d3c4ae21325ce1feeba343c0604bd23e809e",
+    "supply-chain-sbom.json": "72719ce8dd192a6d782f27de0ca418ee2b880b0590da53cfa43d1b14ea8c558b",
+    "supply-chain.txt": "07d4d4be6d6478454c99e0e9c8d6b59649a82378779e5f781ec81a63e0451bfa",
+    "tests.txt": "597a4676a97cabcb985b9ed249454133c58402646c4abf6811bc33e27047dc24",
+    "upgrade-boundary.txt": "936339021ea335e52a0aa1ef3a800ad0e382491c6c4d39a016b12d34b4231c7a",
+    "wheel.txt": "4f6b758ee1083d8d913b526b5a7f2ee1dfb72dfcdf1a10eff67642d34998e880"
+  }
+}

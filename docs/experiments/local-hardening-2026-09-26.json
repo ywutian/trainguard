@@ -1,0 +1,587 @@
+{
+  "schema_version": 1,
+  "baseline": {
+    "version": "0.2.0",
+    "source_sha256": "72d2c2f8e4f7e5eef03b5caffc2aa431122266c9a1d9e1c9ff91aefcf0fa74a5",
+    "storage_dir": "/Users/yitianwu/Documents/TrainGuard/runs/patch-comparison/storage-f403bb56fba0",
+    "status": "SUCCEEDED",
+    "environment": {
+      "cpu_count": 10,
+      "cuda_available": false,
+      "cuda_device_count": 0,
+      "cuda_version": null,
+      "device": "cpu",
+      "disk_free_bytes": 39399305216,
+      "environment_options": {
+        "CUBLAS_WORKSPACE_CONFIG": null,
+        "MKL_NUM_THREADS": null,
+        "OMP_NUM_THREADS": null
+      },
+      "git_commit": "9c55e00c03094ddadb21d4ddf3375c3c083ed897",
+      "git_dirty": false,
+      "memory_bytes": 25769803776,
+      "platform": "macOS-26.5.1-arm64-arm-64bit",
+      "python": "3.12.12",
+      "source_sha256": "72d2c2f8e4f7e5eef03b5caffc2aa431122266c9a1d9e1c9ff91aefcf0fa74a5",
+      "storage": "local filesystem",
+      "storage_device": 16777233,
+      "torch": "2.14.0",
+      "versions": {
+        "numpy": "2.5.3",
+        "pydantic": "2.13.5",
+        "pyyaml": "6.0.3",
+        "torch": "2.14.0",
+        "typer": "0.27.2"
+      },
+      "worker_threads": 1,
+      "world_size": 1
+    },
+    "rows": [
+      {
+        "hash_commit_seconds": 0.05805070799999612,
+        "load_seconds": 0.020114666000040415,
+        "main_thread_wait_seconds": 0.0643369580000126,
+        "mode": "sync",
+        "payload_bytes": 67186283,
+        "repeat": 1,
+        "size_mib": 64,
+        "staging_seconds": 0.0,
+        "status": "PASSED",
+        "tensor_bytes": 67108864,
+        "upload_seconds": 0.0643369580000126,
+        "validated": true
+      },
+      {
+        "hash_commit_seconds": 0.05233387500004483,
+        "load_seconds": 0.006688166000003548,
+        "main_thread_wait_seconds": 0.02209616699997241,
+        "mode": "async",
+        "payload_bytes": 67186284,
+        "repeat": 1,
+        "size_mib": 64,
+        "staging_seconds": 0.0020503339999322634,
+        "status": "PASSED",
+        "tensor_bytes": 67108864,
+        "upload_seconds": 0.022073666999972374,
+        "validated": true
+      },
+      {
+        "hash_commit_seconds": 0.060557125000059386,
+        "load_seconds": 0.006677207999928214,
+        "main_thread_wait_seconds": 0.025371750000090287,
+        "mode": "sync",
+        "payload_bytes": 67186283,
+        "repeat": 2,
+        "size_mib": 64,
+        "staging_seconds": 0.0,
+        "status": "PASSED",
+        "tensor_bytes": 67108864,
+        "upload_seconds": 0.025371750000090287,
+        "validated": true
+      },
+      {
+        "hash_commit_seconds": 0.05285108299995045,
+        "load_seconds": 0.006263124999918546,
+        "main_thread_wait_seconds": 0.04576733399994737,
+        "mode": "async",
+        "payload_bytes": 67186284,
+        "repeat": 2,
+        "size_mib": 64,
+        "staging_seconds": 0.0017685830000573333,
+        "status": "PASSED",
+        "tensor_bytes": 67108864,
+        "upload_seconds": 0.04574862499998744,
+        "validated": true
+      },
+      {
+        "hash_commit_seconds": 0.05226170899993576,
+        "load_seconds": 0.006268499999919186,
+        "main_thread_wait_seconds": 0.05273087499995199,
+        "mode": "sync",
+        "payload_bytes": 67186283,
+        "repeat": 3,
+        "size_mib": 64,
+        "staging_seconds": 0.0,
+        "status": "PASSED",
+        "tensor_bytes": 67108864,
+        "upload_seconds": 0.05273087499995199,
+        "validated": true
+      },
+      {
+        "hash_commit_seconds": 0.052438707999954204,
+        "load_seconds": 0.006627459000014824,
+        "main_thread_wait_seconds": 0.053835250000020096,
+        "mode": "async",
+        "payload_bytes": 67186284,
+        "repeat": 3,
+        "size_mib": 64,
+        "staging_seconds": 0.0017638750000514847,
+        "status": "PASSED",
+        "tensor_bytes": 67108864,
+        "upload_seconds": 0.053825959000050716,
+        "validated": true
+      },
+      {
+        "hash_commit_seconds": 0.19211312499999167,
+        "load_seconds": 0.07549174999996922,
+        "main_thread_wait_seconds": 0.28753150000000005,
+        "mode": "sync",
+        "payload_bytes": 268512876,
+        "repeat": 1,
+        "size_mib": 256,
+        "staging_seconds": 0.0,
+        "status": "PASSED",
+        "tensor_bytes": 268435456,
+        "upload_seconds": 0.28753150000000005,
+        "validated": true
+      },
+      {
+        "hash_commit_seconds": 0.19843816699994932,
+        "load_seconds": 0.02405504099999689,
+        "main_thread_wait_seconds": 0.29724258399994596,
+        "mode": "async",
+        "payload_bytes": 268512877,
+        "repeat": 1,
+        "size_mib": 256,
+        "staging_seconds": 0.005718417000025511,
+        "status": "PASSED",
+        "tensor_bytes": 268435456,
+        "upload_seconds": 0.2972242079999887,
+        "validated": true
+      },
+      {
+        "hash_commit_seconds": 0.21170537499995135,
+        "load_seconds": 0.028426542000033805,
+        "main_thread_wait_seconds": 0.3066468749999558,
+        "mode": "sync",
+        "payload_bytes": 268512876,
+        "repeat": 2,
+        "size_mib": 256,
+        "staging_seconds": 0.0,
+        "status": "PASSED",
+        "tensor_bytes": 268435456,
+        "upload_seconds": 0.3066468749999558,
+        "validated": true
+      },
+      {
+        "hash_commit_seconds": 0.19818820899990897,
+        "load_seconds": 0.023622749999958614,
+        "main_thread_wait_seconds": 0.3109944169999608,
+        "mode": "async",
+        "payload_bytes": 268512877,
+        "repeat": 2,
+        "size_mib": 256,
+        "staging_seconds": 0.008075875000031374,
+        "status": "PASSED",
+        "tensor_bytes": 268435456,
+        "upload_seconds": 0.310936125000012,
+        "validated": true
+      },
+      {
+        "hash_commit_seconds": 0.20687583300002643,
+        "load_seconds": 0.023418875000061234,
+        "main_thread_wait_seconds": 0.23807754200004183,
+        "mode": "sync",
+        "payload_bytes": 268512876,
+        "repeat": 3,
+        "size_mib": 256,
+        "staging_seconds": 0.0,
+        "status": "PASSED",
+        "tensor_bytes": 268435456,
+        "upload_seconds": 0.23807754200004183,
+        "validated": true
+      },
+      {
+        "hash_commit_seconds": 0.21211666700003207,
+        "load_seconds": 0.023257917000023554,
+        "main_thread_wait_seconds": 0.2609418329999471,
+        "mode": "async",
+        "payload_bytes": 268512877,
+        "repeat": 3,
+        "size_mib": 256,
+        "staging_seconds": 0.005852459000038834,
+        "status": "PASSED",
+        "tensor_bytes": 268435456,
+        "upload_seconds": 0.2609181669999998,
+        "validated": true
+      }
+    ]
+  },
+  "upgrade": {
+    "version": "0.2.1",
+    "commit": "8f75ad8b8ff6ce1b7aeb1589ca145474402ca62d",
+    "source_sha256": "277fc9026aec462e7fe2766d2be8b54f7c4c003aa0d96c3fc5f0fc773273b390",
+    "status": "SUCCEEDED",
+    "environment": {
+      "cpu_count": 10,
+      "cuda_available": false,
+      "cuda_device_count": 0,
+      "cuda_version": null,
+      "device": "cpu",
+      "disk_free_bytes": 37379260416,
+      "environment_options": {
+        "CUBLAS_WORKSPACE_CONFIG": null,
+        "MKL_NUM_THREADS": null,
+        "OMP_NUM_THREADS": null
+      },
+      "git_commit": "8f75ad8b8ff6ce1b7aeb1589ca145474402ca62d",
+      "git_dirty": false,
+      "memory_bytes": 25769803776,
+      "platform": "macOS-26.5.1-arm64-arm-64bit",
+      "python": "3.12.12",
+      "source_sha256": "277fc9026aec462e7fe2766d2be8b54f7c4c003aa0d96c3fc5f0fc773273b390",
+      "storage": "local filesystem",
+      "storage_device": 16777233,
+      "torch": "2.14.0",
+      "versions": {
+        "numpy": "2.5.3",
+        "pydantic": "2.13.5",
+        "pyyaml": "6.0.3",
+        "torch": "2.14.0",
+        "typer": "0.27.2"
+      },
+      "worker_threads": 1,
+      "world_size": 2
+    },
+    "storage_dir": "/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/patch-0.2.1/storage-fe7b540cf129",
+    "storage_rows": [
+      {
+        "hash_commit_seconds": 0.026335042000027897,
+        "load_seconds": 0.009517125000002125,
+        "main_thread_wait_seconds": 0.07781729099997392,
+        "mode": "sync",
+        "payload_bytes": 67186324,
+        "repeat": 1,
+        "size_mib": 64,
+        "staging_seconds": 0.0,
+        "status": "PASSED",
+        "tensor_bytes": 67108864,
+        "upload_seconds": 0.07781729099997392,
+        "validated": true
+      },
+      {
+        "hash_commit_seconds": 0.026709916999834604,
+        "load_seconds": 0.006264042000111658,
+        "main_thread_wait_seconds": 0.055111165999960576,
+        "mode": "async",
+        "payload_bytes": 67186325,
+        "repeat": 1,
+        "size_mib": 64,
+        "staging_seconds": 0.0018598750000364817,
+        "status": "PASSED",
+        "tensor_bytes": 67108864,
+        "upload_seconds": 0.055087999999841486,
+        "validated": true
+      },
+      {
+        "hash_commit_seconds": 0.026847832999919774,
+        "load_seconds": 0.006249582999998893,
+        "main_thread_wait_seconds": 0.0684242089998861,
+        "mode": "sync",
+        "payload_bytes": 67186324,
+        "repeat": 2,
+        "size_mib": 64,
+        "staging_seconds": 0.0,
+        "status": "PASSED",
+        "tensor_bytes": 67108864,
+        "upload_seconds": 0.0684242089998861,
+        "validated": true
+      },
+      {
+        "hash_commit_seconds": 0.026121292000198082,
+        "load_seconds": 0.006116000000019994,
+        "main_thread_wait_seconds": 0.05136749999996937,
+        "mode": "async",
+        "payload_bytes": 67186325,
+        "repeat": 2,
+        "size_mib": 64,
+        "staging_seconds": 0.002077874999940832,
+        "status": "PASSED",
+        "tensor_bytes": 67108864,
+        "upload_seconds": 0.05134970900007829,
+        "validated": true
+      },
+      {
+        "hash_commit_seconds": 0.025999334000061936,
+        "load_seconds": 0.0062175410000691045,
+        "main_thread_wait_seconds": 0.07360170800006927,
+        "mode": "sync",
+        "payload_bytes": 67186324,
+        "repeat": 3,
+        "size_mib": 64,
+        "staging_seconds": 0.0,
+        "status": "PASSED",
+        "tensor_bytes": 67108864,
+        "upload_seconds": 0.07360170800006927,
+        "validated": true
+      },
+      {
+        "hash_commit_seconds": 0.026327708000053462,
+        "load_seconds": 0.006180875000154629,
+        "main_thread_wait_seconds": 0.058368083000004845,
+        "mode": "async",
+        "payload_bytes": 67186325,
+        "repeat": 3,
+        "size_mib": 64,
+        "staging_seconds": 0.0018304999998690619,
+        "status": "PASSED",
+        "tensor_bytes": 67108864,
+        "upload_seconds": 0.05835120800020377,
+        "validated": true
+      },
+      {
+        "hash_commit_seconds": 0.09718150000003334,
+        "load_seconds": 0.05829975000006016,
+        "main_thread_wait_seconds": 0.2862424170000395,
+        "mode": "sync",
+        "payload_bytes": 268512917,
+        "repeat": 1,
+        "size_mib": 256,
+        "staging_seconds": 0.0,
+        "status": "PASSED",
+        "tensor_bytes": 268435456,
+        "upload_seconds": 0.2862424170000395,
+        "validated": true
+      },
+      {
+        "hash_commit_seconds": 0.10219912499997008,
+        "load_seconds": 0.05045408299997689,
+        "main_thread_wait_seconds": 0.2701166249999005,
+        "mode": "async",
+        "payload_bytes": 268512918,
+        "repeat": 1,
+        "size_mib": 256,
+        "staging_seconds": 0.005885708000050727,
+        "status": "PASSED",
+        "tensor_bytes": 268435456,
+        "upload_seconds": 0.2700984589998825,
+        "validated": true
+      },
+      {
+        "hash_commit_seconds": 0.09770095799990486,
+        "load_seconds": 0.022501833999967857,
+        "main_thread_wait_seconds": 0.2623473339999691,
+        "mode": "sync",
+        "payload_bytes": 268512917,
+        "repeat": 2,
+        "size_mib": 256,
+        "staging_seconds": 0.0,
+        "status": "PASSED",
+        "tensor_bytes": 268435456,
+        "upload_seconds": 0.2623473339999691,
+        "validated": true
+      },
+      {
+        "hash_commit_seconds": 0.09707687499985695,
+        "load_seconds": 0.023623250000127882,
+        "main_thread_wait_seconds": 0.2851168330000746,
+        "mode": "async",
+        "payload_bytes": 268512918,
+        "repeat": 2,
+        "size_mib": 256,
+        "staging_seconds": 0.005612374999827807,
+        "status": "PASSED",
+        "tensor_bytes": 268435456,
+        "upload_seconds": 0.2850962500001515,
+        "validated": true
+      },
+      {
+        "hash_commit_seconds": 0.09803770799999256,
+        "load_seconds": 0.02483774999996058,
+        "main_thread_wait_seconds": 0.2903561670000272,
+        "mode": "sync",
+        "payload_bytes": 268512917,
+        "repeat": 3,
+        "size_mib": 256,
+        "staging_seconds": 0.0,
+        "status": "PASSED",
+        "tensor_bytes": 268435456,
+        "upload_seconds": 0.2903561670000272,
+        "validated": true
+      },
+      {
+        "hash_commit_seconds": 0.10524583300002632,
+        "load_seconds": 0.02329816600013146,
+        "main_thread_wait_seconds": 0.2849919160000809,
+        "mode": "async",
+        "payload_bytes": 268512918,
+        "repeat": 3,
+        "size_mib": 256,
+        "staging_seconds": 0.007944084000200746,
+        "status": "PASSED",
+        "tensor_bytes": 268435456,
+        "upload_seconds": 0.2849716250000256,
+        "validated": true
+      }
+    ],
+    "reference_dir": "/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/patch-0.2.1/reference/4e7b7222f45e",
+    "recovered_dir": "/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/patch-0.2.1/recovered/f2f4598653e1",
+    "validation": {
+      "comparison": {
+        "method": "exact SHA-256 of rank states and effective sample/batch IDs",
+        "tensor_atol": 0.0,
+        "tensor_rtol": 0.0
+      },
+      "differences": [],
+      "effective_batches": {
+        "0": {
+          "recovered_batches": 300,
+          "reference_batches": 300
+        },
+        "1": {
+          "recovered_batches": 300,
+          "reference_batches": 300
+        }
+      },
+      "effective_samples": {
+        "0": {
+          "recovered_sha256": "7ca9c5926c8a3745a90e5ca143804d2c2592867bc3f010d1957d8977b93d11bd",
+          "recovered_steps": 300,
+          "reference_sha256": "7ca9c5926c8a3745a90e5ca143804d2c2592867bc3f010d1957d8977b93d11bd",
+          "reference_steps": 300
+        },
+        "1": {
+          "recovered_sha256": "1ea3bd7a77e53b8bad48604f16bc9855a63f4f6f71922d793f9286244d656cc1",
+          "recovered_steps": 300,
+          "reference_sha256": "1ea3bd7a77e53b8bad48604f16bc9855a63f4f6f71922d793f9286244d656cc1",
+          "reference_steps": 300
+        }
+      },
+      "passed": true,
+      "recovered_run_id": "f2f4598653e1",
+      "reference_run_id": "4e7b7222f45e"
+    },
+    "retention": {
+      "budget_satisfied": true,
+      "enabled": true,
+      "pending": [],
+      "retained_bytes": 2965946,
+      "run_id": "f2f4598653e1"
+    },
+    "retained_steps": [
+      200,
+      300
+    ],
+    "first_commit": {
+      "attempt_id": "attempt-001",
+      "checkpoint_bytes": 1483015,
+      "checkpoint_path": "/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/patch-0.2.1/recovered/f2f4598653e1/checkpoints/step-000100-attempt-001",
+      "checksum_commit_seconds": 0.005862541999931636,
+      "committed_at_step": 105,
+      "eligibility_lag_seconds": 0.010770249999950465,
+      "event_type": "checkpoint_committed",
+      "global_step": 100,
+      "main_thread_wait_seconds": 0.0002662090000740136,
+      "preparation_seconds": 0.0009329170000000886,
+      "rank": 0,
+      "recoverable_step_lag": 5,
+      "run_id": "f2f4598653e1",
+      "staging_seconds": 0.0016314169999986916,
+      "time": "2026-09-26T20:29:56.588868+00:00",
+      "upload_seconds": 0.024968458999865106,
+      "writing_seconds": 0.03634654099982981
+    },
+    "recovery_metrics": {
+      "attempt_gap_seconds": 0.012219,
+      "checkpoint_bytes": 4448961,
+      "checkpoint_count": 3,
+      "checksum_commit_seconds": 0.01712037499987673,
+      "eligibility_lag_seconds": 0.03135616599979585,
+      "main_thread_wait_seconds": 0.006648918000109916,
+      "preparation_seconds": 0.0023761669999657897,
+      "recomputed_steps": 50,
+      "recovery_phases": [
+        {
+          "all_ranks_first_update_at": "2026-09-26T20:29:58.914079+00:00",
+          "fault_observed_at": "2026-09-26T20:29:57.028400+00:00",
+          "from_attempt": "attempt-001",
+          "rto_seconds": 1.885679,
+          "to_attempt": "attempt-002"
+        }
+      ],
+      "recovery_rto_seconds": 1.885679,
+      "restart_seconds": 0.012219,
+      "staging_seconds": 0.005169541999975991,
+      "upload_seconds": 0.09497212599967497,
+      "writing_seconds": 0.1282388310000897
+    }
+  },
+  "tests": {
+    "passed": 99,
+    "skipped": 4,
+    "seconds": 217.27,
+    "log": "evidence/local-hardening-2026-09-26/pytest.txt"
+  },
+  "comparison": [
+    {
+      "size_mib": 64,
+      "mode": "sync",
+      "baseline_seconds": [
+        0.05805070799999612,
+        0.060557125000059386,
+        0.05226170899993576
+      ],
+      "upgrade_seconds": [
+        0.026335042000027897,
+        0.026847832999919774,
+        0.025999334000061936
+      ],
+      "baseline_median_seconds": 0.05805070799999612,
+      "upgrade_median_seconds": 0.026335042000027897
+    },
+    {
+      "size_mib": 64,
+      "mode": "async",
+      "baseline_seconds": [
+        0.05233387500004483,
+        0.05285108299995045,
+        0.052438707999954204
+      ],
+      "upgrade_seconds": [
+        0.026709916999834604,
+        0.026121292000198082,
+        0.026327708000053462
+      ],
+      "baseline_median_seconds": 0.052438707999954204,
+      "upgrade_median_seconds": 0.026327708000053462
+    },
+    {
+      "size_mib": 256,
+      "mode": "sync",
+      "baseline_seconds": [
+        0.19211312499999167,
+        0.21170537499995135,
+        0.20687583300002643
+      ],
+      "upgrade_seconds": [
+        0.09718150000003334,
+        0.09770095799990486,
+        0.09803770799999256
+      ],
+      "baseline_median_seconds": 0.20687583300002643,
+      "upgrade_median_seconds": 0.09770095799990486
+    },
+    {
+      "size_mib": 256,
+      "mode": "async",
+      "baseline_seconds": [
+        0.19843816699994932,
+        0.19818820899990897,
+        0.21211666700003207
+      ],
+      "upgrade_seconds": [
+        0.10219912499997008,
+        0.09707687499985695,
+        0.10524583300002632
+      ],
+      "baseline_median_seconds": 0.19843816699994932,
+      "upgrade_median_seconds": 0.10219912499997008
+    }
+  ],
+  "limits": [
+    "local macOS filesystem; host/cache not isolated",
+    "single-rank synthetic storage payload is not end-to-end training throughput",
+    "three repetitions per mode and size",
+    "no CUDA, multi-node, remote object storage, or host power-loss acceptance"
+  ]
+}

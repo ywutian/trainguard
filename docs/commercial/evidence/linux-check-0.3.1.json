@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "candidate_version": "0.3.1",
+  "candidate_commit": "12b673ff0c332d9a636a6e6990597c449c15a685",
+  "status": "FAILED",
+  "platform": "GitHub Actions ubuntu-latest",
+  "runs": [
+    "https://github.com/ywutian/trainguard/actions/runs/36299698986",
+    "https://github.com/ywutian/trainguard/actions/runs/36299718292"
+  ],
+  "failures_in_pull_request_run": [
+    {
+      "test": "tests/test_cli.py::test_benchmark_exposes_optional_warmup_rounds",
+      "cause": "Formatted help wrapped the option in the runner terminal width; the parser option existed."
+    },
+    {
+      "test": "tests/test_recovery_integration.py::test_explicit_resume_rejects_live_owner_then_recovers",
+      "cause": "A newly created launcher was still between fork and exec, so its command line was not yet visible to the ownership check."
+    }
+  ],
+  "disposition": "Preserved as failed evidence. A new 0.3.2 candidate must pass the full local and Linux gates; 0.3.1 artifacts and receipts are not reused."
+}

@@ -1,0 +1,22 @@
+{
+  "approval_reference": "local-validation-0.3.3",
+  "artifacts": {
+    "trainguard-0.3.3-py3-none-any.whl": "0c5d7b34f6254101d84f4613db5271fc22812a2566d58dc1a074d51fe4c5c956",
+    "trainguard-0.3.3.tar.gz": "6106c6a0a39757488e0fa5fef8c377bf8bb608d3c85b0008e07af211abb7a351",
+    "uv.lock": "b1e9ff282c9a2afc2ebe29037c5fddf905b0c834741b0f4f19da278121627840"
+  },
+  "candidate_source_sha256": "9c8e83cfc4127bc569e499612b22bf3ba9a467cb2580cb68f7feb9f97d461e29",
+  "checks": {
+    "fresh_install": true,
+    "upgrade_recovery": true,
+    "wheel_identity": true
+  },
+  "decision": "PASS",
+  "gate_id": "local_package",
+  "record_reference": "docs/commercial/evidence/local-validation-0.3.3.json",
+  "record_sha256": "714ce316c2da9107b842f670d58fd13343e52b6be799aa1b1409159b02648729",
+  "reviewed_at": "2026-09-27T08:04:09.401588+00:00",
+  "reviewer_role": "local_validation_operator",
+  "schema_version": 1,
+  "scope": "macOS-26.5.1-arm64-arm-64bit; Python 3.12.12; PyTorch 2.14.0; two-rank CPU/Gloo fixed synthetic matrix and independent single-file example; 0.3.2 to 0.3.3 upgrade boundary"
+}

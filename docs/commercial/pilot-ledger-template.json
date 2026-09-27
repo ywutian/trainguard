@@ -1,0 +1,31 @@
+{
+  "schema_version": 2,
+  "currency": "USD",
+  "gpu_hour_rate": "0",
+  "engineer_hour_rate": "0",
+  "paired_injection_scenarios": [
+    {
+      "scenario_id": "replace-with-unique-scenario-id",
+      "exercise_id": "replace-with-unique-exercise-id",
+      "comparison_spec_sha256": "replace-with-64-character-sha256",
+      "fault_spec_sha256": "replace-with-64-character-sha256",
+      "baseline_record": {
+        "path": "evidence/baseline-event.json",
+        "sha256": "replace-with-64-character-sha256"
+      },
+      "trial_record": {
+        "path": "evidence/trial-event.json",
+        "sha256": "replace-with-64-character-sha256"
+      }
+    }
+  ],
+  "trial_overhead": {
+    "record": {
+      "path": "evidence/trial-overhead.json",
+      "sha256": "replace-with-64-character-sha256"
+    },
+    "storage_cost": "0",
+    "exercise_cost": "0",
+    "service_fee": "0"
+  }
+}

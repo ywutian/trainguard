@@ -1,0 +1,70 @@
+{
+  "acceptance-report.md": {
+    "sha256": "d10857d36e5e05389b27bbf8a5607b4837024e4d8ccc8466624a0585e997c1c0",
+    "size": 955
+  },
+  "acceptance-run.txt": {
+    "sha256": "05f3cd7b481d62b3f282f6c81b3241117ce1badbf2cedafe4df7b7fdcef5c8d9",
+    "size": 310
+  },
+  "acceptance.json": {
+    "sha256": "fe0010005db4b2b8b901ecf0376baa22394fd2a60dedb40001c68cc40b4d17b4",
+    "size": 29055
+  },
+  "build.txt": {
+    "sha256": "f4502125d5ecff6bff0be9d01e768c333f4b297661bba2f57f618e1d67e2cf3a",
+    "size": 252
+  },
+  "fallback-1-fault.json": {
+    "sha256": "20f3bcb8cd5e4b6283bf371ed060fe608175c604c8177154b51fe01fbbd3b46a",
+    "size": 1655
+  },
+  "fallback-1-result.json": {
+    "sha256": "8f5a66376a027d53b18aaf8bd1518e157112b92ee6efeb80385f175d1fc67ddd",
+    "size": 4913
+  },
+  "fallback-2-fault.json": {
+    "sha256": "e91bc24a09dbb9859fe53aae125499831d8c3ecb7d0609422df32561ce300e87",
+    "size": 1648
+  },
+  "fallback-2-result.json": {
+    "sha256": "4d071f35970d0e4186fe5d461670498d2a0468b7288f4d1e0e6524bb282413fc",
+    "size": 4914
+  },
+  "gate-report.md": {
+    "sha256": "76d6458259f979348fac405bb6d0578df908c82630690b76286ee4c7f8204029",
+    "size": 937
+  },
+  "gate-result.json": {
+    "sha256": "73d486b1efcbb16011641a147c6031525adf366d6bbb37fb17790f927fa4c0ff",
+    "size": 33518
+  },
+  "initial-failure-result.json": {
+    "sha256": "93db56f6ad32de60fcd6a80e71dc9f7535707811f9d28fe05b6a95674ae0807d",
+    "size": 1081
+  },
+  "initial-failure-tests.txt": {
+    "sha256": "185b64ca4b3f20f308b4fcd87977f966d93c2a7159bb4ec093b69d2435a06995",
+    "size": 8401
+  },
+  "pytest.txt": {
+    "sha256": "9632189530714e71aa02e98d1456ca31bd434e3a38a1df530282caf7d181cea8",
+    "size": 2763
+  },
+  "pytest.xml": {
+    "sha256": "c24ef79a1fbccdef29fa310611000488844c5850c4dc8379c9a5dd00440dd616",
+    "size": 18769
+  },
+  "remote-training-restore.json": {
+    "sha256": "b2166de608ad26f88d3fbb9795192459148deed925c97b372f3def451da5bb2b",
+    "size": 6032
+  },
+  "static.txt": {
+    "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+    "size": 19
+  },
+  "wheel.txt": {
+    "sha256": "3df3e618f76b7d4e3ec0a290403343fb92f0bda4829c75b10e254c368254ffe2",
+    "size": 122
+  }
+}

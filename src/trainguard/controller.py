@@ -1,17 +1,70 @@
-"""Launch and bound a single fixed-size training attempt."""
+"""Bounded single-node controller for fixed-size process-group recovery."""
 
 from __future__ import annotations
 
+import fcntl
+import json
+import math
 import os
+import re
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
+import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
-from trainguard.config import load_config
-from trainguard.events import utc_now, write_json_atomic
+from trainguard.capacity import event_log_limit
+from trainguard.checkpoint import (
+    CheckpointInvalid,
+    CheckpointRecord,
+    ordered_candidates,
+    validate_checkpoint,
+)
+from trainguard.config import ProjectConfig, load_config
+from trainguard.environment import environment_snapshot, require_output_outside_import_roots
+from trainguard.events import append_event, utc_now, write_json_atomic
+from trainguard.lifecycle import prune_checkpoints
+from trainguard.privacy import key_for_run, load_sample_key, sample_key_id
+from trainguard.records import parse_event
+from trainguard.reference_backend import LocalReferenceSession, check_reference_mode
+from trainguard.remote_protocol import InvalidRemoteCheckpoint
+from trainguard.restore_failures import (
+    failed_restore_candidates,
+    record_group_ended,
+    record_restore_incomplete,
+)
+from trainguard.run_evidence import (
+    RUNTIME_IDENTITY_FIELDS,
+    completed_index_errors,
+    measurement_sha256,
+    runtime_identity_sha256,
+    saved_completed_metadata_errors,
+)
+from trainguard.run_store import RunStore
+from trainguard.strategy import preflight
+from trainguard.validation import completion_errors
+
+
+class RunActiveError(RuntimeError):
+    """A controller or owned worker process still runs for this directory."""
+
+
+class ExperimentNotAuthorizedError(ValueError):
+    """Fault injection or omitted recovery state needs explicit authorization."""
+
+
+@dataclass
+class AttemptResult:
+    succeeded: bool
+    reason: str
+    exit_code: int | None
+    max_step: int
 
 
 def _available_local_port() -> int:
@@ -20,8 +73,44 @@ def _available_local_port() -> int:
         return listener.getsockname()[1]
 
 
-def _stop_process_group(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
+def _owned_group_members(
+    run_dir: Path, run_id: str, attempt_id: str | None, group_id: int | None = None
+) -> list[int]:
+    result = subprocess.run(
+        ["ps", "axww", "-o", "pid=", "-o", "pgid=", "-o", "command="],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("cannot inspect worker process ownership")
+    members = []
+    for line in result.stdout.splitlines():
+        parts = line.split(maxsplit=2)
+        if len(parts) != 3:
+            continue
+        pid_text, group_text, command = parts
+        if group_id is not None and int(group_text) != group_id:
+            continue
+        if (
+            re.search(r"(?:^|\s)(?:trainguard.trainer|torch.distributed.run)(?:\s|$)", command)
+            and re.search(r"--run-dir " + re.escape(str(run_dir)) + r"(?=\s--|$)", command)
+            and re.search(r"--run-id " + re.escape(run_id) + r"(?=\s|$)", command)
+            and re.search(
+                r"--attempt-id " + (re.escape(attempt_id) if attempt_id is not None else r"\S+")
+                + r"(?=\s|$)", command,
+            )
+        ):
+            members.append(int(pid_text))
+    return members
+
+
+def _stop_process_group(
+    process: subprocess.Popen[bytes], run_dir: Path, run_id: str, attempt_id: str
+) -> None:
+    if process.poll() is not None and not _owned_group_members(
+        run_dir, run_id, attempt_id, process.pid
+    ):
         return
     try:
         os.killpg(process.pid, signal.SIGTERM)
@@ -30,32 +119,209 @@ def _stop_process_group(process: subprocess.Popen[bytes]) -> None:
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
+        pass
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if not _owned_group_members(run_dir, run_id, attempt_id, process.pid):
+            return
+        time.sleep(0.1)
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
+
+
+@contextmanager
+def _controller_lock(run_dir: Path) -> Iterator[None]:
+    flags = os.O_RDWR | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+    with os.fdopen(os.open(run_dir / ".controller.lock", flags, 0o600), "a+") as lock:
+        os.fchmod(lock.fileno(), 0o600)
         try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait()
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RunActiveError("another controller owns this run") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
-def run(config_path: Path, output_root: Path) -> tuple[Path, bool]:
-    config_path = config_path.resolve()
-    config = load_config(config_path)
-    run_id = uuid.uuid4().hex[:12]
-    attempt_id = "attempt-001"
-    run_dir = (output_root / run_id).resolve()
-    run_dir.mkdir(parents=True, exist_ok=False)
-    status_path = run_dir / "run.json"
-    started_at = utc_now()
-    status = {
-        "run_id": run_id,
-        "attempt_id": attempt_id,
-        "status": "RUNNING",
-        "config_fingerprint": config.fingerprint(),
-        "started_at": started_at,
-        "config": config.model_dump(),
-    }
-    write_json_atomic(status_path, status)
+def _pid_identity(pid: int) -> str:
+    result = subprocess.run(
+        ["ps", "-p", str(pid), "-o", "lstart="],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
 
+
+def _owned_process_alive(
+    pid: int | None,
+    identity: str | None,
+    run_id: str,
+    attempt_id: str,
+    run_dir: Path,
+) -> bool:
+    if pid is not None and identity and _pid_identity(pid) == identity:
+        # The launcher may still be between fork and exec. A matching process
+        # identity is enough to block a second owner until its exit is known.
+        return True
+    return bool(_owned_group_members(run_dir, run_id, attempt_id))
+
+
+def _assert_no_owned_workers(run_dir: Path, run_id: str, attempts: list) -> None:
+    for attempt in attempts:
+        if _owned_process_alive(
+            attempt["pid"], attempt["pid_identity"], run_id, attempt["attempt_id"], run_dir
+        ):
+            raise RunActiveError(
+                f"attempt {attempt['attempt_id']} still owns a worker group or process"
+            )
+
+
+def _read_events(
+    run_dir: Path,
+    attempt_id: str,
+    run_id: str,
+    world_size: int,
+    offsets: dict[int, int],
+    steps: dict[int, int],
+    completed: set[int],
+) -> bool:
+    progressed = False
+    for rank in range(world_size):
+        path = run_dir / "attempts" / attempt_id / f"rank-{rank}.jsonl"
+        if not path.is_file():
+            continue
+        with path.open(encoding="utf-8") as stream:
+            stream.seek(offsets.get(rank, 0))
+            while line := stream.readline():
+                if not line.endswith("\n"):
+                    break
+                offsets[rank] = stream.tell()
+                try:
+                    event = parse_event(line, run_id, attempt_id, rank)
+                except ValueError as exc:
+                    raise ValueError(f"{path.name}: {exc}") from exc
+                if event is None:
+                    continue
+                if event.get("event_type") == "step_completed":
+                    step = event.get("global_step")
+                    if type(step) is int and step > steps.get(rank, 0):
+                        steps[rank] = step
+                        progressed = True
+                if event.get("event_type") == "training_completed":
+                    completed.add(rank)
+    return progressed
+
+
+def _max_step(run_dir: Path, attempt_id: str, run_id: str, world_size: int) -> int:
+    steps: dict[int, int] = {}
+    _read_events(run_dir, attempt_id, run_id, world_size, {}, steps, set())
+    return max(steps.values(), default=0)
+
+
+def _scan_checkpoints(
+    run_dir: Path, config: ProjectConfig, run_id: str, store: RunStore, audit: bool = False,
+    reference: LocalReferenceSession | None = None,
+) -> CheckpointRecord | None:
+    if reference is not None:
+        failed = failed_restore_candidates(
+            run_dir, run_id, config.run.world_size, store.attempts(run_id)
+        )
+        records = []
+        selected = None
+        for candidate in reference.published_candidates():
+            try:
+                record = reference.materialize(candidate)
+            except (CheckpointInvalid, InvalidRemoteCheckpoint, OSError, ValueError) as exc:
+                records.append((
+                    str(reference.cache_root / candidate.generation_id), run_id,
+                    None, candidate.global_step, "INVALID", str(exc),
+                ))
+                continue
+            if record.manifest_sha256 in failed.explicit.get(record.path, set()):
+                reason = "worker restore failed for this manifest"
+            elif record.manifest_sha256 in failed.incomplete.get(record.path, set()):
+                reason = "worker restore incomplete for this manifest"
+            else:
+                reason = None
+            records.append((
+                str(record.path), run_id, record.attempt_id, record.global_step,
+                "INVALID" if reason else "VALID", reason,
+            ))
+            if reason is None and selected is None:
+                selected = record
+                if not audit:
+                    break
+        store.record_checkpoints(records)
+        return selected
+    root = run_dir / "checkpoints"
+    if not root.is_dir():
+        return None
+    failed_restores = failed_restore_candidates(
+        run_dir, run_id, config.run.world_size, store.attempts(run_id)
+    )
+    records = []
+    selected = None
+    for path in ordered_candidates(run_dir):
+        try:
+            record = validate_checkpoint(
+                path, config, run_id, decode_payload=True, require_trainable_state=True
+            )
+        except (CheckpointInvalid, OSError) as exc:
+            records.append((str(path), run_id, None, None, "INVALID", str(exc)))
+        else:
+            if record.manifest_sha256 in failed_restores.explicit.get(path, set()):
+                records.append((
+                    str(path), run_id, record.attempt_id, record.global_step,
+                    "INVALID", "worker restore failed for this manifest",
+                ))
+            elif record.manifest_sha256 in failed_restores.incomplete.get(path, set()):
+                records.append((
+                    str(path), run_id, record.attempt_id, record.global_step,
+                    "INVALID", "worker restore incomplete for this manifest",
+                ))
+            else:
+                records.append(
+                    (str(path), run_id, record.attempt_id, record.global_step, "VALID", None)
+                )
+                if selected is None:
+                    selected = record
+                if not audit:
+                    break
+    store.record_checkpoints(records)
+    return selected
+
+
+def _valid_attempt_summary(
+    run_dir: Path, attempt_id: str, config: ProjectConfig, run_id: str
+) -> dict | None:
+    if not isinstance(attempt_id, str) or re.fullmatch(r"attempt-[0-9]{3,}", attempt_id) is None:
+        return None
+    path = run_dir / "attempts" / attempt_id / "summary.json"
+    if not path.is_file():
+        return None
+    try:
+        summary = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError, UnicodeError):
+        return None
+    if completion_errors(run_dir, attempt_id, config, run_id, summary):
+        return None
+    return summary
+
+
+def _launch_attempt(
+    run_dir: Path,
+    config: ProjectConfig,
+    run_id: str,
+    attempt_id: str,
+    resume_checkpoint: CheckpointRecord | None,
+    store: RunStore,
+    reference: LocalReferenceSession | None = None,
+) -> AttemptResult:
     command = [
         sys.executable,
         "-m",
@@ -68,7 +334,9 @@ def run(config_path: Path, output_root: Path) -> tuple[Path, bool]:
         "-m",
         "trainguard.trainer",
         "--config",
-        str(config_path),
+        str(run_dir / "config.json"),
+        "--expected-config-fingerprint",
+        config.fingerprint(),
         "--run-dir",
         str(run_dir),
         "--run-id",
@@ -76,13 +344,45 @@ def run(config_path: Path, output_root: Path) -> tuple[Path, bool]:
         "--attempt-id",
         attempt_id,
     ]
+    if resume_checkpoint is not None:
+        if not re.fullmatch(r"[0-9a-f]{64}", resume_checkpoint.manifest_sha256):
+            raise ValueError("selected checkpoint manifest digest is invalid")
+        command.extend([
+            "--resume-checkpoint", str(resume_checkpoint.path),
+            "--expected-checkpoint-sha256", resume_checkpoint.manifest_sha256,
+        ])
     environment = os.environ.copy()
     environment["OMP_NUM_THREADS"] = "1"
     environment["PYTHONUNBUFFERED"] = "1"
-    result = "FAILED"
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["PYTHONSAFEPATH"] = "1"
+    environment.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    offsets: dict[int, int] = {}
+    steps: dict[int, int] = {}
+    completed: set[int] = set()
+    started = time.monotonic()
+    last_progress = started
     reason = "launcher exited before completion"
-    log_path = run_dir / "launcher.log"
-    with log_path.open("wb") as log:
+    exit_code = None
+    commits_seen: set[str] = set()
+    reference_published: set[Path] = set()
+
+    def milestone(event_type: str, **fields) -> None:
+        append_event(
+            run_dir / "controller.jsonl",
+            max_bytes=event_log_limit(config),
+            run_id=run_id,
+            attempt_id=attempt_id,
+            event_type=event_type,
+            **fields,
+        )
+
+    milestone("launch_requested", resumed=resume_checkpoint is not None)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+    with os.fdopen(os.open(run_dir / "launcher.log", flags, 0o600), "ab") as log:
+        os.fchmod(log.fileno(), 0o600)
+        log.write(f"\n=== {attempt_id} ===\n".encode())
+        log.flush()
         process = subprocess.Popen(
             command,
             env=environment,
@@ -91,19 +391,852 @@ def run(config_path: Path, output_root: Path) -> tuple[Path, bool]:
             start_new_session=True,
         )
         try:
-            exit_code = process.wait(timeout=config.run.timeout_seconds)
-            if exit_code == 0 and (run_dir / "summary.json").is_file():
-                result = "SUCCEEDED"
+            store.set_pid(attempt_id, process.pid, _pid_identity(process.pid))
+            while True:
+                if _read_events(
+                    run_dir,
+                    attempt_id,
+                    run_id,
+                    config.run.world_size,
+                    offsets,
+                    steps,
+                    completed,
+                ):
+                    last_progress = time.monotonic()
+                if reference is not None:
+                    _publish_reference_commits(
+                        reference, run_dir, config, run_id, attempt_id,
+                        reference_published, milestone,
+                        recovery=resume_checkpoint is not None,
+                    )
+                if config.checkpoint.keep_last_k is not None:
+                    commits = {
+                        str(path.parent) for path in (run_dir / "checkpoints").glob("*/COMMITTED")
+                    }
+                    if commits != commits_seen:
+                        prune_checkpoints(
+                            run_dir,
+                            config,
+                            run_id,
+                            protected={resume_checkpoint.path} if resume_checkpoint else set(),
+                        )
+                        commits_seen = commits
+                exit_code = process.poll()
+                if exit_code is not None:
+                    if exit_code != 0:
+                        milestone("fault_observed", reason=f"launcher exit {exit_code}")
+                    break
+                if time.monotonic() - started > config.run.timeout_seconds:
+                    reason = f"attempt exceeded {config.run.timeout_seconds} seconds"
+                    milestone("fault_observed", reason=reason)
+                    _stop_process_group(process, run_dir, run_id, attempt_id)
+                    exit_code = process.poll()
+                    break
+                if not steps and (
+                    time.monotonic() - started > config.recovery.startup_timeout_seconds
+                ):
+                    reason = "worker startup or first update stalled"
+                    milestone("fault_observed", reason=reason)
+                    _stop_process_group(process, run_dir, run_id, attempt_id)
+                    exit_code = process.poll()
+                    break
+                if steps and (
+                    time.monotonic() - last_progress > config.recovery.progress_timeout_seconds
+                ):
+                    reason = "step progress stalled"
+                    milestone("fault_observed", reason=reason)
+                    _stop_process_group(process, run_dir, run_id, attempt_id)
+                    exit_code = process.poll()
+                    break
+                time.sleep(0.2)
+            orphaned_workers = bool(_owned_group_members(run_dir, run_id, attempt_id))
+            if orphaned_workers:
+                reason = "launcher exited while owned workers remained"
+            elif reference is not None:
+                # A final commit can become visible after the last polling scan.
+                _publish_reference_commits(
+                    reference, run_dir, config, run_id, attempt_id,
+                    reference_published, milestone,
+                    recovery=resume_checkpoint is not None,
+                )
+            _read_events(
+                run_dir, attempt_id, run_id, config.run.world_size, offsets, steps, completed
+            )
+            summary = _valid_attempt_summary(run_dir, attempt_id, config, run_id)
+            if exit_code == 0 and not orphaned_workers and summary is not None:
                 reason = "completed all training steps"
-            else:
-                reason = f"launcher exit code {exit_code}"
-        except subprocess.TimeoutExpired:
-            reason = f"training exceeded {config.run.timeout_seconds} seconds"
-            _stop_process_group(process)
+                return AttemptResult(
+                    True, reason, 0, max(steps.values(), default=0)
+                )
+            if reason == "launcher exited before completion":
+                reason = f"launcher exit code {exit_code}; completion evidence missing or invalid"
         except KeyboardInterrupt:
             reason = "interrupted by user"
-            _stop_process_group(process)
+            try:
+                milestone("fault_observed", reason=reason)
+            except OSError:
+                # An exhausted diagnostic log must not bypass worker cleanup.
+                pass
+        except Exception as exc:  # noqa: BLE001 - cleanup covers every controller failure
+            reason = f"controller {type(exc).__name__}: {exc}"
+            try:
+                milestone("fault_observed", reason=reason)
+            except OSError:
+                # Preserve the original failure when diagnostic logging is exhausted.
+                pass
+            write_json_atomic(
+                run_dir / "attempts" / attempt_id / "controller-error.json",
+                {"reason": reason, "time": utc_now()},
+            )
+        finally:
+            try:
+                _stop_process_group(process, run_dir, run_id, attempt_id)
+                if process.poll() is None or _owned_group_members(run_dir, run_id, attempt_id):
+                    raise RunActiveError(
+                        f"attempt {attempt_id} still owns a worker process"
+                    )
+                record_group_ended(
+                    run_dir, run_id, attempt_id, reason, "controller_cleanup"
+                )
+            except BaseException as cleanup:
+                raise RunActiveError(f"{reason}; worker cleanup failed: {cleanup}") from cleanup
+            milestone("group_stopped")
+    return AttemptResult(False, reason, process.poll(), max(steps.values(), default=0))
 
-    status.update(status=result, reason=reason, finished_at=utc_now())
-    write_json_atomic(status_path, status)
-    return run_dir, result == "SUCCEEDED"
+
+def _publish_reference_commits(
+    reference: LocalReferenceSession,
+    run_dir: Path,
+    config: ProjectConfig,
+    run_id: str,
+    attempt_id: str,
+    published: set[Path],
+    milestone,
+    *, recovery: bool,
+) -> None:
+    """Publish complete local transactions in increasing step order."""
+    candidates = [
+        path for path in ordered_candidates(run_dir)
+        if path.name.endswith(f"-{attempt_id}") and (path / "COMMITTED").is_file()
+    ]
+    for path in reversed(candidates):
+        if path in published:
+            continue
+        remote = reference.publish_local(path, recovery=recovery)
+        published.add(path)
+        milestone(
+            "reference_checkpoint_published",
+            generation_id=remote.generation_id,
+            global_step=remote.global_step,
+            manifest_sha256=remote.manifest_sha256,
+        )
+
+
+def _capture_measurement(status: dict) -> None:
+    started = status.pop("execution_started_monotonic", None)
+    before = status.pop("execution_load_before", None)
+    if started is None:
+        return
+    if type(started) not in (int, float) or not math.isfinite(started) or (
+        not isinstance(before, list) or len(before) != 3 or any(
+            type(item) not in (int, float) or not math.isfinite(item) for item in before
+        )
+    ):
+        raise ValueError("run timing window is invalid")
+    elapsed = time.monotonic() - started
+    if not math.isfinite(elapsed) or elapsed < 0:
+        raise ValueError("run timing window is invalid")
+    status["measurement"] = {
+        "elapsed_seconds": elapsed,
+        "load_average_before": before,
+        "load_average_after": list(os.getloadavg()),
+        "method": "controller_monotonic",
+    }
+
+
+def _set_status(run_dir: Path, status: dict, value: str, reason: str) -> None:
+    previous = status.get("status")
+    if value == "FAILED":
+        audit = status.get("post_run_audit")
+        if isinstance(audit, dict) and audit.get("status") in {"PASSED", "NOT_APPLICABLE"}:
+            previous_audit = audit["status"]
+            audit.update(
+                status="INVALIDATED", previous_status=previous_audit,
+                invalidated_at=utc_now(), invalidation_reason=reason,
+            )
+    status.update(status=value, reason=reason)
+    if value in {"SUCCEEDED", "FAILED", "INTERRUPTED"}:
+        if previous != value or "finished_at" not in status:
+            status["finished_at"] = utc_now()
+        _capture_measurement(status)
+    else:
+        status.pop("finished_at", None)
+    write_json_atomic(run_dir / "run.json", status)
+
+
+def _invalidate_completed_run(
+    run_dir: Path, status: dict, reason: str, *, lock_held: bool = False
+) -> bool:
+    """Remove a false success claim even if its index identity is malformed."""
+    if not lock_held:
+        with _controller_lock(run_dir):
+            return _invalidate_completed_run(run_dir, status, reason, lock_held=True)
+    for field in ("execution_started_monotonic", "execution_load_before", "measurement"):
+        status.pop(field, None)
+    run_id = status.get("run_id")
+    database_path = run_dir / "run.sqlite3"
+    if isinstance(run_id, str) and database_path.is_file() and not database_path.is_symlink():
+        try:
+            with sqlite3.connect(database_path.resolve().as_uri() + "?mode=rw", uri=True) as db:
+                db.execute(
+                    "UPDATE runs SET status='FAILED', updated_at=?, measurement_sha256=NULL "
+                    "WHERE run_id=?", (utc_now(), run_id),
+                )
+        except sqlite3.Error:
+            # The JSON success claim must still be invalidated when the index is unreadable.
+            pass
+    _set_status(run_dir, status, "FAILED", reason)
+    return False
+
+
+def _finalize_completed_attempt(
+    run_dir: Path, status: dict, store: RunStore, config: ProjectConfig,
+    attempt_id: str, reason: str,
+    reference: LocalReferenceSession | None = None,
+) -> bool:
+    run_id = status["run_id"]
+    audit = {
+        "attempt_id": attempt_id,
+        "checkpoint_mode": config.checkpoint.mode,
+        "status": "PENDING",
+    }
+    status["post_run_audit"] = audit
+    _set_status(run_dir, status, "FINALIZING", "training completed; post-run audit pending")
+    store.set_run_status(run_id, "FINALIZING")
+    try:
+        if config.checkpoint.mode != "none":
+            if reference is None:
+                selected = _scan_checkpoints(run_dir, config, run_id, store, audit=True)
+            else:
+                selected = _scan_checkpoints(
+                    run_dir, config, run_id, store, audit=True, reference=reference
+                )
+            if selected is None:
+                raise RuntimeError("no valid checkpoint remains after training")
+            if (
+                selected.global_step != config.training.total_steps
+                or selected.attempt_id != attempt_id
+            ):
+                raise RuntimeError("completed attempt has no valid final checkpoint")
+            audit["final_checkpoint"] = {
+                "attempt_id": selected.attempt_id,
+                "global_step": selected.global_step,
+                "manifest_sha256": selected.manifest_sha256,
+            }
+            if reference is not None:
+                head_candidates = reference.published_candidates()
+                if (
+                    not head_candidates
+                    or head_candidates[0].generation_id != selected.path.parent.name
+                    or head_candidates[0].global_step != selected.global_step
+                ):
+                    raise RuntimeError("final checkpoint differs from reference HEAD")
+                audit["final_checkpoint"].update(
+                    generation_id=head_candidates[0].generation_id,
+                    protocol_manifest_sha256=head_candidates[0].manifest_sha256,
+                )
+                audit["checkpoint_backend"] = "same_host_reference_experiment"
+            retention = prune_checkpoints(run_dir, config, run_id)
+            audit["retention_enabled"] = retention.get("enabled")
+            audit["budget_satisfied"] = retention.get("budget_satisfied")
+            audit["pending_deletions"] = len(retention.get("pending", []))
+            if config.run.profile == "guarded":
+                for field in (
+                    "valid_retained_count", "payload_budget_satisfied",
+                    "checkpoint_file_bytes", "unverified_candidate_count",
+                    "unverified_candidate_bytes", "checkpoint_file_budget_satisfied",
+                    "free_floor_satisfied",
+                ):
+                    audit[field] = retention.get(field)
+                if retention.get("valid_retained_count", 0) < 2:
+                    raise RuntimeError("fewer than two verified checkpoint candidates remain")
+            if retention.get("enabled") and (
+                retention.get("pending") or retention.get("budget_satisfied") is not True
+            ):
+                raise RuntimeError("checkpoint retention or capacity budget is unsatisfied")
+        summary = _valid_attempt_summary(run_dir, attempt_id, config, run_id)
+        if summary is None:
+            raise RuntimeError("completion evidence missing or invalid after training")
+        write_json_atomic(run_dir / "summary.json", summary)
+    except Exception as exc:
+        audit.update(status="FAILED", reason=f"{type(exc).__name__}: {exc}")
+        _set_status(run_dir, status, "FINALIZING", f"post-run audit failed: {exc}")
+        raise
+    audit["status"] = "PASSED" if config.checkpoint.mode != "none" else "NOT_APPLICABLE"
+    audit["checked_at"] = utc_now()
+    _capture_measurement(status)
+    store.set_run_success(run_id, measurement_sha256(status.get("measurement")))
+    _set_status(run_dir, status, "SUCCEEDED", reason)
+    return True
+
+
+def _drive(
+    run_dir: Path, status: dict, store: RunStore, config: ProjectConfig,
+    reference: LocalReferenceSession | None = None,
+) -> bool:
+    run_id = status["run_id"]
+    attempts = store.attempts(run_id)
+    _assert_no_owned_workers(run_dir, run_id, attempts)
+    if attempts:
+        last = attempts[-1]
+        summary = (
+            _valid_attempt_summary(run_dir, last["attempt_id"], config, run_id)
+            if last["status"] in {"RUNNING", "SUCCEEDED"}
+            else None
+        )
+        if summary is not None:
+            if last["status"] == "RUNNING":
+                store.finish_attempt(
+                    last["attempt_id"], "SUCCEEDED", 0, "completed before controller exit"
+                )
+            return _finalize_completed_attempt(
+                run_dir, status, store, config, last["attempt_id"],
+                "completed before controller exit",
+                reference,
+            )
+        if last["status"] == "SUCCEEDED" or status.get("status") == "FINALIZING":
+            store.set_run_status(run_id, "FAILED")
+            _set_status(run_dir, status, "FAILED", "completion evidence missing or invalid")
+            return False
+        if last["status"] == "RUNNING":
+            attempt_dir = run_dir / "attempts" / last["attempt_id"]
+            if last["pid"] is None and (not attempt_dir.exists() or not any(attempt_dir.iterdir())):
+                store.discard_unlaunched_attempt(last["attempt_id"])
+            else:
+                if last["resume_checkpoint"] is not None:
+                    record_group_ended(
+                        run_dir, run_id, last["attempt_id"],
+                        "previous owner exited after worker group ended", "no_owned_workers",
+                    )
+                    record_restore_incomplete(
+                        run_dir, run_id, last["attempt_id"],
+                        Path(last["resume_checkpoint"]), config.run.world_size,
+                    )
+                store.finish_attempt(last["attempt_id"], "INTERRUPTED", None, "controller exited")
+            attempts = store.attempts(run_id)
+
+    while True:
+        _assert_no_owned_workers(run_dir, run_id, attempts)
+        number = len(attempts) + 1
+        selected = None
+        if attempts:
+            if number > config.recovery.max_restarts + 1:
+                reason = "restart limit exhausted"
+                store.set_run_status(run_id, "FAILED")
+                _set_status(run_dir, status, "FAILED", reason)
+                return False
+            if reference is None:
+                selected = _scan_checkpoints(run_dir, config, run_id, store)
+            else:
+                selected = _scan_checkpoints(
+                    run_dir, config, run_id, store, reference=reference
+                )
+            if selected is None:
+                reason = "no valid checkpoint remains for recovery"
+                store.set_run_status(run_id, "FAILED")
+                _set_status(run_dir, status, "FAILED", reason)
+                return False
+
+        if selected is not None:
+            append_event(
+                run_dir / "controller.jsonl",
+                max_bytes=event_log_limit(config),
+                run_id=run_id,
+                attempt_id=f"attempt-{number:03d}",
+                event_type="checkpoint_selected",
+                checkpoint_path=str(selected.path),
+                manifest_sha256=selected.manifest_sha256,
+                global_step=selected.global_step,
+            )
+        prune_checkpoints(run_dir, config, run_id, protected={selected.path} if selected else set())
+        attempt_id = f"attempt-{number:03d}"
+        attempt_dir = run_dir / "attempts" / attempt_id
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        if any(attempt_dir.iterdir()):
+            raise RunActiveError(f"unrecorded attempt directory contains files: {attempt_dir}")
+        status["attempt_id"] = attempt_id
+        _set_status(run_dir, status, "RUNNING", "training in progress")
+        store.set_run_status(run_id, "RUNNING")
+        store.start_attempt(
+            run_id,
+            attempt_id,
+            number,
+            str(selected.path) if selected else None,
+            selected.global_step if selected else 0,
+            json.loads((selected.path / "rank-0.json").read_text())["consumed_batches"]
+            if selected
+            else 0,
+        )
+        if selected is not None:
+            previous = attempts[-1]
+            previous_max = _max_step(run_dir, previous["attempt_id"], run_id, config.run.world_size)
+            store.record_recovery(
+                run_id,
+                previous["attempt_id"],
+                attempt_id,
+                str(selected.path),
+                selected.global_step,
+                max(0, previous_max - selected.global_step),
+            )
+        if reference is None:
+            result = _launch_attempt(run_dir, config, run_id, attempt_id, selected, store)
+        else:
+            result = _launch_attempt(
+                run_dir, config, run_id, attempt_id, selected, store, reference
+            )
+        if not result.succeeded and selected is not None:
+            record_restore_incomplete(
+                run_dir, run_id, attempt_id, selected.path, config.run.world_size,
+                selected.manifest_sha256,
+            )
+        store.finish_attempt(
+            attempt_id,
+            "SUCCEEDED" if result.succeeded else "FAILED",
+            result.exit_code,
+            result.reason,
+        )
+        if result.succeeded:
+            return _finalize_completed_attempt(
+                run_dir, status, store, config, attempt_id, result.reason, reference
+            )
+        if result.reason.startswith("controller "):
+            store.set_run_status(run_id, "FAILED")
+            _set_status(run_dir, status, "FAILED", result.reason)
+            return False
+        if result.reason == "interrupted by user":
+            store.set_run_status(run_id, "INTERRUPTED")
+            _set_status(run_dir, status, "INTERRUPTED", result.reason)
+            return False
+        attempts = store.attempts(run_id)
+
+
+def _settle_control_failure(
+    run_dir: Path, status: dict, store: RunStore, exc: BaseException,
+    *, interrupted: bool = False,
+) -> bool:
+    """Close a stopped run after a controller or index operation fails."""
+    run_id = status["run_id"]
+    try:
+        attempts = store.attempts(run_id)
+    except (OSError, sqlite3.Error) as index_error:
+        if _owned_group_members(run_dir, run_id, None):
+            raise RunActiveError("run still owns a worker process") from index_error
+        status["run_index_terminal_unverified"] = True
+        reason = (
+            "controller interrupted before attempt completion" if interrupted
+            else f"controller {type(exc).__name__}: {exc}"
+        )
+        reason += f"; run index attempt inspection failed: {type(index_error).__name__}"
+        for write_attempt in range(2):
+            try:
+                _set_status(run_dir, status, "INTERRUPTED" if interrupted else "FAILED", reason)
+                return False
+            except OSError:
+                if write_attempt:
+                    raise
+    _assert_no_owned_workers(run_dir, run_id, attempts)
+    known_attempts = {attempt["attempt_id"] for attempt in attempts}
+    pending_attempt = status.get("attempt_id")
+    if pending_attempt is not None and not isinstance(pending_attempt, str):
+        raise ValueError("saved attempt identity is invalid")
+    unindexed_attempt = (
+        pending_attempt if pending_attempt not in known_attempts else None
+    )
+    if unindexed_attempt is None and not attempts:
+        unindexed_attempt = "attempt-001"
+    if unindexed_attempt is not None and _owned_group_members(
+        run_dir, run_id, unindexed_attempt
+    ):
+        raise RunActiveError(
+            f"attempt {unindexed_attempt} still owns a worker process"
+        )
+
+    reason = (
+        "controller interrupted before attempt completion" if interrupted
+        else f"controller {type(exc).__name__}: {exc}"
+    )
+    index_terminal_unverified = False
+    try:
+        identity = store.run_identity(run_id)
+    except (OSError, sqlite3.Error) as index_error:
+        identity = None
+        reason += f"; run index identity inspection failed: {type(index_error).__name__}"
+        index_terminal_unverified = True
+    if identity is None:
+        if not index_terminal_unverified:
+            reason += "; run index row was not established"
+            index_terminal_unverified = True
+    elif (
+        identity["config_fingerprint"] != status["config_fingerprint"]
+        or identity["started_at"] != status["started_at"]
+    ):
+        reason += "; run index identity differs from run metadata"
+        index_terminal_unverified = True
+    else:
+        for write_attempt in range(2):
+            try:
+                if attempts and attempts[-1]["status"] == "RUNNING":
+                    store.finish_attempt(attempts[-1]["attempt_id"], "FAILED", None, reason)
+                store.set_run_status(run_id, "INTERRUPTED" if interrupted else "FAILED")
+                break
+            except (OSError, sqlite3.Error) as index_error:
+                if write_attempt:
+                    reason += (
+                        "; run index terminal update failed: "
+                        f"{type(index_error).__name__}: {index_error}"
+                    )
+                    index_terminal_unverified = True
+    if pending_attempt not in known_attempts:
+        status["attempt_id"] = attempts[-1]["attempt_id"] if attempts else None
+        if pending_attempt is not None:
+            reason += "; attempt row was not established"
+    if index_terminal_unverified:
+        status["run_index_terminal_unverified"] = True
+    for write_attempt in range(2):
+        try:
+            _set_status(run_dir, status, "INTERRUPTED" if interrupted else "FAILED", reason)
+            return False
+        except OSError:
+            if write_attempt:
+                raise
+
+
+def _drive_with_failure_closure(
+    run_dir: Path, status: dict, store: RunStore, config: ProjectConfig,
+    reference: LocalReferenceSession | None = None,
+) -> bool:
+    """Persist a terminal verdict when controller work fails before final audit."""
+    try:
+        if reference is None:
+            return _drive(run_dir, status, store, config)
+        return _drive(run_dir, status, store, config, reference)
+    except RunActiveError as exc:
+        if status.get("status") == "FINALIZING":
+            raise
+        return _settle_control_failure(run_dir, status, store, exc)
+    except KeyboardInterrupt as exc:
+        if status.get("status") == "FINALIZING":
+            raise
+        return _settle_control_failure(run_dir, status, store, exc, interrupted=True)
+    except Exception as exc:
+        if status.get("status") == "FINALIZING":
+            raise
+        return _settle_control_failure(run_dir, status, store, exc)
+
+
+def run(
+    config_path: Path, output_root: Path, *, allow_experiment: bool = False,
+    reference_store_path: Path | None = None,
+) -> tuple[Path, bool]:
+    execution_started = time.monotonic()
+    execution_load_before = list(os.getloadavg())
+    config = load_config(config_path.resolve())
+    if (config.fault.kind != "none" or config.recovery.omit_state != "none") and not allow_experiment:
+        raise ExperimentNotAuthorizedError(
+            "fault injection or omitted recovery state requires explicit experiment authorization"
+        )
+    run_id = uuid.uuid4().hex[:12]
+    run_dir = (output_root / run_id).resolve()
+    require_output_outside_import_roots(run_dir)
+    configured_reference = config.checkpoint.reference_store_path
+    if reference_store_path is not None:
+        resolved_reference = str(Path(reference_store_path).resolve())
+        if configured_reference is not None and str(Path(configured_reference).resolve()) != resolved_reference:
+            raise ValueError("reference database path differs from configuration")
+        settings = config.model_dump()
+        settings["checkpoint"]["reference_store_path"] = resolved_reference
+        config = ProjectConfig.model_validate(settings)
+    elif configured_reference is not None:
+        settings = config.model_dump()
+        settings["checkpoint"]["reference_store_path"] = str(
+            Path(configured_reference).resolve()
+        )
+        config = ProjectConfig.model_validate(settings)
+    if config.checkpoint.reference_store_path is not None and not allow_experiment:
+        raise ExperimentNotAuthorizedError(
+            "local reference checkpoint experiment requires explicit authorization"
+        )
+    reference_path = (
+        check_reference_mode(config, run_dir, Path(config.checkpoint.reference_store_path))
+        if config.checkpoint.reference_store_path is not None else None
+    )
+    sample_key = load_sample_key(run_dir) if config.run.profile == "guarded" else None
+    workload_source = preflight(config)
+    run_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
+    if workload_source is not None:
+        from trainguard.external_workload import (
+            freeze_source,
+            freeze_v2_inputs,
+            read_verified_source,
+        )
+
+        frozen = freeze_source(run_dir, workload_source)
+        read_verified_source(config, path=frozen)
+        freeze_v2_inputs(config, run_dir)
+    write_json_atomic(run_dir / "config.json", config.model_dump())
+    started_at = utc_now()
+    status = {
+        "run_id": run_id,
+        "attempt_id": None,
+        "status": "RUNNING",
+        "config_fingerprint": config.fingerprint(),
+        "experiment_authorized": allow_experiment,
+        "started_at": started_at,
+        "config": config.model_dump(),
+        "run_schema_version": 2,
+        "environment": environment_snapshot(config.run.world_size, config.run.device, run_dir),
+        "execution_started_monotonic": execution_started,
+        "execution_load_before": execution_load_before,
+    }
+    if reference_path is not None:
+        status["local_reference_store"] = str(reference_path)
+    if sample_key is not None:
+        status["sample_key_id"] = sample_key_id(sample_key)
+    try:
+        store = RunStore(run_dir / "run.sqlite3")
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        _set_status(
+            run_dir, status, "FAILED",
+            f"run index initialization failed: {type(exc).__name__}: {exc}",
+        )
+        return run_dir, False
+    try:
+        with _controller_lock(run_dir):
+            try:
+                (run_dir / "run.sqlite3").chmod(0o600)
+                write_json_atomic(run_dir / "run.json", status)
+                store.create_run(
+                    run_id, config.fingerprint(), started_at, evidence_schema_version=3,
+                    environment_sha256=runtime_identity_sha256(status["environment"]),
+                )
+            except (OSError, ValueError, sqlite3.Error, RuntimeError) as exc:
+                succeeded = _settle_control_failure(run_dir, status, store, exc)
+            else:
+                try:
+                    reference = (
+                        LocalReferenceSession(
+                            run_dir, reference_path, config, run_id, resume=False
+                        ) if reference_path is not None else None
+                    )
+                except (OSError, ValueError, sqlite3.Error, RuntimeError) as exc:
+                    reason = RuntimeError(
+                        "reference database initialization failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                    succeeded = _settle_control_failure(run_dir, status, store, reason)
+                else:
+                    succeeded = _drive_with_failure_closure(
+                        run_dir, status, store, config, reference
+                    )
+    finally:
+        store.close()
+    return run_dir, succeeded
+
+
+def resume(run_dir: Path) -> bool:
+    run_dir = run_dir.resolve()
+    status = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    if not isinstance(status, dict):
+        raise ValueError("run metadata is not a mapping")  # noqa: TRY004
+    if not isinstance(status.get("status"), str) or status["status"] not in (
+        "RUNNING", "FINALIZING", "SUCCEEDED", "FAILED", "INTERRUPTED"
+    ):
+        return _invalidate_completed_run(run_dir, status, "saved run status is invalid")
+    if status.get("run_index_terminal_unverified") is True:
+        if status["status"] == "SUCCEEDED":
+            return _invalidate_completed_run(
+                run_dir, status, "run index terminal update is unverified"
+            )
+        return False
+    try:
+        config = load_config(run_dir / "config.json")
+    except (OSError, TypeError, ValueError):
+        if status.get("status") == "SUCCEEDED":
+            return _invalidate_completed_run(
+                run_dir, status, "saved run configuration is invalid"
+            )
+        raise
+    if status.get("status") == "SUCCEEDED":
+        errors = saved_completed_metadata_errors(status, config)
+        if errors:
+            return _invalidate_completed_run(
+                run_dir, status, "completed run metadata is invalid: " + "; ".join(errors)
+            )
+    if status.get("run_schema_version") != 2:
+        raise ValueError("run schema is unsupported; use its original source and runtime")
+    # A missing or wrong customer-held key prevents this operator from verifying a
+    # completed run; it does not by itself prove that the saved run was damaged.
+    if config.run.profile == "guarded":
+        key_for_run(run_dir)
+    if status.get("status") == "SUCCEEDED":
+        errors = completed_index_errors(run_dir, status, config)
+        if errors:
+            return _invalidate_completed_run(
+                run_dir, status, "completed run evidence is invalid: " + "; ".join(errors)
+            )
+    if (
+        config.fault.kind != "none" or config.recovery.omit_state != "none"
+        or config.checkpoint.reference_store_path is not None
+    ) and status.get("experiment_authorized") is not True:
+        raise ExperimentNotAuthorizedError("saved experiment authorization is missing")
+    current = json.loads(json.dumps(
+        environment_snapshot(config.run.world_size, config.run.device, run_dir)
+    ))
+    environment = status.get("environment")
+    if not isinstance(environment, dict):
+        raise ValueError("saved run environment identity is invalid")  # noqa: TRY004
+    for field in RUNTIME_IDENTITY_FIELDS:
+        if field not in environment:
+            raise ValueError(f"saved run runtime {field} identity is missing")
+        if type(current[field]) is not type(environment[field]) or current[field] != environment[field]:
+            raise ValueError(f"saved run source or runtime {field} differs")
+    if config.external_workload is not None:
+        from trainguard.external_workload import frozen_workload_path, read_verified_source
+
+        if config.external_workload.version == 2:
+            read_verified_source(config)
+        preflight(config, workload_source=frozen_workload_path(run_dir))
+    else:
+        preflight(config)
+    if config.fingerprint() != status["config_fingerprint"]:
+        raise ValueError("saved config fingerprint differs from run metadata")
+    configured_reference = config.checkpoint.reference_store_path
+    reference_path = status.get("local_reference_store")
+    if not isinstance(status.get("run_id"), str) or not isinstance(
+        status.get("started_at"), str
+    ):
+        raise ValueError("saved run index identity is invalid")  # noqa: TRY004
+    try:
+        store = RunStore(run_dir / "run.sqlite3", existing_only=True)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        reason = f"saved run index is missing or unsafe: {type(exc).__name__}: {exc}"
+        if status["status"] == "SUCCEEDED":
+            return _invalidate_completed_run(run_dir, status, reason)
+        raise ValueError(reason) from exc
+    try:
+        with _controller_lock(run_dir):
+            identity = store.run_identity(status["run_id"])
+            if identity is None:
+                # The controller can exit after publishing run.json but before inserting
+                # the first SQLite row. Rebuild only that empty, never-launched state.
+                attempts_root = run_dir / "attempts"
+                checkpoints_root = run_dir / "checkpoints"
+                pristine = (
+                    status.get("attempt_id") is None
+                    and status.get("status") == "RUNNING"
+                    and not (run_dir / "controller.jsonl").exists()
+                    and not (run_dir / "summary.json").exists()
+                    and (not attempts_root.exists() or not any(attempts_root.iterdir()))
+                    and (not checkpoints_root.exists() or not any(checkpoints_root.iterdir()))
+                )
+                if not pristine:
+                    raise ValueError("run index is missing after training may have started")
+                try:
+                    store.create_run(
+                        status["run_id"], status["config_fingerprint"],
+                        status["started_at"], evidence_schema_version=3,
+                        environment_sha256=runtime_identity_sha256(status["environment"]),
+                    )
+                except (OSError, ValueError, sqlite3.Error, RuntimeError) as exc:
+                    return _settle_control_failure(run_dir, status, store, exc)
+                try:
+                    identity = store.run_identity(status["run_id"])
+                except (OSError, sqlite3.Error) as exc:
+                    return _settle_control_failure(run_dir, status, store, exc)
+            if identity is None or (
+                identity["config_fingerprint"] != status["config_fingerprint"]
+                or identity["started_at"] != status["started_at"]
+            ):
+                raise ValueError("run index identity differs from run metadata")
+            if status["status"] == "RUNNING" and identity["status"] != "RUNNING":
+                status["run_index_terminal_unverified"] = True
+                try:
+                    _set_status(
+                        run_dir, status, "FAILED",
+                        "active run metadata conflicts with the run index status",
+                    )
+                except OSError:
+                    # A persistently unwritable JSON file must not allow another attempt.
+                    pass
+                return False
+            attempts = store.attempts(status["run_id"])
+            _assert_no_owned_workers(run_dir, status["run_id"], attempts)
+
+            def reject_reference(reason: str) -> bool:
+                if status["status"] == "SUCCEEDED":
+                    return _invalidate_completed_run(
+                        run_dir, status, reason, lock_held=True
+                    )
+                for field in (
+                    "execution_started_monotonic", "execution_load_before", "measurement"
+                ):
+                    status.pop(field, None)
+                audit = status.get("post_run_audit")
+                if isinstance(audit, dict) and audit.get("status") == "PENDING":
+                    audit.update(status="FAILED", reason=reason)
+                if attempts and attempts[-1]["status"] == "RUNNING":
+                    store.finish_attempt(
+                        attempts[-1]["attempt_id"], "INTERRUPTED", None,
+                        "controller exited before reference verification",
+                    )
+                store.set_run_status(status["run_id"], "FAILED")
+                _set_status(run_dir, status, "FAILED", reason)
+                return False
+
+            if reference_path != configured_reference:
+                if status["status"] == "SUCCEEDED":
+                    return reject_reference(
+                        "saved local reference database identity differs"
+                    )
+                raise ValueError("saved local reference database identity differs")
+            if status["status"] == "SUCCEEDED":
+                evidence_errors = completed_index_errors(run_dir, status, config)
+                if (
+                    evidence_errors
+                    or not attempts
+                    or status.get("attempt_id") != attempts[-1]["attempt_id"]
+                    or _valid_attempt_summary(
+                        run_dir, attempts[-1]["attempt_id"], config, status["run_id"]
+                    )
+                    is None
+                ):
+                    return _invalidate_completed_run(
+                        run_dir, status,
+                        "completion evidence missing or invalid"
+                        + (": " + "; ".join(evidence_errors) if evidence_errors else ""),
+                        lock_held=True,
+                    )
+            try:
+                reference = (
+                    LocalReferenceSession(
+                        run_dir, reference_path, config, status["run_id"], resume=True
+                    ) if reference_path is not None else None
+                )
+            except (OSError, ValueError, sqlite3.Error, RuntimeError) as exc:
+                if configured_reference is None:
+                    raise
+                return reject_reference(
+                    f"reference authority is invalid: {type(exc).__name__}: {exc}"
+                )
+            if status["status"] != "SUCCEEDED":
+                # A different controller cannot reconstruct the original wall-time window.
+                status.pop("execution_started_monotonic", None)
+                status.pop("execution_load_before", None)
+                status.pop("measurement", None)
+            if reference is None:
+                return _drive_with_failure_closure(run_dir, status, store, config)
+            return _drive_with_failure_closure(
+                run_dir, status, store, config, reference
+            )
+    finally:
+        store.close()

@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "repository": "ywutian/trainguard",
+  "setting_endpoint": "GET /repos/ywutian/trainguard/private-vulnerability-reporting",
+  "before": {
+    "checked_at_utc": "2026-09-27T11:35:27Z",
+    "enabled": false
+  },
+  "enable_operation": {
+    "endpoint": "PUT /repos/ywutian/trainguard/private-vulnerability-reporting",
+    "exit_code": 0
+  },
+  "after": {
+    "checked_at_utc": "2026-09-27T11:35:37Z",
+    "enabled": true
+  },
+  "public_reporting_page": {
+    "checked_at_utc": "2026-09-27T11:35:59Z",
+    "url": "https://github.com/ywutian/trainguard/security/advisories",
+    "report_a_vulnerability_button_observed": true,
+    "form_url": "https://github.com/ywutian/trainguard/security/advisories/new"
+  },
+  "dependency_security": {
+    "before": {
+      "vulnerability_alerts_http_status": 404,
+      "security_updates": "disabled"
+    },
+    "enable_operations": [
+      {
+        "endpoint": "PUT /repos/ywutian/trainguard/vulnerability-alerts",
+        "completed_at_utc": "2026-09-27T15:33:37Z",
+        "http_status": 204
+      },
+      {
+        "endpoint": "PUT /repos/ywutian/trainguard/automated-security-fixes",
+        "completed_at_utc": "2026-09-27T15:33:40Z",
+        "http_status": 204
+      }
+    ],
+    "after": {
+      "checked_at_utc": "2026-09-27T15:34:36Z",
+      "vulnerability_alerts_http_status": 204,
+      "security_updates": {
+        "enabled": true,
+        "paused": false
+      },
+      "repository_summary_status": "enabled"
+    },
+    "default_branch_dependency_graph": {
+      "checked_at_utc": "2026-09-27T15:35:50Z",
+      "git_commit": "b8da9719d2d7acf79cb05b688e4590a56a52a19c",
+      "lock_sha256": "9f86582ab1ab67eebb99f80bc17480f8a733bc8241b6d224a24f7408498e1b04",
+      "locked_packages": 50,
+      "graph_packages": 51,
+      "matched_lock_entries": 50,
+      "third_party_missing": 0,
+      "root_package_label": "com.github.ywutian/trainguard"
+    },
+    "scope": "Repository monitoring for the default branch; the 0.3.6 candidate is not yet merged. Alerts and proposed updates require ongoing human triage, and do not authorize customer deployment."
+  }
+}

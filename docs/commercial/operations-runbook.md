@@ -1,0 +1,115 @@
+# 安装、恢复、诊断与退出手册
+
+状态：候选交付手册；当前版本仍是本机实验包。真实 GPU、多主机、对象服务、客户作业接入和商业签收未放行。操作员每次使用固定版本、`RunSpec` 与 [`release-gates.json`](release-gates.json) 核对环境。
+
+## 1. 候选包与安装
+
+交付包至少含 wheel、sdist、`pyproject.toml`、`uv.lock`、`build-requirements.in`、`build-constraints.txt`、`requirements.txt`、`LICENSE`、`SECURITY.md`、本手册、SBOM、第三方许可证清单、已知漏洞扫描收据和每项 SHA-256。候选包和报告必须引用同一源码指纹与测试版本。源码包仅含明列的交付文档及已审查仓库源码，不收录历史实验原始证据；构建前拒绝未跟踪输入，构建后逐项核对成员、类型、内容及完整重建摘要。构建使用固定的构建依赖闭包及分发哈希；安装锁文件固定运行依赖解析。两者均须在目标操作系统、CPU/GPU 驱动及 Python 版本上实装，不能把本机安装当成客户 Linux 验收。安装时检查 manifest 哈希，使用 Python 3.11 或 3.12 新环境：
+
+当前候选包**不包含依赖 wheelhouse**，安装需要能访问锁文件对应的软件包索引。Linux 当前候选固定 `torch==2.14.0+cpu`，使用 PyTorch 官方 CPU 索引，锁文件不含 CUDA、NVIDIA 或 Triton 运行依赖；仅供 CPU/Gloo 评价。直接安装 wheel 并让普通包索引自行解析依赖不能代表锁定安装；`requirements.txt` 仅为带摘要的审计导出，未编码包专属 CPU 索引，不用它单独安装。客户若限网或需离线交付，先在目标 Linux/Python/设备平台制作并审核完整依赖 wheelhouse，再在完全断网的目标环境实装和演练；在此之前该环境的安装门槛为 `BLOCKED`。GPU 依赖配置、驱动、容器镜像和底层集群资源须另立候选并实测，不由当前 CPU 包自动提供。
+
+先按**第 4 节的顺序**用独立可信摘要核对交付清单和校验器，并完成包内文件核验；然后才执行本节安装命令。设置已验证包目录 `BUNDLE` 与客户控制的**新建绝对环境路径** `TARGET_ENV`。`TARGET_ENV` 必须位于交付包和运行数据之外，且不得指向已有客户环境；下列命令遇到既有路径或符号链接即停止。锁文件同步在已验证交付包根目录执行，运行依赖直接按锁文件中的索引和 wheel 摘要安装：
+
+```bash
+BUNDLE=/absolute/verified/bundle
+TARGET_ENV=/absolute/customer-controlled/new-cpu-environment
+test ! -e "$TARGET_ENV" && test ! -L "$TARGET_ENV" || exit 1
+uv venv --python 3.12 "$TARGET_ENV"
+(cd "$BUNDLE" && VIRTUAL_ENV="$TARGET_ENV" uv sync --active --locked --no-dev --no-install-project)
+uv pip install --python "$TARGET_ENV/bin/python" --no-deps "$BUNDLE/trainguard-<version>-py3-none-any.whl"
+if [ "$(uname)" = Linux ]; then "$TARGET_ENV/bin/python" -c 'import torch; assert torch.__version__ == "2.14.0+cpu" and torch.version.cuda is None'; fi
+"$TARGET_ENV/bin/trainguard" version
+"$TARGET_ENV/bin/trainguard" init-config --output cpu_demo.yaml
+"$TARGET_ENV/bin/trainguard" validate-config --config cpu_demo.yaml
+```
+
+模板是合成 CPU 实验，不是客户真实作业适配。演练输出根目录与软件环境分离，并配置客户可控备份、容量及访问权限。新建运行目录权限为 `0700`，关键记录文件以 `0600` 创建；已有运行目录及外层输出目录须由客户另行核查和收紧，且同一系统身份仍能访问。原始 `run.json`、rank 事件、日志、SQLite、检查点可能包含绝对路径、样本标识和训练状态，只允许客户授权人员读取；禁止将整个运行目录自动上传供应商或公共 CI。DCP 元数据读取会反序列化，只接收受信任身份在隔离目录创建的检查点；哈希与目录权限不证明任意上传内容安全。
+
+外部 CPU DDP 评估入口执行客户提供的受信任 Python 代码，预检就会执行；使用前核对来源与 SHA-256，放在隔离环境。v1 固化单文件，固定 AdamW/Cosine 状态，导入代码和数据不在摘要内。v2 本机候选限制为两个 CPU/Gloo rank、FP32、单参数组 SGD 动量和 StepLR；配置须列出直接导入的本地 helper 和数据文件摘要，程序将其固化，并在恢复及精确比较时校验原件与固化副本。v2 还在已完成更新边界保存流与额外状态，并在下一批之前加载。声明清单不能证明动态导入、网络读取、环境变量或其他副作用不存在；真实客户作业仍须单独冻结完整依赖、数据与状态清单并完成验收。详见 [v2 契约](../../README.md#external-cpu-ddp-workload)。随包 README 中未离线分发的历史实验文档以固定提交的 GitHub 绝对链接引用，需联网查阅；交付校验会拒绝指向包内缺失文件的相对链接。
+
+`run.profile: guarded` 要求检查点开启、至少两个不同保存边界、两份最大检查点的保留预算、单检查点字节上限、最低空闲空间和各结构化事件日志上限，并拒绝故障注入或漏状态恢复。保存前各 rank 协同检查空闲空间，提交前核对完整检查点文件的逻辑字节；训练完成后须有最终步和至少两份结构校验通过的候选，并核对检查点目录常规文件逻辑字节与空闲空间。逻辑字节不等于底层磁盘实际分配字节；“结构校验通过”也不保证未来在真实设备上加载成功。`launcher.log` 和客户自定义输出不受结构化日志限额约束，底层存储仍须配置配额与告警。该配置只收紧本机安全停止条件，**不授予生产放行**。`run` 命令在含故障或漏状态设置时必须加 `--allow-experiment`，仅在书面授权的隔离演练窗口使用。验收命令会自行执行实验矩阵，只能在隔离环境运行。
+
+受保护运行还要求客户在运行目录之外提供仅当前用户可读的 32–4096 字节密钥文件，并通过 `TRAINGUARD_SAMPLE_HMAC_KEY_FILE` 指向其绝对路径；密钥文件必须为普通文件、由当前用户拥有，且权限不得开放给组或其他用户。可由客户凭据系统生成 32 个密码学随机字节，并以独占创建模式写入私有文件；例如下列命令在目标文件已存在时会失败，且不会将密钥打印到终端：
+
+```bash
+python -c 'import os,sys; fd=os.open(sys.argv[1], os.O_WRONLY|os.O_CREAT|os.O_EXCL, 0o600); os.write(fd, os.urandom(32)); os.close(fd)' /absolute/customer-secret/path/sample.key
+export TRAINGUARD_SAMPLE_HMAC_KEY_FILE=/absolute/customer-secret/path/sample.key
+```
+
+运行记录仅保存密钥标识；rank 样本事件写入有序 HMAC 承诺、数量和事件 MAC，不写原始样本 ID。恢复及精确比较需要同一密钥，缺失、错误或篡改均拒绝。客户须在每次启动和恢复时重新挂载同一受限密钥，从客户凭据系统独立备份并审核访问；备份不得进入运行目录、交付包、支持包或供应商日志。轮换时仅为**新运行**建立新密钥；旧密钥须保留至对应运行及证据保留期结束，现有格式没有旧运行的密钥迁移流程。若旧密钥丢失，该运行停在不可验证状态，不得跳过检查强行恢复。持钥者可以重新签署事件，因此这不是独立防篡改签名；客户数据、自定义标准输出和检查点仍要按原始敏感数据保护。
+
+## 2. 启动、停止和故障处理
+
+运行前核查资源、磁盘预算、固定 rank、依赖及数据摘要；保留成功与失败的原始事件。实验配置的事件日志逐批记录原始样本标识且不会自动轮转；受保护配置仅对结构化事件实施容量和 HMAC 控制。哈希损坏等未通过结构验证的检查点不由当前保留策略自动删除。试点须预估最大日志和隔离候选容量、监控磁盘剩余容量，并由客户确定归档和删除期限。受保护完成审计会记录结构有效候选数、有效载荷软预算、检查点目录常规文件逻辑字节、未验证候选占用和空闲空间；超额时不发布成功，但不会自动删除诊断证据。已记录实际加载失败的候选不占有效回退名额；两份结构校验通过的备份存在后才可按可重试的保留记录清理候选，其失败记录仍保留。恢复状态加载中断时，仅在控制器确认工作组已停止、全部 rank 均留下匹配的加载开始记录且至少一个 rank 尚未完成加载后，才将该候选排除；这类候选载荷保留用于诊断，不计入可用备份。加载前失败或控制器无法证明工作组停止时不推定检查点损坏。`run` 生成运行目录；`resume` 只使用该目录保存的配置，严格拒绝源码、Python、PyTorch、全部已安装发行包的元数据、已登记环境选项、启动导入路径、`.pth` 文件、启动钩子、解释器标志和 Python 环境控制、显式 `PYTHONPATH` 及额外启动导入根的内容、站点包中直接可导入的模块和包初始化文件摘要，以及设备、平台、存储身份变化。显式 `PYTHONPATH` 不允许空条目、符号链接、特殊文件、超过身份限制的文件树或可遮蔽应用包的路径；运行输出须置于活动导入根之外。工作进程使用 `PYTHONSAFEPATH=1` 排除隐式工作目录，并不生成字节码。启动和恢复时还会逐个核对安装记录列出的常规文件大小与哈希；这不覆盖更深层未登记包模块、字节码缓存、未受控动态导入或核对后变更，客户部署仍须固定启动路径并使用只读可信运行环境。成功态还需使运行状态、配置、最终尝试、退出码、时间顺序及稳定环境身份在 JSON 与 SQLite 中一致。运行中不要复制/移动未完成的本地检查点目录来模拟远端持久化。若恢复候选均无效、旧工作组仍活跃或身份不一致，应保持失败/阻断，先通知客户负责人；不得强行跳过验证或同时启动第二个有提交权的工作组。
+
+正式性能统计仅复用形状合法且与运行索引中 SHA-256 摘要一致的原始控制器计时；旧记录若没有该摘要，应重跑正式测量。摘要用于发现 JSON 与 SQLite 之间的单边损坏，不是独立签名；能同时改写两份本地文件的人仍可伪造自洽耗时。客户应在受控存储中保存原件与独立审阅记录，不能把本地摘要当作防篡改证明。
+
+启动、状态加载和第一次完成更新由 `recovery.startup_timeout_seconds` 限制；已有有效更新后的停滞由 `recovery.progress_timeout_seconds` 限制，整个尝试仍受 `run.timeout_seconds` 限制。三个期限须按目标作业实际启动/加载耗时冻结并验收；超时是故障结果，不得改记成功。
+
+只读支持导出：
+
+```bash
+.venv/bin/trainguard support-bundle /path/to/customer-runs/<run-id> --output /path/to/review/support.json
+```
+
+它只含运行 ID 摘要、状态、源码/配置摘要、尝试状态与步数、检查点有效/无效数量和重算步数，不复制原始日志、路径、样本、模型或故障原因。数据库缺失/损坏、运行状态不一致，或完成摘要与已保存配置和尝试身份不符时拒绝输出；导出本身不是训练正确性认证。**客户仍须逐字段审阅并批准外发**；需要原始日志时单独授权最小片段、传输和保留期。供应商远程访问须留授权、到期和撤销记录。
+
+成功态支持导出和正式性能测量会重新检查完成事件；缺失或损坏的控制器、rank 记录会阻断成功声明。该读取有明确上限：`run.json`、`summary.json` 各不超过 8 MiB；事件文件每个不超过 16 MiB，事件总量不超过 64 MiB，文件数不超过 128（含控制器日志）；受保护配置还按其更小的事件上限执行。已合法生成但超出这些报告上限的运行会被受控拒绝导出/测量，不改写其原始训练结果。客户须保留原始证据，在受控环境审阅；需要更大报告容量时升级软件并重新验收，不得手工删除事件绕过复核。
+
+Sev1 包含疑似错误恢复、重复有效写入、无有效候选或数据泄露，操作为停止新的恢复/发布、保存证据、通知双方值守、撤销失控身份并由客户确认隔离；Sev2 为保护降级或容量风险，停止自动接管并排查；Sev3 进入正常缺陷处理。实际联系方式、首次响应目标和维护窗口由签署的订单页填写，不从本手册推断全天候承诺。
+
+## 3. 升级、回滚与兼容
+
+版本 N 的运行目录必须继续保留版本 N 的 wheel、完整锁文件、运行环境和启动记录，直至该运行完成并导出数据。当前恢复协议**没有跨源码/依赖版本迁移**；新版本不得直接恢复旧版运行目录。升级先暂停新作业，备份运行目录和旧环境，安装 N+1 到并存的新环境，在隔离数据上跑安装、无故障、故障和负控矩阵；只有同一候选环境验收通过才切换新作业入口。若失败，新作业停止，旧作业仍由版本 N 的环境恢复。检查点和客户数据不随环境卸载删除。
+
+卸载演练应以固定 wheel 安装到仓库外的新环境，运行合成训练，卸载包，并确认运行目录内全部文件的路径和校验和未改变。`scripts/verify_install.py` 自动执行该本机演练；实际客户环境须重做并记录哈希。终止合同或升级失败后，客户仍拥有检查点读取和导出权，卸载只删除软件环境与经客户授权的临时凭据/访问，不删除客户数据。
+
+## 4. 发布与证据
+
+运行 `scripts/run_simulation_closure.py --output-root <结果目录> --previous-ref <已审查上一版本完整提交>` 取得静态检查、全量测试、固定十案例 CPU 故障矩阵、wheel/sdist、源码身份、锁依赖新环境安装和卸载证据。供应链步骤在隔离工具环境中使用 `scripts/supply-chain-tools.txt` 的哈希锁定版本，将当前候选 wheel 与锁依赖安装到另一干净环境，生成 CycloneDX SBOM、由已声明元数据提取的许可证清单、OSV 对实际安装版本的已知漏洞扫描原始 JSON 和绑定 wheel/源码/输入摘要的收据；第三方包漏扫、缺声明或有已知漏洞均阻断本机包门槛。Linux 安装与扫描还必须证明实际 PyTorch 版本为 `2.14.0+cpu`、运行时不含 CUDA，并且安装清单没有 CUDA、NVIDIA 或 Triton 包。上一版提交、wheel 与锁摘要由 `release-gates.json` 固定；不匹配即拒绝升级演练。每个本机步骤有期限，超时记为失败并保留原始输出；门禁会清理发现的子进程组。执行输入摘要覆盖源码、测试、脚本、配置、示例、工作流及随包文档；每步前后都须一致。证据收据可在仅新增文档/证据的提交中保存，任何执行输入变化均要求重新跑本机门禁。再运行 `scripts/check_release_readiness.py` 核对候选源码、完整重建的交付件、锁、原始本机测试身份与摘要以及每个门槛证据哈希。若只做本机实验，可不指定托管运行 ID；此时 `local_experiment_allowed` 可为真，但 `evaluation_allowed` 和 `linux_customer_evaluation_allowed` 必须为假。
+
+客户 Linux 受限评价前还须实时核对仓库私密漏洞报告入口处于启用状态；历史启用记录及当时入口见 `security-channel-2026-09-27.json`，报告入口以 `SECURITY.md` 为准。已知漏洞扫描只代表扫描时服务返回的结果，不是无漏洞证明；许可证清单照录包元数据，不是法律兼容性结论。新披露、换版本或换目标环境时须重新扫描并审阅许可义务。客户 Linux 受限评价还须把已成功的固定仓库 push 工作流 ID 交给 `scripts/check_release_readiness.py --hosted-run-id <运行 ID>`。检查器通过当前已认证账户实时读取工作流元数据，下载 Python 3.11/3.12 的原始摘要、供应链报告和包，并用 `scripts/check_hosted_linux_evidence.py` 重新核对同一候选提交、执行输入、测试身份、故障矩阵、交付件字节及每条 Linux lane 的 wheel/锁绑定扫描收据。两个 Python 版本可安装不同的合法传递依赖；核验分别检查组件覆盖和扫描结果，不要求两份 SBOM 字节相同。操作者可以单独运行离线核验器排查问题，但手工提供的离线文件不授予客户评价包构建权限。在线账户读取证明的是当次下载路径，报告仍不含独立密码学签名，也不代表客户环境验收。任何商业门槛为 `FAIL`/`BLOCKED` 时生产状态仍是 `BLOCKED`；即使全部收据完整，报告也仅给出 `REVIEW_REQUIRED`，绝不自动授权生产发布。当前真实基础设施和客户签收门槛保持 `BLOCKED`。
+
+旧候选的 Linux Python 3.11/3.12 供应链许可证核验为 `BLOCKED`；其 CUDA 依赖元数据和厂商条款见[历史许可证据](linux-license-evidence-0.3.6.md)。当前 CPU 锁文件移除了这些依赖，但旧扫描不转为通过。两条 Linux 安装、许可证和漏洞扫描必须与当前放行清单绑定的 CPU 候选身份一致并经审阅；GPU 交付仍须独立解决其依赖许可与实卡验收。
+
+哈希检查能发现证据文件变化，不能证明证据内容真实、客户授权有效或结论适用于另一环境。每个门槛须由指定技术/商业负责人审阅原始记录并签收；脚本只执行完整性和状态阻断。
+
+放行清单中的 `PASS` 对应结构化收据，绑定候选源码、wheel/sdist/锁摘要、作用域、原始记录摘要与审核引用。本机收据还绑定可复核的合成测试证据副本；仓库副本会替换本机工作区路径和主机名，未经改写的原件留在本机结果目录并记录哈希，交付前仍需逐项审阅。客户保密原件留在客户控制的存储中。外部收据中的审核引用是供人工核验的索引，脚本不能判断签名、授权或原始内容真实性，因此即便收据齐全也只能进入人工复核。生产上线须由合同指定的技术、安全和商业负责人核对客户控制的原件及适用范围，独立批准具体版本/环境/作业后执行，不能把机器状态当作批准。当前源码摘要在候选构建后写入清单；模板状态未绑定源码时会返回 `INVALID`，不得作为放行报告。
+
+`scripts/verify_upgrade_boundary.py --previous-ref <旧提交> --current-wheel <当前 wheel>` 使用相邻补丁版本各自的依赖锁和环境，演练新版本拒绝旧版中断运行且不改旧运行任何文件、旧版从有效检查点恢复并与独立参考一致。取得上述在线托管 Linux 检查通过的阻断报告后，可用 `scripts/build_delivery_bundle.py --wheel <wheel> --sdist <sdist> --readiness-report <报告> --output-dir <目录>` 生成带 SHA-256 清单、门槛收据和本机合成测试摘要的 `EVALUATION_ONLY` 候选包。只有 `linux_customer_evaluation_allowed=true` 才能构建和接收这一受限评价包；本机实验通过不足以生成客户评价包。该命令不生成生产发布标签；正式发布由上一段的独立人工批准流程控制。
+
+收件方须先把交付包放在其他用户不能修改的隔离目录，并通过独立可信渠道取得 `delivery-manifest.json` 的 SHA-256。**运行包内任何代码之前**，使用本机可信 Python 标准库核对清单及包内校验脚本字节；以下片段不导入交付包模块，`BUNDLE` 与 `EXPECTED` 分别由收件方设置为包目录和独立收到的 64 位小写摘要：
+
+```sh
+python3 -I -S - "$BUNDLE" "$EXPECTED" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+expected = sys.argv[2]
+manifest = root / "delivery-manifest.json"
+script = root / "scripts/verify_delivery_bundle.py"
+if len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected):
+    raise SystemExit("trusted manifest digest is invalid")
+if any(path.is_symlink() for path in (root, manifest, script.parent, script)):
+    raise SystemExit("bundle verification path is linked")
+if hashlib.sha256(manifest.read_bytes()).hexdigest() != expected:
+    raise SystemExit("delivery manifest differs from trusted digest")
+files = json.loads(manifest.read_text(encoding="utf-8")).get("files")
+if not isinstance(files, dict) or hashlib.sha256(script.read_bytes()).hexdigest() != files.get(
+    "scripts/verify_delivery_bundle.py"
+):
+    raise SystemExit("bundled verifier differs from trusted manifest")
+print("manifest and verifier authenticated")
+PY
+python3 -I -S "$BUNDLE/scripts/verify_delivery_bundle.py" "$BUNDLE" \
+  --expected-manifest-sha256 "$EXPECTED"
+```
+
+第二步确认清单中每个文件、候选 wheel/sdist/锁以及本机证据引用仍一致，并在执行包内供应链校验模块前校验其字节。任何校验失败时隔离该包并要求重新交付，不安装其中的候选件。包内证据的自洽性不能单独证明原始审查结论真实。
+
+生产发布前还须在客户隔离环境完成：最低权限身份和凭据轮换、出站流量与数据脱敏、容量/保留与备份、跨主机 fencing、对象服务条件提交与失败重试、GPU/NCCL、告警与值班、升级回滚、客户技术及商业签收。未具备这些证据时仅能提供明确范围的本机实验或受限评估。
+
+供应链核验参考：[CycloneDX Python 工具说明](https://github.com/CycloneDX/cyclonedx-python/blob/main/README.md)、[PyPA pip-audit 扫描语义](https://github.com/pypa/pip-audit/blob/main/README.md)、[Python 核心元数据许可字段](https://packaging.python.org/en/latest/specifications/core-metadata/)和[GitHub 私密漏洞上报设置](https://docs.github.com/en/code-security/how-tos/report-and-fix-vulnerabilities/configure-vulnerability-reporting/configure-for-a-repository)。

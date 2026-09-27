@@ -1,0 +1,9 @@
+.........................................................ssss........... [ 73%]
+..........................                                               [100%]
+=============================== warnings summary ===============================
+tests/test_storage_benchmark.py::test_storage_benchmark_checks_loaded_tensor_and_keeps_phase_measurements
+  /Users/yitianwu/Documents/TrainGuard/.venv/lib/python3.12/site-packages/torch/distributed/checkpoint/filesystem.py:133: UserWarning: TypedStorage is deprecated. It will be removed in the future and UntypedStorage will be the only storage class. This should only matter to you if you are using storages directly.  To access UntypedStorage directly, use tensor.untyped_storage() instead of tensor.storage()
+    if tensor.storage().size() != tensor.numel():
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+94 passed, 4 skipped, 1 warning in 227.28s (0:03:47)

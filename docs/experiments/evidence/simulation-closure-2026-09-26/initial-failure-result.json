@@ -1,0 +1,37 @@
+{
+  "finished_at": "2026-09-27T03:48:57.980868+00:00",
+  "gates": [
+    {
+      "command": [
+        "uv",
+        "run",
+        "ruff",
+        "check",
+        "."
+      ],
+      "exit_code": 0,
+      "name": "static",
+      "output": "/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/simulation-closure/simulation-9e324115d6e1/static.txt"
+    },
+    {
+      "command": [
+        "uv",
+        "run",
+        "pytest",
+        "-q",
+        "--junitxml=/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/simulation-closure/simulation-9e324115d6e1/pytest.xml"
+      ],
+      "exit_code": 1,
+      "name": "tests",
+      "output": "/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/simulation-closure/simulation-9e324115d6e1/tests.txt"
+    }
+  ],
+  "platform": "macOS-26.5.1-arm64-arm-64bit",
+  "python": "3.12.12",
+  "schema_version": 1,
+  "source_sha256": "d0334dd8bacbc8743b054d6ea3af7a28e40fe0d3a31a85ecd2bdeb7de3d5934e",
+  "started_at": "2026-09-27T03:42:53.634379+00:00",
+  "status": "FAILED",
+  "torch": "2.14.0",
+  "version": "0.3.0"
+}

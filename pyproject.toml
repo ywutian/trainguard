@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling>=1.27,<2"]
+requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
 [project]
 name = "trainguard"
-version = "0.1.0"
+version = "0.3.6"
 description = "Verified recovery experiments for distributed PyTorch training"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -14,7 +14,8 @@ dependencies = [
     "numpy>=2,<3",
     "pydantic>=2.11,<3",
     "pyyaml>=6,<7",
-    "torch==2.10.0",
+    "torch==2.14.0+cpu; sys_platform == 'linux'",
+    "torch==2.14.0; sys_platform != 'linux'",
     "typer>=0.19,<1",
 ]
 
@@ -24,8 +25,30 @@ trainguard = "trainguard.cli:app"
 [dependency-groups]
 dev = ["pytest>=8,<10", "ruff>=0.14,<1"]
 
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/trainguard"]
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+    ".gitignore", "LICENSE", "README.md", "SECURITY.md", "pyproject.toml", "uv.lock",
+    "build-requirements.in", "build-constraints.txt",
+    "configs", "examples", "scripts", "src", "tests",
+    "docs/commercial/customer-pilot-template.md",
+    "docs/commercial/security-channel-2026-09-27.json",
+    "docs/commercial/linux-license-evidence-0.3.6.md",
+    "docs/commercial/market-evidence-2026-09-26.md",
+    "docs/commercial/operations-runbook.md",
+    "docs/commercial/pilot-ledger-template.json",
+    "docs/plans/product-closure-2026-09-26.md",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

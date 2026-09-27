@@ -1,0 +1,62 @@
+{
+  "artifacts": {
+    "trainguard-0.3.5-py3-none-any.whl": "d6fb211cbf34a2818383e9caba15916632b559f9c3bb076ff57ce510d0dbd370",
+    "trainguard-0.3.5.tar.gz": "1f76f1c17a48a4b402285289cc248eff08f4769c98180065a34e6f7e45c34e9b",
+    "uv.lock": "253c45b9a210dfcd154a5c1daafa1cc911bf50160283cc394027f1eb3e3c562a"
+  },
+  "candidate_source_sha256": "48e7bb77ba360fb7885c8ea2c5e25553efce38c3e79cc9d38db4c5770ea4a1ca",
+  "checks": {
+    "cpu_fault_matrix": true,
+    "fresh_install": true,
+    "full_suite": true,
+    "upgrade_recovery": true,
+    "wheel_identity": true
+  },
+  "cpu_cases": {
+    "async-corrupt": "PASSED",
+    "async-save_interrupt": "PASSED",
+    "async-worker_exit": "PASSED",
+    "omit-cursor": "PASSED",
+    "omit-optimizer": "PASSED",
+    "omit-rng": "PASSED",
+    "sync-corrupt": "PASSED",
+    "sync-hang": "PASSED",
+    "sync-save_interrupt": "PASSED",
+    "sync-worker_exit": "PASSED"
+  },
+  "evidence_redaction": "Repository copies replace the workspace and home paths and test host name; original hashes are retained for local review.",
+  "full_original_result_reference": "runs/commercial-readiness-035/simulation-2429a4ad8f39",
+  "raw_evidence_dir": "docs/commercial/evidence/local-0.3.5-r2",
+  "raw_files": {
+    "acceptance.json": "cb07c2e721dcd142d316004526bfce8fb3d35f4b77339d6e0d85651c1d37de84",
+    "cpu-acceptance.txt": "150363de3a68a14a911c28f8ae79bb90a2035ca0fca7812b9cada5d258c5f452",
+    "fresh-install.txt": "2497289c2c58862136cccfb12608ab339ac77beafd0e7df4e1e7b2a0cdfe5e80",
+    "package.txt": "7cd67920c2b47b616932fb5150ea308f173db8ca2ceb7d5e9706cae5b36bf94d",
+    "pytest.xml": "2383d815ca0740ae6e7fbd57ee914efdbccc0678651364bbfb35abfff3358000",
+    "result.json": "87d544b09d2a462d7ceabab9dd4555c83241eb1f0628d9bc11b1ce50c13cb6bc",
+    "static.txt": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+    "tests.txt": "019bfe875caf9d15a877e13cceb0c40f3383bf0bc7cc8c5e6bc44522e79fd174",
+    "upgrade-boundary.txt": "36ab7d76d9e629bb87746f7a64d666bea30b3961fe328933ac782a64b02a63b8",
+    "wheel.txt": "83d4a57621ee9eff68590cce0d8b827a8146f502c3865f820b4fea260d68e649"
+  },
+  "schema_version": 1,
+  "scope": "macOS-26.5.1-arm64-arm-64bit; Python 3.12.12; PyTorch 2.14.0; two-rank CPU/Gloo fixed synthetic matrix and independent single-file example; 0.3.4 to 0.3.5 upgrade boundary",
+  "status": "SUCCEEDED",
+  "tests": {
+    "passed": 229,
+    "skipped_device_preflight": 0,
+    "skipped_no_gpu": 4
+  },
+  "unredacted_source_sha256": {
+    "acceptance.json": "f65655a51f3bf5795c71cf038a64ac4948cedffc3099bd22fea1ab517961a649",
+    "cpu-acceptance.txt": "8bd4da02bbe0db2de5e7dfb14df8521985f9e53f81ad74cedb9ec37684df6813",
+    "fresh-install.txt": "2497289c2c58862136cccfb12608ab339ac77beafd0e7df4e1e7b2a0cdfe5e80",
+    "package.txt": "7cd67920c2b47b616932fb5150ea308f173db8ca2ceb7d5e9706cae5b36bf94d",
+    "pytest.xml": "528fa4e7fe9af32979b1e667bdb69ea0370e231ed23911fa8c20da445e54181b",
+    "result.json": "648140d052f396b2ead7c79c3ca311255df4ff8bf0a864c69c4d0198146ccdc2",
+    "static.txt": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+    "tests.txt": "ac2977662ffeaa1b3fd5654d752b7cab19b355a1faec17c83791c32eeeceaefb",
+    "upgrade-boundary.txt": "36ab7d76d9e629bb87746f7a64d666bea30b3961fe328933ac782a64b02a63b8",
+    "wheel.txt": "83d4a57621ee9eff68590cce0d8b827a8146f502c3865f820b4fea260d68e649"
+  }
+}

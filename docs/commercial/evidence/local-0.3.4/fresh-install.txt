@@ -1,0 +1,1 @@
+{"attributed_faults": 1, "completed_run": true, "installed_outside_checkout": true, "recovered_run_matches_reference": true, "recoveries": 1, "run_data_files_checked": 51, "run_data_preserved_after_uninstall": true, "support_export_checked": true, "version": "0.3.4", "wheel_sha256": "334ffd59b2c6ed4e26622ce4213fd6d29523f6cc121aa01969d5c2cbb6d95b78"}

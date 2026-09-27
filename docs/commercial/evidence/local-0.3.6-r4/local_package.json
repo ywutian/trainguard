@@ -1,0 +1,26 @@
+{
+  "approval_reference": "machine-record-sha256:030ae0ba8fb7d6ba8d897b1418a3587b482a42bc9173eebbd0e6e57ede84e570",
+  "artifacts": {
+    "trainguard-0.3.6-py3-none-any.whl": "1a8308f3f2d24b5eaffd10d680015566c9bd62813590e579d4cbb7a4145fb3ba",
+    "trainguard-0.3.6.tar.gz": "f748ec619d01ce7335822c7f0c5e004e84b8c701ff54100492eacdb7948be37b",
+    "uv.lock": "644ef845c4a33c6e1cbec3b7de5dc4532e12f3a5fa5ef56f7af69bc6a7386ff3"
+  },
+  "candidate_source_sha256": "dabe10fa40fd194a9be069e1569f3f8d2fae82aa9976845903c3d559b1044ee6",
+  "checks": {
+    "fresh_install": true,
+    "supply_chain": true,
+    "upgrade_recovery": true,
+    "wheel_identity": true
+  },
+  "decision": "PASS",
+  "execution_commit": "9d2d595303dd4f95daaeb986e566ae31d3e44b19",
+  "execution_inputs_sha256": "7ebcf3cf8fc5cb0d9882d0b67254137a14327653fd32c4754b9b741cb200b62d",
+  "gate_id": "local_package",
+  "human_approval": false,
+  "record_reference": "docs/commercial/evidence/local-0.3.6-r4/local-validation.json",
+  "record_sha256": "030ae0ba8fb7d6ba8d897b1418a3587b482a42bc9173eebbd0e6e57ede84e570",
+  "reviewed_at": "2026-09-27T21:03:38.595859+00:00",
+  "reviewer_role": "automated_local_evidence_verification",
+  "schema_version": 1,
+  "scope": "local CPU/Gloo; Python 3.12.12; PyTorch 2.14.0"
+}

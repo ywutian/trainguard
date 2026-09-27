@@ -1,0 +1,413 @@
+import json
+import os
+import shutil
+import signal
+import sqlite3
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from trainguard import controller
+from trainguard.checkpoint import candidate_path
+from trainguard.config import load_config
+from trainguard.run_store import RunStore
+from trainguard.support import SupportBundleError, build_support_bundle
+
+
+def config():
+    return load_config(Path(__file__).parents[1] / "configs/cpu_demo.yaml")
+
+
+def test_incomplete_summary_cannot_publish_success(tmp_path):
+    settings = config()
+    path = tmp_path / "attempts/attempt-001/summary.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "run_id": "run",
+                "attempt_id": "attempt-001",
+                "config_fingerprint": settings.fingerprint(),
+                "global_step": settings.training.total_steps,
+                "world_size": settings.run.world_size,
+            }
+        )
+    )
+    assert controller._valid_attempt_summary(tmp_path, "attempt-001", settings, "run") is None
+
+
+def test_succeeded_run_is_reaudited(tmp_path):
+    source = Path(__file__).parents[1] / "configs/cpu_demo.yaml"
+    directory, ok = controller.run(source, tmp_path)
+    assert ok
+    assert json.loads((directory / "run.json").read_text())["post_run_audit"]["status"] == (
+        "NOT_APPLICABLE"
+    )
+    (directory / "attempts/attempt-001/rank-1.jsonl").unlink()
+    assert not controller.resume(directory)
+    assert json.loads((directory / "run.json").read_text())["status"] == "FAILED"
+
+
+def test_malformed_rank_digest_invalidates_previous_success(tmp_path):
+    source = Path(__file__).parents[1] / "configs/cpu_demo.yaml"
+    directory, ok = controller.run(source, tmp_path)
+    assert ok
+    path = directory / "attempts/attempt-001/summary.json"
+    summary = json.loads(path.read_text())
+    summary["rank_states"][0]["model_sha256"] = ["malformed"]
+    path.write_text(json.dumps(summary))
+    assert not controller.resume(directory)
+    status = json.loads((directory / "run.json").read_text())
+    assert status["status"] == "FAILED"
+    assert status["post_run_audit"]["status"] == "INVALIDATED"
+
+
+def test_malformed_attempt_identity_invalidates_previous_success(tmp_path):
+    from trainguard.validation import validate_runs
+
+    source = Path(__file__).parents[1] / "configs/cpu_demo.yaml"
+    directory, ok = controller.run(source, tmp_path)
+    assert ok
+    with sqlite3.connect(directory / "run.sqlite3") as database:
+        database.execute("UPDATE attempts SET attempt_id=?", (b"bad",))
+    result = validate_runs(directory, directory)
+    assert not result["passed"]
+    assert any("invalid identity" in item for item in result["differences"])
+    assert not controller.resume(directory)
+    status = json.loads((directory / "run.json").read_text())
+    assert status["status"] == "FAILED"
+    assert status["post_run_audit"]["status"] == "INVALIDATED"
+
+
+@pytest.mark.parametrize("field", ["attempt_id", "config"])
+def test_succeeded_run_rejects_mismatched_saved_status_identity(tmp_path, field):
+    source = Path(__file__).parents[1] / "configs/cpu_demo.yaml"
+    directory, ok = controller.run(source, tmp_path)
+    assert ok
+    path = directory / "run.json"
+    status = json.loads(path.read_text())
+    status[field] = "attempt-999" if field == "attempt_id" else {"run": {"device": "cuda"}}
+    path.write_text(json.dumps(status))
+    from trainguard.validation import validate_runs
+
+    assert not validate_runs(directory, directory)["passed"]
+    if field == "config":
+        with pytest.raises(SupportBundleError, match="saved run configuration"):
+            build_support_bundle(directory)
+    assert not controller.resume(directory)
+    failed = json.loads(path.read_text())
+    assert failed["status"] == "FAILED"
+    assert failed["post_run_audit"]["status"] == "INVALIDATED"
+
+
+def test_completed_run_cross_media_tampering_fails_closed(tmp_path):
+    from trainguard.benchmark import _original_measurement
+    from trainguard.validation import validate_runs
+
+    source = Path(__file__).parents[1] / "configs/cpu_demo.yaml"
+    original, ok = controller.run(source, tmp_path / "original")
+    assert ok
+    assert validate_runs(original, original)["passed"]
+    assert build_support_bundle(original)["status"] == "SUCCEEDED"
+    assert _original_measurement(original) is not None
+
+    def mutate_run(path, field, value):
+        saved = json.loads(path.read_text())
+        if field.startswith("environment."):
+            saved["environment"][field.split(".", 1)[1]] = value
+        else:
+            saved[field] = value
+        path.write_text(json.dumps(saved))
+
+    corruptions = (
+        ("device", lambda run: mutate_run(run / "run.json", "environment.device", "cuda")),
+        ("world_size", lambda run: mutate_run(run / "run.json", "environment.world_size", 8)),
+        ("environment_type", lambda run: mutate_run(run / "run.json", "environment", None)),
+        ("schema_downgrade", lambda run: mutate_run(run / "run.json", "run_schema_version", None)),
+        ("run_id_type", lambda run: mutate_run(run / "run.json", "run_id", [])),
+        ("status_type", lambda run: mutate_run(run / "run.json", "status", [])),
+        ("unfinished_timing", lambda run: mutate_run(
+            run / "run.json", "execution_started_monotonic", "invalid"
+        )),
+        ("run_index_status", lambda run: _change_index(run, "runs", "status", "FAILED")),
+        ("run_index_status_type", lambda run: _change_index(run, "runs", "status", b"bad")),
+        ("attempt_exit", lambda run: _change_index(run, "attempts", "exit_code", 9)),
+        ("attempt_exit_type", lambda run: _change_index(run, "attempts", "exit_code", b"bad")),
+        ("attempt_time", lambda run: _change_index(
+            run, "attempts", "finished_at", "2099-01-01T00:00:00+00:00"
+        )),
+        ("attempt_time_type", lambda run: _change_index(
+            run, "attempts", "started_at", b"invalid"
+        )),
+        ("measurement_index", lambda run: _change_index(
+            run, "runs", "measurement_sha256", "0" * 64
+        )),
+        ("measurement", lambda run: mutate_run(run / "run.json", "measurement", {
+            "method": "controller_monotonic", "elapsed_seconds": 0.0001,
+            "load_average_before": [0, 0, 0], "load_average_after": [0, 0, 0],
+        })),
+    )
+    for name, change in corruptions:
+        directory = tmp_path / name
+        shutil.copytree(original, directory)
+        change(directory)
+        assert not validate_runs(original, directory)["passed"], name
+        with pytest.raises(SupportBundleError):
+            build_support_bundle(directory)
+        if name == "measurement":
+            assert _original_measurement(directory) is None
+        assert not controller.resume(directory), name
+        failed = json.loads((directory / "run.json").read_text())
+        assert failed["status"] == "FAILED", name
+        assert failed["post_run_audit"]["status"] == "INVALIDATED", name
+
+
+def _change_index(run_dir: Path, table: str, field: str, value) -> None:
+    with sqlite3.connect(run_dir / "run.sqlite3") as database:
+        database.execute(f"UPDATE {table} SET {field}=?", (value,))
+
+
+@pytest.mark.parametrize("field", ["platform", "storage_device", "cuda_available"])
+def test_resume_requires_current_platform_and_storage_identity(tmp_path, field):
+    from trainguard.validation import validate_runs
+
+    source = Path(__file__).parents[1] / "configs/cpu_demo.yaml"
+    directory, ok = controller.run(source, tmp_path)
+    assert ok
+    reference = tmp_path / "reference-copy"
+    shutil.copytree(directory, reference)
+    path = directory / "run.json"
+    status = json.loads(path.read_text())
+    value = {
+        "platform": status["environment"]["platform"] + "-forged",
+        "storage_device": status["environment"]["storage_device"] + 1,
+        "cuda_available": not status["environment"]["cuda_available"],
+    }[field]
+    status["environment"][field] = value
+    path.write_text(json.dumps(status))
+    assert not validate_runs(reference, directory)["passed"]
+    assert not controller.resume(directory)
+    assert json.loads(path.read_text())["status"] == "FAILED"
+
+
+@pytest.mark.parametrize("failure", ["scan", "prune"])
+def test_post_run_audit_failure_cannot_publish_success_or_repeat_training(
+    tmp_path, monkeypatch, failure
+):
+    settings = config().model_dump()
+    settings["checkpoint"].update(mode="sync", interval_steps=1, keep_last_k=2)
+    source = tmp_path / "guarded-config.json"
+    source.write_text(json.dumps(settings))
+    function_name = "_scan_checkpoints" if failure == "scan" else "prune_checkpoints"
+    original = getattr(controller, function_name)
+
+    def fail_after_training(run_dir, *args, **kwargs):
+        if json.loads((run_dir / "run.json").read_text())["status"] == "FINALIZING":
+            raise RuntimeError(f"injected {failure} failure")
+        return original(run_dir, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(controller, function_name, fail_after_training)
+        with pytest.raises(RuntimeError, match=f"injected {failure} failure"):
+            controller.run(source, tmp_path / "runs")
+        run_dir = next((tmp_path / "runs").iterdir())
+        with pytest.raises(RuntimeError, match=f"injected {failure} failure"):
+            controller.resume(run_dir)
+        status = json.loads((run_dir / "run.json").read_text())
+        assert status["status"] == "FINALIZING"
+        assert status["post_run_audit"]["status"] == "FAILED"
+        assert build_support_bundle(run_dir)["status"] == "FINALIZING"
+        with sqlite3.connect(run_dir / "run.sqlite3") as database:
+            assert database.execute("SELECT status FROM runs").fetchone()[0] == "FINALIZING"
+            assert database.execute("SELECT status FROM attempts").fetchall() == [
+                ("SUCCEEDED",)
+            ]
+
+    assert controller.resume(run_dir)
+    status = json.loads((run_dir / "run.json").read_text())
+    assert status["status"] == "SUCCEEDED"
+    assert status["post_run_audit"]["status"] == "PASSED"
+    with sqlite3.connect(run_dir / "run.sqlite3") as database:
+        assert database.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 1
+
+    with monkeypatch.context() as patch:
+        patch.setattr(controller, function_name, fail_after_training)
+        with pytest.raises(RuntimeError, match=f"injected {failure} failure"):
+            controller.resume(run_dir)
+        assert json.loads((run_dir / "run.json").read_text())["status"] == "FINALIZING"
+        assert build_support_bundle(run_dir)["status"] == "FINALIZING"
+    assert controller.resume(run_dir)
+
+
+def test_unsatisfied_retention_budget_cannot_pass_post_run_audit(tmp_path):
+    settings = config().model_dump()
+    settings["checkpoint"].update(
+        mode="sync", interval_steps=1, keep_last_k=2, max_retained_bytes=1
+    )
+    source = tmp_path / "tight-budget.json"
+    source.write_text(json.dumps(settings))
+    with pytest.raises(RuntimeError, match="capacity budget is unsatisfied"):
+        controller.run(source, tmp_path / "runs")
+    run_dir = next((tmp_path / "runs").iterdir())
+    status = json.loads((run_dir / "run.json").read_text())
+    assert status["status"] == "FINALIZING"
+    assert status["post_run_audit"]["status"] == "FAILED"
+    assert status["post_run_audit"]["budget_satisfied"] is False
+    with pytest.raises(RuntimeError, match="capacity budget is unsatisfied"):
+        controller.resume(run_dir)
+    resumed_status = json.loads((run_dir / "run.json").read_text())
+    assert resumed_status["status"] == "FINALIZING"
+    assert resumed_status["post_run_audit"]["status"] == "FAILED"
+    assert resumed_status["post_run_audit"]["budget_satisfied"] is False
+    with sqlite3.connect(run_dir / "run.sqlite3") as database:
+        assert database.execute("SELECT status FROM attempts").fetchall() == [("SUCCEEDED",)]
+
+
+def test_older_checkpoint_cannot_certify_completed_attempt(tmp_path, monkeypatch):
+    settings = config().model_dump()
+    settings["training"]["total_steps"] = 4
+    settings["checkpoint"].update(mode="sync", interval_steps=1, keep_last_k=2)
+    source = tmp_path / "final-checkpoint-config.json"
+    source.write_text(json.dumps(settings))
+    original = controller._scan_checkpoints
+    final_marker = None
+
+    def damage_final_at_audit(run_dir, *args, **kwargs):
+        nonlocal final_marker
+        if kwargs.get("audit") and final_marker is None:
+            final = candidate_path(run_dir, "attempt-001", 4)
+            final_marker = (final / "COMMITTED").read_bytes()
+            (final / "COMMITTED").write_bytes(b"invalid final checkpoint\n")
+        return original(run_dir, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(controller, "_scan_checkpoints", damage_final_at_audit)
+        with pytest.raises(RuntimeError, match="no valid final checkpoint"):
+            controller.run(source, tmp_path / "runs")
+    run_dir = next((tmp_path / "runs").iterdir())
+    status = json.loads((run_dir / "run.json").read_text())
+    assert status["status"] == "FINALIZING"
+    assert status["post_run_audit"]["status"] == "FAILED"
+    assert final_marker is not None
+    with sqlite3.connect(run_dir / "run.sqlite3") as database:
+        checkpoints = {
+            Path(path).name: state for path, state in database.execute(
+                "SELECT path, status FROM checkpoints"
+            )
+        }
+        assert checkpoints["step-000004-attempt-001"] == "INVALID"
+        assert checkpoints["step-000003-attempt-001"] == "VALID"
+    with pytest.raises(RuntimeError, match="no valid final checkpoint"):
+        controller.resume(run_dir)
+    assert json.loads((run_dir / "run.json").read_text())["status"] == "FINALIZING"
+
+    (candidate_path(run_dir, "attempt-001", 4) / "COMMITTED").write_bytes(final_marker)
+    assert controller.resume(run_dir)
+    status = json.loads((run_dir / "run.json").read_text())
+    assert status["status"] == "SUCCEEDED"
+    assert status["post_run_audit"]["status"] == "PASSED"
+    assert status["post_run_audit"]["final_checkpoint"]["global_step"] == 4
+
+
+@pytest.mark.parametrize("failure", ["pid", "events"])
+def test_exception_after_spawn_cleans_actual_process(tmp_path, monkeypatch, failure):
+    settings = config()
+    (tmp_path / "attempts/attempt-001").mkdir(parents=True)
+    (tmp_path / "config.json").write_text(json.dumps(settings.model_dump()))
+    store = RunStore(tmp_path / "run.sqlite3")
+    store.create_run("run", settings.fingerprint(), "now")
+    store.start_attempt("run", "attempt-001", 1, None, 0)
+    spawned = []
+    original = controller.subprocess.Popen
+
+    def track(*args, **kwargs):
+        child = original(*args, **kwargs)
+        if "torch.distributed.run" in args[0]:
+            spawned.append(child)
+        return child
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("injected audit failure")
+
+    monkeypatch.setattr(controller.subprocess, "Popen", track)
+    if failure == "pid":
+        monkeypatch.setattr(store, "set_pid", fail)
+    else:
+        monkeypatch.setattr(controller, "_read_events", fail)
+    try:
+        result = controller._launch_attempt(tmp_path, settings, "run", "attempt-001", None, store)
+        assert not result.succeeded
+        assert "injected audit failure" in result.reason
+        assert spawned[0].poll() is not None
+        assert not controller._owned_group_members(tmp_path, "run", "attempt-001", spawned[0].pid)
+    finally:
+        for child in spawned:
+            controller._stop_process_group(child, tmp_path, "run", "attempt-001")
+        store.close()
+
+
+def test_detached_worker_prevents_group_ended_evidence(tmp_path, monkeypatch):
+    settings = config()
+    (tmp_path / "attempts/attempt-001").mkdir(parents=True)
+    (tmp_path / "config.json").write_text(json.dumps(settings.model_dump()))
+    store = RunStore(tmp_path / "run.sqlite3")
+    store.create_run("run", settings.fingerprint(), "now")
+    store.start_attempt("run", "attempt-001", 1, None, 0)
+    worker_pid_path = tmp_path / "detached-worker.pid"
+    launcher_pid = None
+    real_popen = subprocess.Popen
+    script = (
+        "import subprocess,sys; from pathlib import Path; "
+        "worker=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)',"
+        "'trainguard.trainer','--run-dir',sys.argv[1],"
+        "'--run-id',sys.argv[2],'--attempt-id',sys.argv[3]],"
+        "start_new_session=True); "
+        "Path(sys.argv[4]).write_text(str(worker.pid))"
+    )
+
+    def detached_launcher(command, *args, **kwargs):
+        nonlocal launcher_pid
+        if "torch.distributed.run" in command:
+            command = [
+                sys.executable, "-c", script, str(tmp_path), "run", "attempt-001",
+                str(worker_pid_path),
+            ]
+        process = real_popen(command, *args, **kwargs)
+        launcher_pid = process.pid
+        return process
+
+    monkeypatch.setattr(controller.subprocess, "Popen", detached_launcher)
+    try:
+        with pytest.raises(controller.RunActiveError, match="worker cleanup failed"):
+            controller._launch_attempt(tmp_path, settings, "run", "attempt-001", None, store)
+        worker_pid = int(worker_pid_path.read_text())
+        assert launcher_pid is not None
+        assert os.getpgid(worker_pid) != launcher_pid
+        assert not controller._owned_group_members(tmp_path, "run", "attempt-001", launcher_pid)
+        assert controller._owned_group_members(tmp_path, "run", "attempt-001") == [worker_pid]
+        assert not (tmp_path / "attempts/attempt-001/worker-group-ended.json").exists()
+    finally:
+        if worker_pid_path.exists():
+            worker_pid = int(worker_pid_path.read_text())
+            if worker_pid in controller._owned_group_members(tmp_path, "run", "attempt-001"):
+                os.kill(worker_pid, signal.SIGTERM)
+        store.close()
+
+
+def test_controller_failure_diagnostic_is_not_replaced_by_retry_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        controller,
+        "_launch_attempt",
+        lambda *a: controller.AttemptResult(
+            False, "controller ValueError: invalid current event", 1, 0
+        ),
+    )
+    source = Path(__file__).parents[1] / "configs/cpu_demo.yaml"
+    directory, ok = controller.run(source, tmp_path)
+    assert not ok
+    assert (
+        json.loads((directory / "run.json").read_text())["reason"]
+        == "controller ValueError: invalid current event"
+    )

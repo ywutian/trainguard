@@ -1,0 +1,131 @@
+{
+  "recovered_run_dir": "/Users/yitianwu/Documents/TrainGuard/runs/simulation-closure/simulation-03dd217fc632/test-artifacts/test_two_rank_training_recover0/recovery-runs/7017f7df3d05",
+  "recovered_summary": {
+    "accumulation_phase": 0,
+    "attempt_id": "attempt-002",
+    "config_fingerprint": "1ce95debe1793200d6e9bb2c9a2bca9420104b9275f3465f02d438ed80a2f6a2",
+    "consumed_batches": 4,
+    "global_step": 4,
+    "last_loss": 4.97995138168335,
+    "model_sha256": "41e7af824bc8660f462c37547f4d153c5b5aaf8f20cadbcc44f263b7e7c2a3cd",
+    "optimizer_sha256": "c57ef5d9ac144768e066189ca0df0afb84bc089dc68f64140c6b3c27eed34d05",
+    "optimizer_updates": 4,
+    "parameter_count": 99264,
+    "rank_states": [
+      {
+        "consumed_batches": 4,
+        "gpu_peak_allocated_bytes": null,
+        "model_sha256": "17cee820988b1bb86b39bde5973af9404831358f71d853f745574bb873a4cb8e",
+        "optimizer_sha256": "e62ccaa149f6cdf086e7c79ea6d4ef01d14c188f6a7016925fe59bff6af14565",
+        "optimizer_updates": 4,
+        "rss_peak_bytes": 313475072,
+        "scaler_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "scheduler_sha256": "4b38c225b87a4fe23ce259aece16519bb53aaa94af3308abd5d59ebcdeae4916",
+        "training_seconds": 0.08874733300035587
+      },
+      {
+        "consumed_batches": 4,
+        "gpu_peak_allocated_bytes": null,
+        "model_sha256": "17cee820988b1bb86b39bde5973af9404831358f71d853f745574bb873a4cb8e",
+        "optimizer_sha256": "e62ccaa149f6cdf086e7c79ea6d4ef01d14c188f6a7016925fe59bff6af14565",
+        "optimizer_updates": 4,
+        "rss_peak_bytes": 313573376,
+        "scaler_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "scheduler_sha256": "4b38c225b87a4fe23ce259aece16519bb53aaa94af3308abd5d59ebcdeae4916",
+        "training_seconds": 0.08870891699916683
+      }
+    ],
+    "run_id": "7017f7df3d05",
+    "scaler": null,
+    "scaler_sha256": "a789e19f9d130a26ede29118b555dcf0bc5faf2a171af9e45faa38e437ffee1c",
+    "scheduler_sha256": "0c7cadebe32bc9a2c999b1b5190b2271d8a5b618be0a6b8b028acc88e5342631",
+    "state_schema_version": 2,
+    "torch_version": "2.14.0",
+    "training_elapsed_seconds": 0.08874733300035587,
+    "workload_fingerprint": "1f0ef57641e054c906d7614163dbcf2b4cf17d262c0e73a31ded66fd1f67a0fa",
+    "world_size": 2
+  },
+  "reference_run_dir": "/Users/yitianwu/Documents/TrainGuard/runs/simulation-closure/simulation-03dd217fc632/test-artifacts/test_two_rank_training_recover0/reference-runs/2403450e1cee",
+  "reference_summary": {
+    "accumulation_phase": 0,
+    "attempt_id": "attempt-001",
+    "config_fingerprint": "51189050ea90a1bb45041ed4d43b5d7afc86718462f7c56e0768674fef43b763",
+    "consumed_batches": 4,
+    "global_step": 4,
+    "last_loss": 4.97995138168335,
+    "model_sha256": "41e7af824bc8660f462c37547f4d153c5b5aaf8f20cadbcc44f263b7e7c2a3cd",
+    "optimizer_sha256": "c57ef5d9ac144768e066189ca0df0afb84bc089dc68f64140c6b3c27eed34d05",
+    "optimizer_updates": 4,
+    "parameter_count": 99264,
+    "rank_states": [
+      {
+        "consumed_batches": 4,
+        "gpu_peak_allocated_bytes": null,
+        "model_sha256": "17cee820988b1bb86b39bde5973af9404831358f71d853f745574bb873a4cb8e",
+        "optimizer_sha256": "e62ccaa149f6cdf086e7c79ea6d4ef01d14c188f6a7016925fe59bff6af14565",
+        "optimizer_updates": 4,
+        "rss_peak_bytes": 311017472,
+        "scaler_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "scheduler_sha256": "4b38c225b87a4fe23ce259aece16519bb53aaa94af3308abd5d59ebcdeae4916",
+        "training_seconds": 0.01810516699697473
+      },
+      {
+        "consumed_batches": 4,
+        "gpu_peak_allocated_bytes": null,
+        "model_sha256": "17cee820988b1bb86b39bde5973af9404831358f71d853f745574bb873a4cb8e",
+        "optimizer_sha256": "e62ccaa149f6cdf086e7c79ea6d4ef01d14c188f6a7016925fe59bff6af14565",
+        "optimizer_updates": 4,
+        "rss_peak_bytes": 310853632,
+        "scaler_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "scheduler_sha256": "4b38c225b87a4fe23ce259aece16519bb53aaa94af3308abd5d59ebcdeae4916",
+        "training_seconds": 0.018041915998765035
+      }
+    ],
+    "run_id": "2403450e1cee",
+    "scaler": null,
+    "scaler_sha256": "a789e19f9d130a26ede29118b555dcf0bc5faf2a171af9e45faa38e437ffee1c",
+    "scheduler_sha256": "0c7cadebe32bc9a2c999b1b5190b2271d8a5b618be0a6b8b028acc88e5342631",
+    "state_schema_version": 2,
+    "torch_version": "2.14.0",
+    "training_elapsed_seconds": 0.01810516699697473,
+    "workload_fingerprint": "1f0ef57641e054c906d7614163dbcf2b4cf17d262c0e73a31ded66fd1f67a0fa",
+    "world_size": 2
+  },
+  "resume_step": 1,
+  "selected_checkpoint": "/Users/yitianwu/Documents/TrainGuard/runs/simulation-closure/simulation-03dd217fc632/test-artifacts/test_two_rank_training_recover0/recovery-runs/7017f7df3d05/checkpoints/step-000001-attempt-001",
+  "validation": {
+    "comparison": {
+      "method": "exact SHA-256 of rank states and effective sample/batch IDs",
+      "tensor_atol": 0.0,
+      "tensor_rtol": 0.0
+    },
+    "differences": [],
+    "effective_batches": {
+      "0": {
+        "recovered_batches": 4,
+        "reference_batches": 4
+      },
+      "1": {
+        "recovered_batches": 4,
+        "reference_batches": 4
+      }
+    },
+    "effective_samples": {
+      "0": {
+        "recovered_sha256": "eccc60e99ef44e9f50e01bc6b7c4b0274ab525ac89907e3f6e3ec2743e3031f7",
+        "recovered_steps": 4,
+        "reference_sha256": "eccc60e99ef44e9f50e01bc6b7c4b0274ab525ac89907e3f6e3ec2743e3031f7",
+        "reference_steps": 4
+      },
+      "1": {
+        "recovered_sha256": "8d48865067d175613b6b48ba60e288cadbe7608873eeeab4b973218cbfebcb95",
+        "recovered_steps": 4,
+        "reference_sha256": "8d48865067d175613b6b48ba60e288cadbe7608873eeeab4b973218cbfebcb95",
+        "reference_steps": 4
+      }
+    },
+    "passed": true,
+    "recovered_run_id": "7017f7df3d05",
+    "reference_run_id": "2403450e1cee"
+  }
+}

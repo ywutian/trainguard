@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "candidate_version": "0.3.4",
+  "tested_commit": "1b3a0701cb60acc9a7aacc40b90a097ebb8d1f7a",
+  "status": "SUCCEEDED",
+  "platform": "Linux x86_64 hosted runner, Python 3.12",
+  "runs": [
+    "https://github.com/ywutian/trainguard/actions/runs/36306968430",
+    "https://github.com/ywutian/trainguard/actions/runs/36306970692"
+  ],
+  "workflow_conclusions": ["success", "success"],
+  "downloaded_artifact_run": "https://github.com/ywutian/trainguard/actions/runs/36306968430",
+  "candidate_source_sha256": "8269eb66991089125d2ce16324d6724ed66cae8130762acff1c82a9bfec15d1f",
+  "lock_sha256": "468ee5cf556f9a9c00702ed2b59a5f4a877449eeccb1f62f2d886803acff283e",
+  "gates": {
+    "static": "PASS",
+    "tests": "PASS",
+    "cpu-acceptance": "PASS",
+    "package": "PASS",
+    "wheel": "PASS",
+    "fresh-install": "PASS",
+    "upgrade-boundary": "PASS"
+  },
+  "tests": {
+    "passed": 182,
+    "skipped_no_gpu": 4,
+    "junit_cases_unique": true,
+    "skip_reasons_verified": true
+  },
+  "cpu_acceptance_cases_passed": 10,
+  "artifacts_identical_to_local": {
+    "trainguard-0.3.4-py3-none-any.whl": "334ffd59b2c6ed4e26622ce4213fd6d29523f6cc121aa01969d5c2cbb6d95b78",
+    "trainguard-0.3.4.tar.gz": "d85875038602321e087013ce5bad057e7a208a291160055c4d6b14a1826cc11a"
+  },
+  "source_archive_members": 90,
+  "source_archive_all_regular_files": true,
+  "generated_verification_members": 0,
+  "historical_experiment_members": 0,
+  "disposition": "Linux and local build artifacts are byte-identical and the selected Linux JUnit and CPU records pass inspection. This establishes the stated synthetic CPU and package scope only; external production gates remain blocked."
+}

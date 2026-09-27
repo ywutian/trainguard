@@ -1,0 +1,458 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "bom-ref": "sha256:8f07d8e37c961f17b88c6d0560762df8593fd89f4645a76c5d8e3e2ed6515d42",
+      "licenses": [
+        {
+          "license": {
+            "name": "License :: OSI Approved :: BSD License"
+          }
+        }
+      ],
+      "name": "Jinja2",
+      "type": "library",
+      "version": "3.1.6"
+    },
+    {
+      "bom-ref": "sha256:50e178a8c66290a5f1f04d6e83767292bb73a8d0a215f381d4a334eaf82c4ae4",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "name": "MarkupSafe",
+      "type": "library",
+      "version": "3.0.3"
+    },
+    {
+      "bom-ref": "sha256:475992191448d37ffe397dd001f845e0eed353c292e2599f8e36c6f5b95b63cb",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "name": "PyYAML",
+      "type": "library",
+      "version": "6.0.3"
+    },
+    {
+      "bom-ref": "sha256:39ad1340ec049ea0d7ab88aa4fe6b672c9bf2abf60e6eaa15c195315e0d50f33",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        }
+      ],
+      "name": "Pygments",
+      "type": "library",
+      "version": "2.21.0"
+    },
+    {
+      "bom-ref": "sha256:d1153ad733a6bc8a01297eba649dd38265a6f462dea5c48837b9e5af32f23345",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "name": "annotated-doc",
+      "type": "library",
+      "version": "0.0.5"
+    },
+    {
+      "bom-ref": "sha256:137cffb8adab68d937a7412338a7e3d8209ce4c4706bbe47c02dd0dd6d8d922c",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "name": "annotated-types",
+      "type": "library",
+      "version": "0.8.0"
+    },
+    {
+      "bom-ref": "sha256:8ca7fd009173386de0359b76254dc61272c95448a22e8683d3245a649ef5215a",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "name": "filelock",
+      "type": "library",
+      "version": "4.0.3"
+    },
+    {
+      "bom-ref": "sha256:f11821c290ef7ff45aca5d521a7053e1258bcb63d944b3cad12791fac7b06528",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "name": "fsspec",
+      "type": "library",
+      "version": "2026.9.0"
+    },
+    {
+      "bom-ref": "sha256:c273fe8f226454ff23f08fa3cbd69bce2ed76813f2e96a389fe9c6e881f0eb1d",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "name": "markdown-it-py",
+      "type": "library",
+      "version": "4.2.0"
+    },
+    {
+      "bom-ref": "sha256:03955d6646e72fe8ade96cefdd19ab7b2224cd72cb9cc72dccaf1bbdb6be9d35",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "name": "mdurl",
+      "type": "library",
+      "version": "0.1.2"
+    },
+    {
+      "bom-ref": "sha256:b3dcee07830a926aa9a3d5408a4f41b4f0a0dbbf8816db611b69682233ae83b1",
+      "licenses": [
+        {
+          "license": {
+            "name": "License :: OSI Approved :: BSD License"
+          }
+        }
+      ],
+      "name": "mpmath",
+      "type": "library",
+      "version": "1.3.0"
+    },
+    {
+      "bom-ref": "sha256:0314c619564e610fe07fbb7ab20a3cece7e1d2fb455357f7f7d933649abd326f",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "name": "networkx",
+      "type": "library",
+      "version": "3.7"
+    },
+    {
+      "bom-ref": "sha256:629dcfb93f388abbd92144076993916ffbc517ee77b7c21c3cad3d298ad31240",
+      "licenses": [
+        {
+          "expression": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0"
+        }
+      ],
+      "name": "numpy",
+      "type": "library",
+      "version": "2.5.3"
+    },
+    {
+      "bom-ref": "sha256:c8deef00978d330b7b02d64a0573359a99f6b8360389b22a87dc82609d265ecd",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "name": "pydantic",
+      "type": "library",
+      "version": "2.13.5"
+    },
+    {
+      "bom-ref": "sha256:d189a5fa1163fc0fc0cca0a98f1a6f72cb9b54e20da5082cb3b9e48865c9fe4b",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "name": "pydantic_core",
+      "type": "library",
+      "version": "2.46.5"
+    },
+    {
+      "bom-ref": "sha256:db6fb0551557437e939183f96a8dc49d0100e2cb0fb753aae27c690a5a4a42ea",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "name": "rich",
+      "type": "library",
+      "version": "15.0.0"
+    },
+    {
+      "bom-ref": "sha256:5ba338e9c27670d5a043081d1cdd1f80c152fad1faa3208f6c4b799477c75662",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "name": "setuptools",
+      "type": "library",
+      "version": "84.0.0"
+    },
+    {
+      "bom-ref": "sha256:7ff2d282773303942dc9456e9dfd59637ecf9941689e21258ee21aca6587950f",
+      "licenses": [
+        {
+          "license": {
+            "id": "ISC"
+          }
+        }
+      ],
+      "name": "shellingham",
+      "type": "library",
+      "version": "1.5.4"
+    },
+    {
+      "bom-ref": "sha256:ceaf3bd12d1aea449dee1a81beeb57639fe14bf2c6243da7b2d5e9ec3478e373",
+      "licenses": [
+        {
+          "license": {
+            "name": "License :: OSI Approved :: BSD License"
+          }
+        }
+      ],
+      "name": "sympy",
+      "type": "library",
+      "version": "1.14.0"
+    },
+    {
+      "bom-ref": "sha256:2fa54e8770dcb0099900a72f0af574e957eeee109f26b0dfcd5952ae43f06877",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 AND Apache-2.0 WITH LLVM-exception AND BSD-2-Clause AND BSD-3-Clause AND BSL-1.0 AND MIT"
+        }
+      ],
+      "name": "torch",
+      "type": "library",
+      "version": "2.14.0"
+    },
+    {
+      "bom-ref": "sha256:3d3005f03653de61ca7d2e48e964590216a8e76edbf41c6aa5416d787baf6caa",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "name": "trainguard",
+      "type": "library",
+      "version": "0.3.6"
+    },
+    {
+      "bom-ref": "sha256:a40c1d23d4586b62b4cfb08b0d127f0bb15f5b4dc2eb797e37bbe19d6c1c7257",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "name": "typer",
+      "type": "library",
+      "version": "0.27.2"
+    },
+    {
+      "bom-ref": "sha256:51ffd5293c46b4f5663d6f3a4472b3cdf933e0fab126a1a546968cdf0f209136",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "name": "typing-inspection",
+      "type": "library",
+      "version": "0.4.4"
+    },
+    {
+      "bom-ref": "sha256:d487e7a6974fe327808381ef70dd633442f377482fdebefdcd0feea71876f367",
+      "licenses": [
+        {
+          "license": {
+            "id": "PSF-2.0"
+          }
+        }
+      ],
+      "name": "typing_extensions",
+      "type": "library",
+      "version": "4.16.0"
+    }
+  ],
+  "dependencies": [
+    {
+      "dependsOn": [
+        "sha256:50e178a8c66290a5f1f04d6e83767292bb73a8d0a215f381d4a334eaf82c4ae4"
+      ],
+      "ref": "sha256:8f07d8e37c961f17b88c6d0560762df8593fd89f4645a76c5d8e3e2ed6515d42"
+    },
+    {
+      "dependsOn": [],
+      "ref": "sha256:50e178a8c66290a5f1f04d6e83767292bb73a8d0a215f381d4a334eaf82c4ae4"
+    },
+    {
+      "dependsOn": [],
+      "ref": "sha256:475992191448d37ffe397dd001f845e0eed353c292e2599f8e36c6f5b95b63cb"
+    },
+    {
+      "dependsOn": [],
+      "ref": "sha256:39ad1340ec049ea0d7ab88aa4fe6b672c9bf2abf60e6eaa15c195315e0d50f33"
+    },
+    {
+      "dependsOn": [],
+      "ref": "sha256:d1153ad733a6bc8a01297eba649dd38265a6f462dea5c48837b9e5af32f23345"
+    },
+    {
+      "dependsOn": [],
+      "ref": "sha256:137cffb8adab68d937a7412338a7e3d8209ce4c4706bbe47c02dd0dd6d8d922c"
+    },
+    {
+      "dependsOn": [],
+      "ref": "sha256:8ca7fd009173386de0359b76254dc61272c95448a22e8683d3245a649ef5215a"
+    },
+    {
+      "dependsOn": [
+        "sha256:8f07d8e37c961f17b88c6d0560762df8593fd89f4645a76c5d8e3e2ed6515d42",
+        "sha256:629dcfb93f388abbd92144076993916ffbc517ee77b7c21c3cad3d298ad31240"
+      ],
+      "ref": "sha256:f11821c290ef7ff45aca5d521a7053e1258bcb63d944b3cad12791fac7b06528"
+    },
+    {
+      "dependsOn": [
+        "sha256:475992191448d37ffe397dd001f845e0eed353c292e2599f8e36c6f5b95b63cb",
+        "sha256:03955d6646e72fe8ade96cefdd19ab7b2224cd72cb9cc72dccaf1bbdb6be9d35"
+      ],
+      "ref": "sha256:c273fe8f226454ff23f08fa3cbd69bce2ed76813f2e96a389fe9c6e881f0eb1d"
+    },
+    {
+      "dependsOn": [],
+      "ref": "sha256:03955d6646e72fe8ade96cefdd19ab7b2224cd72cb9cc72dccaf1bbdb6be9d35"
+    },
+    {
+      "dependsOn": [],
+      "ref": "sha256:b3dcee07830a926aa9a3d5408a4f41b4f0a0dbbf8816db611b69682233ae83b1"
+    },
+    {
+      "dependsOn": [
+        "sha256:629dcfb93f388abbd92144076993916ffbc517ee77b7c21c3cad3d298ad31240",
+        "sha256:ceaf3bd12d1aea449dee1a81beeb57639fe14bf2c6243da7b2d5e9ec3478e373"
+      ],
+      "ref": "sha256:0314c619564e610fe07fbb7ab20a3cece7e1d2fb455357f7f7d933649abd326f"
+    },
+    {
+      "dependsOn": [],
+      "ref": "sha256:629dcfb93f388abbd92144076993916ffbc517ee77b7c21c3cad3d298ad31240"
+    },
+    {
+      "dependsOn": [
+        "sha256:137cffb8adab68d937a7412338a7e3d8209ce4c4706bbe47c02dd0dd6d8d922c",
+        "sha256:d189a5fa1163fc0fc0cca0a98f1a6f72cb9b54e20da5082cb3b9e48865c9fe4b",
+        "sha256:51ffd5293c46b4f5663d6f3a4472b3cdf933e0fab126a1a546968cdf0f209136",
+        "sha256:d487e7a6974fe327808381ef70dd633442f377482fdebefdcd0feea71876f367"
+      ],
+      "ref": "sha256:c8deef00978d330b7b02d64a0573359a99f6b8360389b22a87dc82609d265ecd"
+    },
+    {
+      "dependsOn": [
+        "sha256:d487e7a6974fe327808381ef70dd633442f377482fdebefdcd0feea71876f367"
+      ],
+      "ref": "sha256:d189a5fa1163fc0fc0cca0a98f1a6f72cb9b54e20da5082cb3b9e48865c9fe4b"
+    },
+    {
+      "dependsOn": [
+        "sha256:39ad1340ec049ea0d7ab88aa4fe6b672c9bf2abf60e6eaa15c195315e0d50f33",
+        "sha256:c273fe8f226454ff23f08fa3cbd69bce2ed76813f2e96a389fe9c6e881f0eb1d"
+      ],
+      "ref": "sha256:db6fb0551557437e939183f96a8dc49d0100e2cb0fb753aae27c690a5a4a42ea"
+    },
+    {
+      "dependsOn": [
+        "sha256:8ca7fd009173386de0359b76254dc61272c95448a22e8683d3245a649ef5215a"
+      ],
+      "ref": "sha256:5ba338e9c27670d5a043081d1cdd1f80c152fad1faa3208f6c4b799477c75662"
+    },
+    {
+      "dependsOn": [],
+      "ref": "sha256:7ff2d282773303942dc9456e9dfd59637ecf9941689e21258ee21aca6587950f"
+    },
+    {
+      "dependsOn": [
+        "sha256:b3dcee07830a926aa9a3d5408a4f41b4f0a0dbbf8816db611b69682233ae83b1"
+      ],
+      "ref": "sha256:ceaf3bd12d1aea449dee1a81beeb57639fe14bf2c6243da7b2d5e9ec3478e373"
+    },
+    {
+      "dependsOn": [
+        "sha256:8f07d8e37c961f17b88c6d0560762df8593fd89f4645a76c5d8e3e2ed6515d42",
+        "sha256:475992191448d37ffe397dd001f845e0eed353c292e2599f8e36c6f5b95b63cb",
+        "sha256:8ca7fd009173386de0359b76254dc61272c95448a22e8683d3245a649ef5215a",
+        "sha256:f11821c290ef7ff45aca5d521a7053e1258bcb63d944b3cad12791fac7b06528",
+        "sha256:0314c619564e610fe07fbb7ab20a3cece7e1d2fb455357f7f7d933649abd326f",
+        "sha256:5ba338e9c27670d5a043081d1cdd1f80c152fad1faa3208f6c4b799477c75662",
+        "sha256:ceaf3bd12d1aea449dee1a81beeb57639fe14bf2c6243da7b2d5e9ec3478e373",
+        "sha256:d487e7a6974fe327808381ef70dd633442f377482fdebefdcd0feea71876f367"
+      ],
+      "ref": "sha256:2fa54e8770dcb0099900a72f0af574e957eeee109f26b0dfcd5952ae43f06877"
+    },
+    {
+      "dependsOn": [
+        "sha256:475992191448d37ffe397dd001f845e0eed353c292e2599f8e36c6f5b95b63cb",
+        "sha256:629dcfb93f388abbd92144076993916ffbc517ee77b7c21c3cad3d298ad31240",
+        "sha256:c8deef00978d330b7b02d64a0573359a99f6b8360389b22a87dc82609d265ecd",
+        "sha256:2fa54e8770dcb0099900a72f0af574e957eeee109f26b0dfcd5952ae43f06877",
+        "sha256:a40c1d23d4586b62b4cfb08b0d127f0bb15f5b4dc2eb797e37bbe19d6c1c7257"
+      ],
+      "ref": "sha256:3d3005f03653de61ca7d2e48e964590216a8e76edbf41c6aa5416d787baf6caa"
+    },
+    {
+      "dependsOn": [
+        "sha256:d1153ad733a6bc8a01297eba649dd38265a6f462dea5c48837b9e5af32f23345",
+        "sha256:db6fb0551557437e939183f96a8dc49d0100e2cb0fb753aae27c690a5a4a42ea",
+        "sha256:7ff2d282773303942dc9456e9dfd59637ecf9941689e21258ee21aca6587950f"
+      ],
+      "ref": "sha256:a40c1d23d4586b62b4cfb08b0d127f0bb15f5b4dc2eb797e37bbe19d6c1c7257"
+    },
+    {
+      "dependsOn": [
+        "sha256:d487e7a6974fe327808381ef70dd633442f377482fdebefdcd0feea71876f367"
+      ],
+      "ref": "sha256:51ffd5293c46b4f5663d6f3a4472b3cdf933e0fab126a1a546968cdf0f209136"
+    },
+    {
+      "dependsOn": [],
+      "ref": "sha256:d487e7a6974fe327808381ef70dd633442f377482fdebefdcd0feea71876f367"
+    }
+  ],
+  "specVersion": "1.6"
+}
