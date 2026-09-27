@@ -125,6 +125,9 @@ def _verify_artifacts(root: Path, wheel: Path, sdist: Path, source_digest: str) 
         or not tarfile.is_tarfile(sdist)
     ):
         raise ValueError("release artifacts have invalid names or archive formats")
+    from verify_sdist import verify_sdist
+
+    verify_sdist(root, sdist, version)
     with zipfile.ZipFile(wheel) as archive:
         files = archive.namelist()
         if len(files) != len(set(files)):

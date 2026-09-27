@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "candidate_version": "0.3.3",
+  "candidate_commit": "1975d26fe5ff4d8d047cfc83da24911c240df989",
+  "status": "FAILED",
+  "platform": "macOS local build and Linux CI build",
+  "runs": [
+    "https://github.com/ywutian/trainguard/actions/runs/36305120836",
+    "https://github.com/ywutian/trainguard/actions/runs/36305123036"
+  ],
+  "workflow_conclusion": "success",
+  "artifact_inspection": {
+    "local_sdist_sha256": "6106c6a0a39757488e0fa5fef8c377bf8bb608d3c85b0008e07af211abb7a351",
+    "local_sdist_members": 147,
+    "linux_sdist_sha256": "783f9f3f47c7e805964757d396a7923af2f2b1721ddd13d7f192f5d10235634b",
+    "linux_sdist_members": 1073,
+    "linux_generated_verification_members": 926,
+    "cause": "The Linux gate wrote its output under the checkout's top-level verification directory before building the source distribution. That directory was not excluded from the build input, so the archive included generated test output."
+  },
+  "disposition": "Preserved as failed delivery evidence despite green workflows. Version 0.3.4 must restrict source archive inputs, reject unexpected members, and repeat both local and Linux gates; 0.3.3 artifacts and receipts are not reused."
+}

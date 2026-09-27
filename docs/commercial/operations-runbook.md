@@ -4,7 +4,7 @@
 
 ## 1. 候选包与安装
 
-交付包至少含 wheel、sdist、`pyproject.toml`、`uv.lock`、`requirements.txt`、`LICENSE`、本手册和每项 SHA-256。候选包和报告必须引用同一源码指纹与测试版本。锁文件固定依赖解析；仍须在目标操作系统、CPU/GPU 驱动及 Python 版本上实装，不能把本机安装当成客户 Linux 验收。安装时检查 manifest 哈希，使用 Python 3.11 或 3.12 新环境：
+交付包至少含 wheel、sdist、`pyproject.toml`、`uv.lock`、`requirements.txt`、`LICENSE`、本手册和每项 SHA-256。候选包和报告必须引用同一源码指纹与测试版本。源码包须限定已审查仓库文件，构建后逐项核对成员、类型与内容；包含运行时输出或未跟踪文件时拒绝交付。锁文件固定依赖解析；仍须在目标操作系统、CPU/GPU 驱动及 Python 版本上实装，不能把本机安装当成客户 Linux 验收。安装时检查 manifest 哈希，使用 Python 3.11 或 3.12 新环境：
 
 当前候选包**不包含依赖 wheelhouse**，安装需要能访问锁文件对应的软件包索引。客户若限网或需离线交付，先在目标 Linux/Python/设备平台制作并审核完整依赖 wheelhouse，再在完全断网的目标环境实装和演练；在此之前该环境的安装门槛为 `BLOCKED`。CUDA 驱动、容器镜像和底层集群资源也由订单页列出，不由 Python wheel 自动提供。
 

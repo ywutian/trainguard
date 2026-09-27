@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "trainguard"
-version = "0.3.3"
+version = "0.3.4"
 description = "Verified recovery experiments for distributed PyTorch training"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -28,6 +28,10 @@ dev = ["pytest>=8,<10", "ruff>=0.14,<1"]
 packages = ["src/trainguard"]
 
 [tool.hatch.build.targets.sdist]
+only-include = [
+    ".gitignore", "LICENSE", "README.md", "pyproject.toml", "uv.lock",
+    "configs", "docs", "examples", "scripts", "src", "tests",
+]
 exclude = ["/docs/commercial/release-gates.json", "/docs/commercial/evidence/**"]
 
 [tool.pytest.ini_options]

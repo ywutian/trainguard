@@ -12,6 +12,8 @@ import tomllib
 import zipfile
 from pathlib import Path
 
+from verify_sdist import verify_sdist
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -19,6 +21,10 @@ def main() -> None:
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     expected_version = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
+    sdist = args.wheel.with_name(f"trainguard-{expected_version}.tar.gz")
+    if not sdist.is_file():
+        raise SystemExit("matching source distribution is missing")
+    sdist_members = verify_sdist(root, sdist, expected_version)
     from trainguard.environment import source_sha256
 
     expected_digest = source_sha256()
@@ -58,7 +64,10 @@ print(json.dumps({
             or actual["git_dirty"] is not None
         ):
             raise SystemExit(f"wheel identity differs from source: {actual}")
-    print(json.dumps({"version": expected_version, "source_sha256": expected_digest, "passed": True}))
+    print(json.dumps({
+        "version": expected_version, "source_sha256": expected_digest,
+        "sdist_members": sdist_members, "passed": True,
+    }))
 
 
 if __name__ == "__main__":
