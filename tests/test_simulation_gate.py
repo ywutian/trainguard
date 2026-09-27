@@ -10,6 +10,140 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from xml.etree import ElementTree
+
+
+def _closure_module():
+    source = Path(__file__).parents[1] / "scripts/run_simulation_closure.py"
+    spec = importlib.util.spec_from_file_location("run_simulation_closure", source)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _failed_report(tmp_path: Path, module) -> str:
+    module._persist(tmp_path, {
+        "status": "FAILED", "version": "0.3.6", "source_sha256": "0" * 64,
+        "gates": [
+            {"name": "static", "exit_code": 0, "output": str(tmp_path / "static.txt")},
+            {"name": "tests", "exit_code": 1, "output": str(tmp_path / "tests.txt")},
+        ],
+    })
+    return (tmp_path / "report.md").read_text(encoding="utf-8")
+
+
+def test_early_failure_report_only_shows_source_defined_test_identity(tmp_path: Path) -> None:
+    module = _closure_module()
+    root = ElementTree.Element("testsuites")
+    suite = ElementTree.SubElement(root, "testsuite")
+    case = ElementTree.SubElement(suite, "testcase", {
+        "classname": "tests.test_simulation_gate",
+        "name": (
+            "test_success_status_without_complete_cpu_matrix_is_rejected"
+            "[https://private.example/?accessToken=customer-secret]"
+        ),
+    })
+    ElementTree.SubElement(case, "failure", {
+        "message": "private assertion /Users/customer/input.json",
+    }).text = "sample value: customer-secret"
+    ElementTree.ElementTree(root).write(tmp_path / "pytest.xml", encoding="utf-8")
+    report = _failed_report(tmp_path, module)
+    assert (
+        "test_simulation_gate.py::"
+        "test_success_status_without_complete_cpu_matrix_is_rejected"
+    ) in report
+    for private in ("accessToken", "customer-secret", "private.example", "/Users/", "sample value"):
+        assert private not in report
+
+
+def test_early_failure_report_rejects_unsafe_or_unparseable_xml(tmp_path: Path) -> None:
+    module = _closure_module()
+    path = tmp_path / "pytest.xml"
+    path.write_text("<testsuites><testsuite><testcase", encoding="utf-8")
+    report = _failed_report(tmp_path, module)
+    assert "测试结果 XML 不可解析" in report
+    assert "<testcase" not in report
+
+    root = ElementTree.Element("testsuites")
+    suite = ElementTree.SubElement(root, "testsuite")
+    case = ElementTree.SubElement(suite, "testcase", {
+        "classname": "tests.test_simulation_gate.private/customer",
+        "name": "test_success_status_without_complete_cpu_matrix_is_rejected",
+    })
+    ElementTree.SubElement(case, "failure").text = "customer-secret"
+    ElementTree.ElementTree(root).write(path, encoding="utf-8")
+    report = _failed_report(tmp_path, module)
+    assert "测试结果 XML 不可解析" in report
+    assert "customer-secret" not in report
+    assert "test_success_status_without_complete_cpu_matrix_is_rejected" not in report
+
+
+def test_early_failure_report_rejects_oversized_or_entity_xml(tmp_path: Path) -> None:
+    module = _closure_module()
+    path = tmp_path / "pytest.xml"
+    path.write_bytes(b"x" * (module.MAX_JUNIT_SUMMARY_BYTES + 1))
+    assert "测试结果 XML 不可解析" in _failed_report(tmp_path, module)
+    path.write_text(
+        '<!DOCTYPE testsuites [<!ENTITY private "customer-secret">]>'
+        '<testsuites><testsuite><testcase classname="tests.test_simulation_gate" '
+        'name="test_success_status_without_complete_cpu_matrix_is_rejected">'
+        '<failure>&private;</failure></testcase></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    report = _failed_report(tmp_path, module)
+    assert "测试结果 XML 不可解析" in report
+    assert "customer-secret" not in report
+    assert "test_success_status_without_complete_cpu_matrix_is_rejected" not in report
+
+
+def test_real_pytest_xml_failure_extracts_only_source_identity(tmp_path: Path) -> None:
+    module = _closure_module()
+    fixture = tmp_path / "fixture"
+    tests_root = fixture / "tests"
+    tests_root.mkdir(parents=True)
+    (tests_root / "__init__.py").write_text("", encoding="utf-8")
+    (tests_root / "test_probe.py").write_text(
+        'def test_failure():\n    assert False, "customer-secret /Users/private/input"\n',
+        encoding="utf-8",
+    )
+    xml = tmp_path / "pytest.xml"
+    environment = os.environ.copy()
+    environment.pop("PYTEST_ADDOPTS", None)
+    environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    completed = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-o", "addopts=",
+         f"--junitxml={xml}", str(tests_root / "test_probe.py")],
+        cwd=fixture, env=environment, capture_output=True, text=True,
+        check=False, timeout=30,
+    )
+    assert completed.returncode == 1
+    assert b"customer-secret" in xml.read_bytes()
+    assert module._failed_test_identities(xml, tests_root=tests_root) == (
+        ("test_probe.py::test_failure", "失败"),
+    )
+
+
+def test_safe_failure_identity_requires_source_defined_class_and_function(tmp_path: Path) -> None:
+    module = _closure_module()
+    (tmp_path / "test_local.py").write_text(
+        "class TestRecovery:\n    def test_resume(self):\n        pass\n",
+        encoding="utf-8",
+    )
+    case = ElementTree.Element("testcase", {
+        "classname": "tests.test_local.TestRecovery",
+        "name": "test_resume[private parameter]",
+    })
+    assert module._safe_failed_test_identity(case, tmp_path) == (
+        "test_local.py::TestRecovery::test_resume"
+    )
+    case.set("name", "test_unknown[private parameter]")
+    try:
+        module._safe_failed_test_identity(case, tmp_path)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unknown test function was accepted")
 
 
 def test_success_status_without_complete_cpu_matrix_is_rejected() -> None:

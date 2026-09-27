@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
 import platform
+import re
 import signal
+import stat
 import subprocess
 import sys
 import time
 import uuid
 from pathlib import Path
+from xml.etree import ElementTree
 
 import torch
 
@@ -32,6 +36,11 @@ GATE_TIMEOUT_SECONDS = {
     "upgrade-boundary": 1200,
 }
 GATE_TERMINATION_GRACE_SECONDS = 5
+MAX_JUNIT_SUMMARY_BYTES = 8 * 1024 * 1024
+MAX_REPORTED_TEST_FAILURES = 20
+TEST_MODULE = re.compile(r"test_[A-Za-z0-9_]{1,96}")
+TEST_CLASS = re.compile(r"Test[A-Za-z0-9_]{1,96}")
+TEST_FUNCTION = re.compile(r"test_[A-Za-z0-9_]{1,128}")
 
 
 def _process_table() -> dict[int, tuple[int, int, str]]:
@@ -180,6 +189,86 @@ def _run_bound(
     return gate
 
 
+def _safe_failed_test_identity(case: ElementTree.Element, tests_root: Path) -> str:
+    """Return only source-defined test identifiers, never XML parameters or text."""
+    classname = case.get("classname")
+    name = case.get("name")
+    if not isinstance(classname, str) or not isinstance(name, str):
+        raise TypeError("test identity is missing")
+    parts = classname.split(".")
+    if len(parts) not in (2, 3) or parts[0] != "tests":
+        raise ValueError("test class identity is invalid")
+    module = parts[1]
+    class_name = parts[2] if len(parts) == 3 else None
+    function = name.partition("[")[0]
+    if (
+        TEST_MODULE.fullmatch(module) is None
+        or (class_name is not None and TEST_CLASS.fullmatch(class_name) is None)
+        or TEST_FUNCTION.fullmatch(function) is None
+        or (name != function and (not name.startswith(function + "[") or not name.endswith("]")))
+    ):
+        raise ValueError("test identifier is unsafe")
+    source = tests_root / f"{module}.py"
+    if source.is_symlink() or not source.is_file():
+        raise ValueError("test module is not a regular source file")
+    try:
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, SyntaxError) as exc:
+        raise ValueError("test source cannot be inspected") from exc
+    definitions = tree.body
+    if class_name is not None:
+        classes = [node for node in definitions if isinstance(node, ast.ClassDef)
+                   and node.name == class_name]
+        if len(classes) != 1:
+            raise ValueError("test class is not source-defined")
+        definitions = classes[0].body
+    if not any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and node.name == function for node in definitions):
+        raise ValueError("test function is not source-defined")
+    return f"{module}.py::" + (f"{class_name}::" if class_name else "") + function
+
+
+def _failed_test_identities(
+    path: Path, *, tests_root: Path | None = None
+) -> tuple[tuple[str, str], ...] | None:
+    """Parse bounded XML and withhold all identifiers if any failed row is unsafe."""
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        with os.fdopen(os.open(path, flags), "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or info.st_size > MAX_JUNIT_SUMMARY_BYTES):
+                return None
+            payload = stream.read(MAX_JUNIT_SUMMARY_BYTES + 1)
+        if (len(payload) > MAX_JUNIT_SUMMARY_BYTES
+                or b"<!DOCTYPE" in payload.upper() or b"<!ENTITY" in payload.upper()):
+            return None
+        root = ElementTree.fromstring(payload)
+        if root.tag == "testsuite":
+            suites = [root]
+        elif root.tag == "testsuites":
+            suites = list(root.findall("testsuite"))
+        else:
+            return None
+        if not suites:
+            return None
+        if tests_root is None:
+            tests_root = Path(__file__).resolve().parents[1] / "tests"
+        failures = []
+        for suite in suites:
+            for case in suite.findall("testcase"):
+                kinds = [kind for kind in ("failure", "error") if case.find(kind) is not None]
+                if not kinds:
+                    continue
+                if len(kinds) != 1:
+                    return None
+                identity = _safe_failed_test_identity(case, tests_root)
+                failures.append((identity, "失败" if kinds[0] == "failure" else "错误"))
+        return tuple(sorted(set(failures)))
+    except (OSError, ElementTree.ParseError, TypeError, ValueError):
+        return None
+
+
 def _persist(directory: Path, result: dict) -> None:
     write_json_atomic(directory / "result.json", result)
     lines = [
@@ -196,6 +285,20 @@ def _persist(directory: Path, result: dict) -> None:
         lines.append(
             f"| {gate['name']} | {gate['exit_code']} | [{gate['name']}]({Path(gate['output']).name}) |"
         )
+    if any(gate["name"] == "tests" and gate["exit_code"] != 0 for gate in result["gates"]):
+        lines.extend(["", "失败测试标识（仅源码文件、类和函数；参数及诊断内容已省略）："])
+        failed = _failed_test_identities(directory / "pytest.xml")
+        if failed is None:
+            lines.append("测试结果 XML 不可解析；未展示测试标识。")
+        elif not failed:
+            lines.append("测试结果没有可核验的失败测试标识。")
+        else:
+            lines.extend(
+                f"- `{identity}`（{kind}）"
+                for identity, kind in failed[:MAX_REPORTED_TEST_FAILURES]
+            )
+            if len(failed) > MAX_REPORTED_TEST_FAILURES:
+                lines.append(f"另有 {len(failed) - MAX_REPORTED_TEST_FAILURES} 项未列出。")
     if (directory / "test-artifacts").is_dir():
         lines.extend(["", "[测试故障与恢复原始目录](test-artifacts/)保留在本次结果目录中。"])
     acceptance = result.get("acceptance")
