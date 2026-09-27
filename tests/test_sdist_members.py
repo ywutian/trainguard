@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import io
 import subprocess
@@ -40,10 +41,11 @@ def test_source_distribution_excludes_generated_output_and_rejects_injection(
         probe.rmdir()
     archive_path = tmp_path / f"trainguard-{version}.tar.gz"
     verifier = _verifier()
-    assert verifier.verify_sdist(root, archive_path, version) > 100
+    assert verifier.verify_sdist(root, archive_path, version) > 0
     with tarfile.open(archive_path, "r:gz") as archive:
         assert not any("release-output-probe" in member.name for member in archive)
         assert not any("/verification/" in member.name for member in archive)
+        assert not any("/docs/experiments/" in member.name for member in archive)
 
     injected = tmp_path / "injected.tar.gz"
     with tarfile.open(archive_path, "r:gz") as reviewed, tarfile.open(
@@ -57,3 +59,29 @@ def test_source_distribution_excludes_generated_output_and_rejects_injection(
         altered.addfile(extra, io.BytesIO(payload))
     with pytest.raises(ValueError, match="file set differs"):
         verifier.verify_sdist(root, injected, version)
+
+    altered_metadata = tmp_path / "altered-metadata.tar.gz"
+    with tarfile.open(archive_path, "r:gz") as reviewed, tarfile.open(
+        altered_metadata, "w:gz"
+    ) as altered:
+        for member in reviewed:
+            if member.name.endswith("/PKG-INFO"):
+                content = reviewed.extractfile(member).read() + b"Changed: true\n"
+                replacement = copy.copy(member)
+                replacement.size = len(content)
+                altered.addfile(replacement, io.BytesIO(content))
+            else:
+                altered.addfile(member, reviewed.extractfile(member))
+    with pytest.raises(ValueError, match="complete source distribution differs"):
+        verifier.verify_sdist(root, altered_metadata, version)
+
+
+def test_source_distribution_preflight_rejects_untracked_eligible_file() -> None:
+    root = Path(__file__).parents[1]
+    probe = root / "examples" / f"unreviewed-{uuid.uuid4().hex}.txt"
+    try:
+        probe.write_text("unreviewed build input")
+        with pytest.raises(ValueError, match="untracked source distribution input"):
+            _verifier().verify_build_inputs(root)
+    finally:
+        probe.unlink(missing_ok=True)

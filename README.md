@@ -11,7 +11,7 @@ Version 0.3.3 added a single-file external CPU DDP workload interface for local 
 For the proposed customer deployment, integration, operations, security and commercial acceptance scope, see the [product closure and release gates](docs/plans/product-closure-2026-09-26.md). The current release is an experiment package and has not passed those production gates.
 
 The [customer pilot template](docs/commercial/customer-pilot-template.md), [operations runbook](docs/commercial/operations-runbook.md), and [machine-readable release gates](docs/commercial/release-gates.json) record the commercial scope and evidence required before customer production use. The existing code is MIT licensed; pilot fees cover agreed integration, validation and support services.
-The [market evidence](docs/commercial/market-evidence-2026-09-26.md) separates current competitor facts from unvalidated positioning and pricing hypotheses.
+The [market evidence](docs/commercial/market-evidence-2026-09-26.md) separates current competitor facts from unvalidated positioning and pricing hypotheses. The source distribution includes the commercial handoff documents but omits historical raw experiment evidence; the repository retains the full record.
 
 ## Quick start
 

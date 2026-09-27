@@ -30,9 +30,13 @@ packages = ["src/trainguard"]
 [tool.hatch.build.targets.sdist]
 only-include = [
     ".gitignore", "LICENSE", "README.md", "pyproject.toml", "uv.lock",
-    "configs", "docs", "examples", "scripts", "src", "tests",
+    "configs", "examples", "scripts", "src", "tests",
+    "docs/commercial/customer-pilot-template.md",
+    "docs/commercial/market-evidence-2026-09-26.md",
+    "docs/commercial/operations-runbook.md",
+    "docs/commercial/pilot-ledger-template.json",
+    "docs/plans/product-closure-2026-09-26.md",
 ]
-exclude = ["/docs/commercial/release-gates.json", "/docs/commercial/evidence/**"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

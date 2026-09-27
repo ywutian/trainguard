@@ -12,6 +12,7 @@ import uuid
 from pathlib import Path
 
 import torch
+from verify_sdist import verify_build_inputs
 
 from trainguard import __version__
 from trainguard.environment import source_sha256
@@ -145,7 +146,18 @@ def main() -> int:
     ]
     try:
         for name, command in commands:
-            gate = _run(directory, name, command)
+            if name == "package":
+                try:
+                    verify_build_inputs(Path.cwd())
+                except ValueError as exc:
+                    output = directory / "package.txt"
+                    output.write_text(f"source package input preflight failed: {exc}\n")
+                    gate = {"name": name, "command": command, "exit_code": 1,
+                            "output": str(output)}
+                else:
+                    gate = _run(directory, name, command)
+            else:
+                gate = _run(directory, name, command)
             result["gates"].append(gate)
             _persist(directory, result)
             if gate["exit_code"]:
