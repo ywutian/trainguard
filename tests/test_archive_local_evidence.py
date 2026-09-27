@@ -158,6 +158,8 @@ def archive_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "recovered_run_matches_reference": True, "support_export_checked": True,
         "run_data_preserved_after_uninstall": True, "run_data_files_checked": 1,
         "attributed_faults": 1, "recoveries": 1,
+        "torch_version": "2.14.0", "torch_cuda_version": None,
+        "linux_cpu_profile_checked": False,
     }) + "\n")
     (source / "upgrade-boundary.txt").write_text(json.dumps({
         "current_version": "0.3.6", "current_wheel_sha256": artifacts[wheel.name],
@@ -167,6 +169,8 @@ def archive_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "new_version_rejected_interrupted_old_run": True,
         "old_locked_environment_resumed_exactly": True,
         "old_run_files_unchanged_after_rejection": 1,
+        "new_torch_version": "2.14.0", "new_torch_cuda_version": None,
+        "new_linux_cpu_profile_checked": False,
     }) + "\n")
     from supply_chain import AUDIT_TOOL_VERSION, RAW_FILES, SBOM_TOOL_VERSION
 
@@ -218,6 +222,7 @@ def archive_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "schema_version": 1, "status": "PASS", "generated_at_utc": "2026-09-27T00:00:00+00:00",
         **chain_expected, "python_version": "3.12.12", "platform": "Darwin",
         "machine": "arm64", "audit_service": "osv", "audit_exit_code": 0,
+        "torch_runtime_version": "2.14.0", "torch_cuda_version": None,
         "audit_tool_version": AUDIT_TOOL_VERSION, "uv_version": "uv 0.9.1",
         "sbom_tool_version": SBOM_TOOL_VERSION,
         "sbom_private_references_removed": 0, "database_snapshot_available": False,
@@ -239,6 +244,72 @@ def archive_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(archiver, "_local_evidence", lambda *args: None)
     monkeypatch.setattr(archiver, "_receipt", lambda *args: None)
     return archiver, root, source
+
+
+def _linux_cpu_fixture(source: Path) -> None:
+    result_path = source / "result.json"
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    result["platform"] = "Linux-test-x86_64"
+    result["torch"] = "2.14.0+cpu"
+    result["acceptance"]["environment"].update(
+        platform=result["platform"], torch=result["torch"]
+    )
+    Path(result["acceptance_path"]).write_text(json.dumps(result["acceptance"]))
+    result_path.write_text(json.dumps(result))
+    for name, fields in (
+        ("fresh-install.txt", {
+            "torch_version": "2.14.0+cpu", "torch_cuda_version": None,
+            "linux_cpu_profile_checked": True,
+        }),
+        ("upgrade-boundary.txt", {
+            "new_torch_version": "2.14.0+cpu", "new_torch_cuda_version": None,
+            "new_linux_cpu_profile_checked": True,
+        }),
+    ):
+        path = source / name
+        summary = json.loads(path.read_text(encoding="utf-8"))
+        summary.update(fields)
+        path.write_text(json.dumps(summary) + "\n")
+    installed_path = source / "supply-chain-installed.json"
+    installed = json.loads(installed_path.read_text(encoding="utf-8"))
+    installed.append({"name": "torch", "version": "2.14.0+cpu"})
+    installed_path.write_text(json.dumps(installed))
+    sbom_path = source / "supply-chain-sbom.json"
+    sbom = json.loads(sbom_path.read_text(encoding="utf-8"))
+    torch_ref = "pkg:pypi/torch@2.14.0%2Bcpu"
+    sbom["components"].append({
+        "name": "torch", "version": "2.14.0+cpu", "type": "library",
+        "bom-ref": torch_ref, "licenses": [{"license": {"id": "BSD-3-Clause"}}],
+    })
+    sbom["dependencies"].append({"ref": torch_ref, "dependsOn": []})
+    sbom_path.write_text(json.dumps(sbom))
+    licenses_path = source / "supply-chain-licenses.json"
+    licenses = json.loads(licenses_path.read_text(encoding="utf-8"))
+    licenses["components"].append({
+        "name": "torch", "version": "2.14.0+cpu",
+        "licenses": [{"license": {"id": "BSD-3-Clause"}}],
+    })
+    licenses_path.write_text(json.dumps(licenses))
+    audit_path = source / "supply-chain-audit.json"
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    audit["dependencies"].append({"name": "torch", "version": "2.14.0+cpu", "vulns": []})
+    audit_path.write_text(json.dumps(audit))
+    from supply_chain import RAW_FILES
+
+    receipt_path = source / "supply-chain-receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt.update(
+        platform="Linux", machine="x86_64", torch_runtime_version="2.14.0+cpu",
+        torch_cuda_version=None, component_count=3, third_party_count=2,
+    )
+    receipt["files"] = {
+        name: hashlib.sha256((source / name).read_bytes()).hexdigest() for name in RAW_FILES
+    }
+    receipt_path.write_text(json.dumps(receipt))
+    gate_path = source / "supply-chain.txt"
+    gate = json.loads(gate_path.read_text(encoding="utf-8"))
+    gate.update(component_count=3, third_party_count=2)
+    gate_path.write_text(json.dumps(gate) + "\n")
 
 
 def test_archive_keeps_original_hashes_and_removes_private_test_text(archive_fixture) -> None:
@@ -334,6 +405,63 @@ def test_archived_receipts_pass_the_release_evidence_verifier(
         receipt = checker._receipt(output / f"{gate_id}.json", gate_id, source_digest,
                                    artifacts, previous)
         assert receipt["decision"] == "PASS"
+
+
+def test_linux_cpu_archive_preserves_runtime_identity_for_release_verification(
+    archive_fixture, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archiver, root, source = archive_fixture
+    _linux_cpu_fixture(source)
+    import check_release_readiness as checker
+    from supply_chain import verify_supply_chain
+
+    monkeypatch.setattr(checker, "__file__", str(root / "scripts/check_release_readiness.py"))
+    monkeypatch.setattr(checker, "execution_inputs_sha256", lambda current: "2" * 64)
+    monkeypatch.setattr(checker, "require_evidence_only_descendant", lambda *args: None)
+    monkeypatch.setattr(checker, "_collected_test_identities", lambda current: {
+        ("tests.test_sample", f"test_case_{number:03d}") for number in range(160)
+    })
+    monkeypatch.setattr(checker, "_verify_supply_chain", verify_supply_chain)
+    monkeypatch.setattr(archiver, "_local_evidence", checker._local_evidence)
+    monkeypatch.setattr(archiver, "_receipt", checker._receipt)
+
+    output = archiver.archive(source, "0.3.6-linux-cpu", root)
+    raw = output / "raw"
+    receipt = json.loads((raw / "supply-chain-receipt.json").read_text())
+    install = json.loads((raw / "fresh-install.txt").read_text())
+    upgrade = json.loads((raw / "upgrade-boundary.txt").read_text())
+    assert (receipt["torch_runtime_version"], receipt["torch_cuda_version"]) == (
+        "2.14.0+cpu", None
+    )
+    assert (install["torch_version"], install["torch_cuda_version"],
+            install["linux_cpu_profile_checked"]) == ("2.14.0+cpu", None, True)
+    assert (upgrade["new_torch_version"], upgrade["new_torch_cuda_version"],
+            upgrade["new_linux_cpu_profile_checked"]) == ("2.14.0+cpu", None, True)
+    record = json.loads((output / "local-validation.json").read_text())
+    previous = json.loads((root / "docs/commercial/release-gates.json").read_text())[
+        "previous_release"
+    ]
+    for gate_id in ("local_package", "local_cpu"):
+        assert checker._receipt(output / f"{gate_id}.json", gate_id, "1" * 64,
+                                record["artifacts"], previous)["decision"] == "PASS"
+
+
+@pytest.mark.parametrize("field, changed", [
+    ("torch_runtime_version", "2.14.0"),
+    ("torch_cuda_version", "13.0"),
+])
+def test_linux_cpu_archive_rejects_wrong_runtime_profile(
+    archive_fixture, field: str, changed: str,
+) -> None:
+    archiver, root, source = archive_fixture
+    _linux_cpu_fixture(source)
+    receipt_path = source / "supply-chain-receipt.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt[field] = changed
+    receipt_path.write_text(json.dumps(receipt))
+    with pytest.raises(ValueError, match="CPU-only"):
+        archiver.archive(source, "0.3.6-linux-cpu", root)
+    assert not (root / "docs/commercial/evidence/local-0.3.6-linux-cpu").exists()
 
 
 @pytest.mark.parametrize("private_text", [
@@ -562,6 +690,7 @@ def test_supply_chain_projection_preserves_graph_without_private_references(
                 "first_party_license_sha256", "security_channel_record_sha256",
             )},
             "python_version": "3.12.12", "platform": "Darwin", "machine": "arm64",
+            "torch_runtime_version": "2.14.0", "torch_cuda_version": None,
             "audit_service": "osv", "audit_exit_code": 0, "audit_tool_version": "2.10.1",
             "uv_version": "uv 0.9.1", "sbom_tool_version": "7.4.0",
             "sbom_private_references_removed": 0, "database_snapshot_available": False,
