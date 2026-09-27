@@ -1,0 +1,346 @@
+{
+  "cases": [
+    {
+      "expected_exact": true,
+      "fault": "worker_exit",
+      "fault_attributed": true,
+      "metrics": {
+        "attempt_gap_seconds": 0.056241,
+        "checkpoint_bytes": 5931986,
+        "checkpoint_count": 4,
+        "checksum_commit_seconds": 0.057600750005804,
+        "eligibility_lag_seconds": 0.07102108298568055,
+        "main_thread_wait_seconds": 0.0019069180125370622,
+        "preparation_seconds": 0.0016627500008326024,
+        "recomputed_steps": 1,
+        "recovery_rto_seconds": 1.516535,
+        "restart_seconds": 0.056241,
+        "staging_seconds": 0.0,
+        "upload_seconds": 0.06125570897711441,
+        "writing_seconds": 0.1336373329977505
+      },
+      "mode": "sync",
+      "name": "sync-worker_exit",
+      "omit_state": "none",
+      "recovery_count": 1,
+      "status": "PASSED",
+      "validation": {
+        "comparison_kind": "INDEPENDENT_REFERENCE",
+        "difference_sha256": [],
+        "independent_reference": true,
+        "passed": true
+      }
+    },
+    {
+      "expected_exact": true,
+      "fault": "worker_exit",
+      "fault_attributed": true,
+      "metrics": {
+        "attempt_gap_seconds": 0.046626,
+        "checkpoint_bytes": 5931990,
+        "checkpoint_count": 4,
+        "checksum_commit_seconds": 0.03370612500293646,
+        "eligibility_lag_seconds": 0.04228491600952111,
+        "main_thread_wait_seconds": 0.011728416007827036,
+        "preparation_seconds": 0.0017155419918708503,
+        "recomputed_steps": 2,
+        "recovery_rto_seconds": 1.576983,
+        "restart_seconds": 0.046626,
+        "staging_seconds": 0.004741627009934746,
+        "upload_seconds": 0.10388108299230225,
+        "writing_seconds": 0.14753312300308608
+      },
+      "mode": "async",
+      "name": "async-worker_exit",
+      "omit_state": "none",
+      "recovery_count": 1,
+      "status": "PASSED",
+      "validation": {
+        "comparison_kind": "INDEPENDENT_REFERENCE",
+        "difference_sha256": [],
+        "independent_reference": true,
+        "passed": true
+      }
+    },
+    {
+      "expected_exact": true,
+      "fault": "save_interrupt",
+      "fault_attributed": true,
+      "metrics": {
+        "attempt_gap_seconds": 0.049991,
+        "checkpoint_bytes": 5931998,
+        "checkpoint_count": 4,
+        "checksum_commit_seconds": 0.06280358400545083,
+        "eligibility_lag_seconds": 0.0778848320042016,
+        "main_thread_wait_seconds": 0.0016240840050159022,
+        "preparation_seconds": 0.001721208987873979,
+        "recomputed_steps": 1,
+        "recovery_rto_seconds": 1.608291,
+        "restart_seconds": 0.049991,
+        "staging_seconds": 0.0,
+        "upload_seconds": 0.06535479100421071,
+        "writing_seconds": 0.14463958400301635
+      },
+      "mode": "sync",
+      "name": "sync-save_interrupt",
+      "omit_state": "none",
+      "recovery_count": 1,
+      "status": "PASSED",
+      "validation": {
+        "comparison_kind": "INDEPENDENT_REFERENCE",
+        "difference_sha256": [],
+        "independent_reference": true,
+        "passed": true
+      }
+    },
+    {
+      "expected_exact": true,
+      "fault": "save_interrupt",
+      "fault_attributed": true,
+      "metrics": {
+        "attempt_gap_seconds": 0.048459,
+        "checkpoint_bytes": 5932002,
+        "checkpoint_count": 4,
+        "checksum_commit_seconds": 0.03274508399772458,
+        "eligibility_lag_seconds": 0.04248808400006965,
+        "main_thread_wait_seconds": 0.04125312500400469,
+        "preparation_seconds": 0.001765458975569345,
+        "recomputed_steps": 1,
+        "recovery_rto_seconds": 1.584078,
+        "restart_seconds": 0.048459,
+        "staging_seconds": 0.004746706996229477,
+        "upload_seconds": 0.1312207919982029,
+        "writing_seconds": 0.17563508299645036
+      },
+      "mode": "async",
+      "name": "async-save_interrupt",
+      "omit_state": "none",
+      "recovery_count": 1,
+      "status": "PASSED",
+      "validation": {
+        "comparison_kind": "INDEPENDENT_REFERENCE",
+        "difference_sha256": [],
+        "independent_reference": true,
+        "passed": true
+      }
+    },
+    {
+      "expected_exact": true,
+      "fault": "corrupt",
+      "fault_attributed": true,
+      "metrics": {
+        "attempt_gap_seconds": 0.049148,
+        "checkpoint_bytes": 7415011,
+        "checkpoint_count": 5,
+        "checksum_commit_seconds": 0.06801562597684097,
+        "eligibility_lag_seconds": 0.08534883199899923,
+        "main_thread_wait_seconds": 0.0021109579683979973,
+        "preparation_seconds": 0.002107583000906743,
+        "recomputed_steps": 1,
+        "recovery_rto_seconds": 1.578234,
+        "restart_seconds": 0.049148,
+        "staging_seconds": 0.0,
+        "upload_seconds": 0.0989531660306966,
+        "writing_seconds": 0.18619554197357502
+      },
+      "mode": "sync",
+      "name": "sync-corrupt",
+      "omit_state": "none",
+      "recovery_count": 1,
+      "status": "PASSED",
+      "validation": {
+        "comparison_kind": "INDEPENDENT_REFERENCE",
+        "difference_sha256": [],
+        "independent_reference": true,
+        "passed": true
+      }
+    },
+    {
+      "expected_exact": true,
+      "fault": "corrupt",
+      "fault_attributed": true,
+      "metrics": {
+        "attempt_gap_seconds": 0.050948,
+        "checkpoint_bytes": 7415016,
+        "checkpoint_count": 5,
+        "checksum_commit_seconds": 0.03879070900438819,
+        "eligibility_lag_seconds": 0.050081667010090314,
+        "main_thread_wait_seconds": 0.04477479100751225,
+        "preparation_seconds": 0.002121749988873489,
+        "recomputed_steps": 2,
+        "recovery_rto_seconds": 1.550817,
+        "restart_seconds": 0.050948,
+        "staging_seconds": 0.005635624984279275,
+        "upload_seconds": 0.16963904100703076,
+        "writing_seconds": 0.22190470999339595
+      },
+      "mode": "async",
+      "name": "async-corrupt",
+      "omit_state": "none",
+      "recovery_count": 1,
+      "status": "PASSED",
+      "validation": {
+        "comparison_kind": "INDEPENDENT_REFERENCE",
+        "difference_sha256": [],
+        "independent_reference": true,
+        "passed": true
+      }
+    },
+    {
+      "expected_exact": true,
+      "fault": "hang",
+      "fault_attributed": true,
+      "metrics": {
+        "attempt_gap_seconds": 0.046561,
+        "checkpoint_bytes": 5931958,
+        "checkpoint_count": 4,
+        "checksum_commit_seconds": 0.0654408739937935,
+        "eligibility_lag_seconds": 0.07995599899732042,
+        "main_thread_wait_seconds": 0.0017814580060075969,
+        "preparation_seconds": 0.0017145000019809231,
+        "recomputed_steps": 1,
+        "recovery_rto_seconds": 2.032069,
+        "restart_seconds": 0.046561,
+        "staging_seconds": 0.0,
+        "upload_seconds": 0.06591695900715422,
+        "writing_seconds": 0.14727166699594818
+      },
+      "mode": "sync",
+      "name": "sync-hang",
+      "omit_state": "none",
+      "recovery_count": 1,
+      "status": "PASSED",
+      "validation": {
+        "comparison_kind": "INDEPENDENT_REFERENCE",
+        "difference_sha256": [],
+        "independent_reference": true,
+        "passed": true
+      }
+    },
+    {
+      "expected_exact": false,
+      "fault": "worker_exit",
+      "fault_attributed": true,
+      "metrics": {
+        "attempt_gap_seconds": 0.046547,
+        "checkpoint_bytes": 5931928,
+        "checkpoint_count": 4,
+        "checksum_commit_seconds": 0.06380933300533798,
+        "eligibility_lag_seconds": 0.07812466699397191,
+        "main_thread_wait_seconds": 0.001879041999927722,
+        "preparation_seconds": 0.0017267920193262398,
+        "recomputed_steps": 1,
+        "recovery_rto_seconds": 1.632203,
+        "restart_seconds": 0.046547,
+        "staging_seconds": 0.0,
+        "upload_seconds": 0.06482458299433347,
+        "writing_seconds": 0.1444528749998426
+      },
+      "mode": "sync",
+      "name": "omit-rng",
+      "omit_state": "rng",
+      "recovery_count": 1,
+      "status": "PASSED",
+      "validation": {
+        "comparison_kind": "INDEPENDENT_REFERENCE",
+        "difference_sha256": [
+          "087422ffe3b0ab3887890c597513a0b79488220a8ddb6975ba2a1795f3c5be25",
+          "29f663f2807f2f7afaf85ff418e3090a722b13aa4436f4ec2c1dc8365948aa3c"
+        ],
+        "independent_reference": true,
+        "passed": false
+      }
+    },
+    {
+      "expected_exact": false,
+      "fault": "worker_exit",
+      "fault_attributed": true,
+      "metrics": {
+        "attempt_gap_seconds": 0.04699,
+        "checkpoint_bytes": 5931978,
+        "checkpoint_count": 4,
+        "checksum_commit_seconds": 0.07183795700257178,
+        "eligibility_lag_seconds": 0.0863813339965418,
+        "main_thread_wait_seconds": 0.0016665419971104711,
+        "preparation_seconds": 0.0016836680006235838,
+        "recomputed_steps": 1,
+        "recovery_rto_seconds": 1.670309,
+        "restart_seconds": 0.04699,
+        "staging_seconds": 0.0,
+        "upload_seconds": 0.06549929099855945,
+        "writing_seconds": 0.1532292929914547
+      },
+      "mode": "sync",
+      "name": "omit-optimizer",
+      "omit_state": "optimizer",
+      "recovery_count": 1,
+      "status": "PASSED",
+      "validation": {
+        "comparison_kind": "INDEPENDENT_REFERENCE",
+        "difference_sha256": [
+          "087422ffe3b0ab3887890c597513a0b79488220a8ddb6975ba2a1795f3c5be25",
+          "29f663f2807f2f7afaf85ff418e3090a722b13aa4436f4ec2c1dc8365948aa3c"
+        ],
+        "independent_reference": true,
+        "passed": false
+      }
+    },
+    {
+      "expected_exact": false,
+      "fault": "worker_exit",
+      "fault_attributed": true,
+      "metrics": {
+        "attempt_gap_seconds": 0.046692,
+        "checkpoint_bytes": 5931966,
+        "checkpoint_count": 4,
+        "checksum_commit_seconds": 0.07129908497154247,
+        "eligibility_lag_seconds": 0.08600716599903535,
+        "main_thread_wait_seconds": 0.0016676660161465406,
+        "preparation_seconds": 0.0018375829968135804,
+        "recomputed_steps": 1,
+        "recovery_rto_seconds": 1.609814,
+        "restart_seconds": 0.046692,
+        "staging_seconds": 0.0,
+        "upload_seconds": 0.0672224589943653,
+        "writing_seconds": 0.1546786230028374
+      },
+      "mode": "sync",
+      "name": "omit-cursor",
+      "omit_state": "cursor",
+      "recovery_count": 1,
+      "status": "PASSED",
+      "validation": {
+        "comparison_kind": "INDEPENDENT_REFERENCE",
+        "difference_sha256": [
+          "087422ffe3b0ab3887890c597513a0b79488220a8ddb6975ba2a1795f3c5be25",
+          "29f663f2807f2f7afaf85ff418e3090a722b13aa4436f4ec2c1dc8365948aa3c",
+          "1966542f03c52eaee8dfa3fcdd0b4eecf1b19ec3b61dbd66015f2b9673bb4837",
+          "522f8fb9b5a0a98febd455cd0904b00699a40115caad7ab4bd127750e0d0bbcc",
+          "ee6bcdb851bacdce481e69b49daed74e84cf67b5ff900ac606f0578be7caae3e",
+          "879a52a7a52475322a100c39045e37a6b4e61e8a9ef2a85d5cb5804359c43996"
+        ],
+        "independent_reference": true,
+        "passed": false
+      }
+    }
+  ],
+  "config_sha256": "fcb727a860a2b18d73c35937c42da5a0a8642c753c10c8c8790687216b3fa304",
+  "environment": {
+    "device": "cpu",
+    "git_commit": "8a37796967dffc1b1bad0bdd3ded94fa01fae77a",
+    "platform_sha256": "4ea196754d55070ce8a794c4228efcab474c06474744c529db5fb695309cbaa9",
+    "python": "3.12.12",
+    "source_sha256": "0b022166ad57a9ef3f7f18e427a77a1430a68d2c51fbc3afab170ade87e7c925",
+    "storage": "local filesystem",
+    "torch": "2.14.0",
+    "world_size": 2
+  },
+  "reference_status": "VALIDATED",
+  "run": {
+    "backend": "gloo",
+    "device": "cpu",
+    "total_steps": 4,
+    "world_size": 2
+  },
+  "status": "SUCCEEDED"
+}
