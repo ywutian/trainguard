@@ -714,7 +714,11 @@ def resume(run_dir: Path) -> bool:
     ) and status.get("experiment_authorized") is not True:
         raise ExperimentNotAuthorizedError("saved experiment authorization is missing")
     current = environment_snapshot(config.run.world_size, config.run.device, run_dir)
-    for field in ("source_sha256", "python", "torch", "versions"):
+    for field in (
+        "source_sha256", "python", "torch", "versions", "installed_distributions"
+    ):
+        if field not in status["environment"]:
+            raise ValueError(f"saved run runtime {field} identity is missing")
         if current[field] != status["environment"].get(field):
             raise ValueError(f"saved run source or runtime {field} differs")
     if config.external_workload is not None:

@@ -374,7 +374,9 @@ def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
         ):
             differences.append("run environment identity is missing")
         else:
-            for field in ("source_sha256", "python", "torch", "versions"):
+            for field in (
+                "source_sha256", "python", "torch", "versions", "installed_distributions"
+            ):
                 if (
                     reference_environment.get(field) is None
                     or reference_environment.get(field) != recovered_environment.get(field)

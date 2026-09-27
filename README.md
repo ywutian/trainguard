@@ -123,6 +123,8 @@ uv run python scripts/verify_wheel.py dist/trainguard-0.3.6-py3-none-any.whl
 uv run python scripts/verify_install.py dist/trainguard-0.3.6-py3-none-any.whl
 ```
 
+Current runs also record every installed distribution's normalized name, version, and digests of its `RECORD` and optional `direct_url.json` metadata. Resume, acceptance, benchmark, and exact run comparison reject a changed or missing inventory. Runs reject installed packages without `RECORD` and third-party editable installs whose source is not frozen; the project's own editable install uses its package source fingerprint. Origin paths are not written to the run record. This inventory identifies installed package metadata but does not rehash every installed file or control dynamic imports and external side effects.
+
 See the [full closure assessment](docs/analysis/closure-assessment-2026-09-26.md) for the supported boundary, infrastructure gates and next acceptance steps.
 The [0.2.2 local acceptance report](docs/experiments/closure-2026-09-26.md) contains the test, campaign, build and package evidence.
 

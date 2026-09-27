@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import importlib.metadata
+import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -14,11 +16,53 @@ from pathlib import Path
 import torch
 
 
+def installed_distributions() -> list[dict[str, str | None]]:
+    """Record the installed package metadata used by this interpreter."""
+    packages = []
+    names = set()
+    for distribution in importlib.metadata.distributions():
+        original_name = distribution.metadata.get("Name")
+        version = distribution.version
+        record = distribution.read_text("RECORD")
+        if not original_name or not version or not record or not record.strip():
+            raise ValueError("installed package identity is incomplete")
+        name = re.sub(r"[-_.]+", "-", original_name).lower()
+        if name in names:
+            raise ValueError(f"installed package identity is ambiguous: {name}")
+        names.add(name)
+        direct_url = distribution.read_text("direct_url.json")
+        if direct_url is not None:
+            try:
+                origin = json.loads(direct_url)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"installed package origin is invalid: {name}") from exc
+            if not isinstance(origin, dict):
+                raise ValueError(f"installed package origin is invalid: {name}")
+            directory_info = origin.get("dir_info", {})
+            if not isinstance(directory_info, dict):
+                raise ValueError(f"installed package origin is invalid: {name}")
+            if directory_info.get("editable") and name != "trainguard":
+                raise ValueError(f"editable dependency has no frozen source identity: {name}")
+        packages.append(
+            {
+                "name": name,
+                "version": version,
+                "record_sha256": hashlib.sha256(record.encode("utf-8")).hexdigest(),
+                "direct_url_sha256": (
+                    hashlib.sha256(direct_url.encode("utf-8")).hexdigest()
+                    if direct_url is not None
+                    else None
+                ),
+            }
+        )
+    return sorted(packages, key=lambda package: package["name"])
+
+
 def source_sha256() -> str:
     source = Path(__file__).resolve().parent
     digest = hashlib.sha256()
     # Package bytes have the same identity in a checkout and an installed wheel.
-    # Resolved dependency versions and Python are checked separately at resume.
+    # Installed package metadata and Python are checked separately at resume.
     for path in sorted(source.rglob("*.py")):
         digest.update(path.relative_to(source).as_posix().encode())
         digest.update(path.read_bytes())
@@ -67,6 +111,7 @@ def environment_snapshot(world_size: int, device: str, storage_path: Path) -> di
         "storage_device": storage_path.stat().st_dev,
         "disk_free_bytes": disk.free,
         "versions": versions,
+        "installed_distributions": installed_distributions(),
         "source_sha256": source_sha256(),
         "git_commit": git("rev-parse", "HEAD"),
         "git_dirty": None if git_status is None else bool(git_status),

@@ -88,6 +88,25 @@ def test_worker_exit_recovery_matches_reference(tmp_path: Path) -> None:
     wrong_environment = validate_runs(reference, recovered)
     assert not wrong_environment["passed"]
     assert any("run environment source_sha256 differs" in item for item in wrong_environment["differences"])
+    status["environment"]["source_sha256"] = json.loads(
+        (reference / "run.json").read_text()
+    )["environment"]["source_sha256"]
+    status["environment"]["installed_distributions"] = []
+    run_path.write_text(json.dumps(status))
+    wrong_dependencies = validate_runs(reference, recovered)
+    assert not wrong_dependencies["passed"]
+    assert any(
+        "run environment installed_distributions differs" in item
+        for item in wrong_dependencies["differences"]
+    )
+    del status["environment"]["installed_distributions"]
+    run_path.write_text(json.dumps(status))
+    missing_dependencies = validate_runs(reference, recovered)
+    assert not missing_dependencies["passed"]
+    assert any(
+        "run environment installed_distributions differs" in item
+        for item in missing_dependencies["differences"]
+    )
 
 
 def test_corrupted_newest_checkpoint_uses_previous_step(tmp_path: Path) -> None:

@@ -500,7 +500,12 @@ def resume_benchmark(directory: Path) -> Path:
             raise ValueError("benchmark schema is not resumable")
         base = ProjectConfig.model_validate(results["config"])
         current = environment_snapshot(base.run.world_size, base.run.device, directory)
-        for field in ("source_sha256", "torch", "python", "versions", "world_size", "device"):
+        for field in (
+            "source_sha256", "torch", "python", "versions", "installed_distributions",
+            "world_size", "device",
+        ):
+            if field not in results["environment"]:
+                raise ValueError(f"benchmark runtime {field} identity is missing")
             if current[field] != results["environment"][field]:
                 raise ValueError(f"benchmark source or runtime {field} differs")
         for mode in ("none", "sync", "async"):

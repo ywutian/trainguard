@@ -294,7 +294,11 @@ def resume_campaign(directory: Path) -> Path:
             raise ValueError("acceptance schema is not resumable")
         base = ProjectConfig.model_validate(result["config"])
         current = environment_snapshot(base.run.world_size, base.run.device, directory)
-        for field in ("source_sha256", "torch", "python", "versions"):
+        for field in (
+            "source_sha256", "torch", "python", "versions", "installed_distributions"
+        ):
+            if field not in result["environment"]:
+                raise ValueError(f"acceptance runtime {field} identity is missing")
             if result["environment"][field] != current[field]:
                 raise ValueError(f"acceptance source or runtime {field} differs")
         return _execute(directory, result)
