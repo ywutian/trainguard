@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import csv
 import hashlib
+import importlib.machinery
 import importlib.metadata
 import json
 import os
@@ -173,6 +174,46 @@ def _zip_import_container(path: Path) -> tuple[Path, str] | None:
     return None
 
 
+def _installed_import_entries_sha256(root: Path) -> str:
+    """Bind direct module and package entry files without volatile bytecode caches."""
+    if not root.is_dir() or root.is_symlink():
+        raise ValueError("installed Python import root is missing or unsafe")
+    suffixes = (".py", ".pyc", *importlib.machinery.EXTENSION_SUFFIXES)
+    digest = hashlib.sha256()
+    files = 0
+    total_bytes = 0
+
+    def add(path: Path) -> None:
+        nonlocal files, total_bytes
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("installed Python import entry is not a regular file")
+        files += 1
+        total_bytes += metadata.st_size
+        if files > 100000 or total_bytes > 2 * 1024**3:
+            raise ValueError("installed Python import entries exceed identity limits")
+        name = os.fsencode(path.relative_to(root).as_posix())
+        digest.update(len(name).to_bytes(8, "big"))
+        digest.update(name)
+        digest.update(metadata.st_size.to_bytes(8, "big"))
+        with path.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+
+    for entry in sorted(root.iterdir()):
+        if entry.name == "__pycache__":
+            continue
+        if entry.name.endswith(suffixes):
+            add(entry)
+        elif entry.is_dir():
+            if entry.is_symlink():
+                raise ValueError("installed Python package entry is linked")
+            for child in sorted(entry.iterdir()):
+                if child.name.startswith("__init__.") and child.name.endswith(suffixes):
+                    add(child)
+    return digest.hexdigest()
+
+
 def _shadows_application(path: Path, source_root: Path) -> bool:
     if path == source_root:
         return False
@@ -315,6 +356,10 @@ def startup_identity_sha256() -> str:
         "sys_path": [str(path) for path in paths],
         "pythonpath_entries": import_entries,
         "extra_import_paths": extra_import_paths,
+        "installed_import_entries": [
+            (str(root), _installed_import_entries_sha256(root))
+            for root in sorted(installed_roots)
+        ],
         "startup_files": startup_files,
         "hooks": hooks,
         "interpreter_flags": list(sys.flags),

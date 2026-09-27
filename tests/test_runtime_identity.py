@@ -220,6 +220,42 @@ def test_startup_identity_binds_interpreter_controls(tmp_path: Path) -> None:
     assert snapshot("0", tmp_path / "cache-b")["identity"] != snapshots[0]["identity"]
 
 
+def test_startup_identity_binds_installed_import_entries_without_cache_churn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installed = tmp_path / "site-packages"
+    installed.mkdir()
+    (installed / "_virtualenv.pth").write_text("import _virtualenv\n")
+    module = installed / "_virtualenv.py"
+    module.write_text("value = 'one'\n")
+    package = installed / "customer_package"
+    package.mkdir()
+    initializer = package / "__init__.py"
+    initializer.write_text("value = 'one'\n")
+    native = installed / ("native" + environment.importlib.machinery.EXTENSION_SUFFIXES[0])
+    native.write_bytes(b"one")
+    paths = environment.sysconfig.get_paths()
+    with monkeypatch.context() as patch:
+        patch.syspath_prepend(str(installed))
+        patch.setattr(environment.sysconfig, "get_paths", lambda: {
+            **paths, "purelib": str(installed), "platlib": str(installed),
+        })
+        first = environment.startup_identity_sha256()
+        module.write_text("value = 'two'\n")
+        second = environment.startup_identity_sha256()
+        assert second != first
+        initializer.write_text("value = 'two'\n")
+        third = environment.startup_identity_sha256()
+        assert third != second
+        native.write_bytes(b"two")
+        fourth = environment.startup_identity_sha256()
+        assert fourth != third
+        cache = installed / "__pycache__"
+        cache.mkdir()
+        (cache / "_virtualenv.cpython-312.pyc").write_bytes(b"generated")
+        assert environment.startup_identity_sha256() == fourth
+
+
 def test_added_import_root_cannot_shadow_application(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
