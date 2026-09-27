@@ -2,15 +2,89 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import stat
 from pathlib import Path
 
 from trainguard.events import utc_now
 
 
 class RunStore:
-    def __init__(self, path: Path) -> None:
-        self.database = sqlite3.connect(path)
+    def __init__(self, path: Path, *, existing_only: bool = False) -> None:
+        path = Path(path).absolute()
+        if not path.exists() and not path.is_symlink():
+            if existing_only:
+                raise FileNotFoundError("run index is missing")
+            flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(path, flags, 0o600)
+            os.close(descriptor)
+        self.database = self._open_verified(path)
+        try:
+            if existing_only:
+                self._verify_existing_schema()
+                return
+            self._initialize_schema()
+        except Exception:
+            self.database.close()
+            raise
+
+    @staticmethod
+    def _open_verified(path: Path) -> sqlite3.Connection:
+        """Open an existing regular index without following a replaced path."""
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                raise ValueError("run index is not a regular file")
+            expected = path.parent.resolve() / path.name
+            database = sqlite3.connect(path.as_uri() + "?mode=rw", uri=True)
+            try:
+                listed = database.execute("PRAGMA database_list").fetchone()
+                after = path.lstat()
+                if (
+                    not stat.S_ISREG(after.st_mode)
+                    or after.st_nlink != 1
+                    or (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)
+                    or listed is None
+                    or Path(listed[2]).resolve() != expected
+                ):
+                    raise ValueError("run index changed while opening")
+            except Exception:
+                database.close()
+                raise
+            return database
+        finally:
+            os.close(descriptor)
+
+    def _verify_existing_schema(self) -> None:
+        result = self.database.execute("PRAGMA quick_check").fetchone()
+        if result != ("ok",):
+            raise sqlite3.DatabaseError("run index integrity check failed")
+        for query in (
+            (
+                "SELECT run_id, status, config_fingerprint, started_at, updated_at, "
+                "evidence_schema_version, measurement_sha256 FROM runs LIMIT 0"
+            ),
+            (
+                "SELECT attempt_id, run_id, number, status, resume_checkpoint, resume_step, "
+                "resume_consumed_batches, pid, pid_identity, started_at, finished_at, "
+                "exit_code, reason FROM attempts LIMIT 0"
+            ),
+            (
+                "SELECT path, run_id, attempt_id, global_step, status, reason, checked_at "
+                "FROM checkpoints LIMIT 0"
+            ),
+            (
+                "SELECT id, run_id, from_attempt, to_attempt, checkpoint_path, resume_step, "
+                "recomputed_steps, created_at FROM recoveries LIMIT 0"
+            ),
+        ):
+            self.database.execute(query)
+        self.database.row_factory = sqlite3.Row
+        self.database.execute("PRAGMA foreign_keys=ON")
+
+    def _initialize_schema(self) -> None:
         self.database.row_factory = sqlite3.Row
         self.database.execute("PRAGMA foreign_keys=ON")
         self.database.executescript(

@@ -183,9 +183,13 @@ def test_resume_after_run_metadata_before_sqlite_insert(tmp_path: Path, monkeypa
 def test_missing_index_after_training_started_fails_closed(tmp_path: Path) -> None:
     run_dir, succeeded = run(_config(tmp_path, checkpoint="sync"), tmp_path / "runs")
     assert succeeded
-    (run_dir / "run.sqlite3").unlink()
-    with pytest.raises(ValueError, match="run index is missing"):
-        resume(run_dir)
+    index_path = run_dir / "run.sqlite3"
+    index_path.unlink()
+    assert not resume(run_dir)
+    assert not index_path.exists()
+    saved = json.loads((run_dir / "run.json").read_text())
+    assert saved["status"] == "FAILED"
+    assert "run index is missing" in saved["reason"]
 
 
 def test_async_save_interruption_and_stall_recover(tmp_path: Path) -> None:

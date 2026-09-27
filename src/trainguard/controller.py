@@ -874,7 +874,14 @@ def run(
     if sample_key is not None:
         status["sample_key_id"] = sample_key_id(sample_key)
     write_json_atomic(run_dir / "run.json", status)
-    store = RunStore(run_dir / "run.sqlite3")
+    try:
+        store = RunStore(run_dir / "run.sqlite3")
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        _set_status(
+            run_dir, status, "FAILED",
+            f"run index initialization failed: {type(exc).__name__}: {exc}",
+        )
+        return run_dir, False
     try:
         (run_dir / "run.sqlite3").chmod(0o600)
         store.create_run(run_id, config.fingerprint(), started_at, evidence_schema_version=2)
@@ -958,7 +965,13 @@ def resume(run_dir: Path) -> bool:
         status.get("started_at"), str
     ):
         raise ValueError("saved run index identity is invalid")  # noqa: TRY004
-    store = RunStore(run_dir / "run.sqlite3")
+    try:
+        store = RunStore(run_dir / "run.sqlite3", existing_only=True)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        reason = f"saved run index is missing or unsafe: {type(exc).__name__}: {exc}"
+        if status["status"] == "SUCCEEDED":
+            return _invalidate_completed_run(run_dir, status, reason)
+        raise ValueError(reason) from exc
     try:
         with _controller_lock(run_dir):
             identity = store.run_identity(status["run_id"])

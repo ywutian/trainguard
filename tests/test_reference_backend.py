@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import pickle
 import shutil
 import sqlite3
@@ -27,6 +28,7 @@ from trainguard.remote_protocol import (
     RemoteCheckpointProtocol,
     ResponseLost,
 )
+from trainguard.run_store import RunStore
 from trainguard.support import SupportBundleError, build_support_bundle
 from trainguard.validation import validate_runs
 
@@ -487,6 +489,105 @@ def test_completed_reference_claim_rejects_saved_identity_or_authorization_chang
     assert json.loads(status_path.read_text())["status"] == "FAILED"
     with sqlite3.connect(run_dir / "run.sqlite3") as index:
         assert index.execute("SELECT status FROM runs").fetchone() == ("FAILED",)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    ["missing", "external-symlink", "corrupt", "missing-measurement-column"],
+)
+def test_completed_reference_run_rejects_unsafe_or_incomplete_index_without_repair(
+    tmp_path: Path, damage: str
+) -> None:
+    run_dir, ok = controller.run(
+        _sync_without_fault(tmp_path), tmp_path / "runs",
+        allow_experiment=True, reference_store_path=tmp_path / "objects.sqlite3",
+    )
+    assert ok, (run_dir / "launcher.log").read_text()
+    index_path = run_dir / "run.sqlite3"
+    external = tmp_path / "external.sqlite3"
+    external_digest = None
+    if damage == "missing":
+        index_path.unlink()
+    elif damage == "external-symlink":
+        with sqlite3.connect(external) as index:
+            index.execute("CREATE TABLE sentinel(value TEXT)")
+            index.execute("INSERT INTO sentinel VALUES ('original')")
+        external_digest = _digest(external)
+        index_path.unlink()
+        index_path.symlink_to(external)
+    elif damage == "corrupt":
+        index_path.write_bytes(b"invalid sqlite content")
+    else:
+        with sqlite3.connect(index_path) as index:
+            index.execute("ALTER TABLE runs DROP COLUMN measurement_sha256")
+        status_path = run_dir / "run.json"
+        saved = json.loads(status_path.read_text())
+        saved["measurement"] = None
+        write_json_atomic(status_path, saved)
+        assert not validate_runs(run_dir, run_dir)["passed"]
+    assert not controller.resume(run_dir)
+    saved = json.loads((run_dir / "run.json").read_text())
+    assert saved["status"] == "FAILED"
+    assert "saved run index is missing or unsafe" in saved["reason"]
+    if damage == "missing":
+        assert not index_path.exists()
+    elif damage == "external-symlink":
+        assert index_path.is_symlink()
+        assert _digest(external) == external_digest
+        with sqlite3.connect(external) as index:
+            assert index.execute("SELECT value FROM sentinel").fetchone() == ("original",)
+    elif damage == "corrupt":
+        assert index_path.read_bytes() == b"invalid sqlite content"
+    else:
+        with sqlite3.connect(index_path) as index:
+            columns = {row[1] for row in index.execute("PRAGMA table_info(runs)")}
+        assert "measurement_sha256" not in columns
+
+
+@pytest.mark.parametrize("damage", ["missing", "external-symlink"])
+def test_unfinished_run_does_not_recreate_or_follow_unsafe_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    with monkeypatch.context() as patch:
+        stopped = _stop_after_first_attempt(patch)
+        with pytest.raises(stopped):
+            controller.run(
+                _config(tmp_path, recover=True), tmp_path / "runs",
+                allow_experiment=True, reference_store_path=tmp_path / "objects.sqlite3",
+            )
+    run_dir = next((tmp_path / "runs").iterdir())
+    index_path = run_dir / "run.sqlite3"
+    external = tmp_path / "external.sqlite3"
+    digest = None
+    if damage == "external-symlink":
+        with sqlite3.connect(external) as index:
+            index.execute("CREATE TABLE sentinel(value TEXT)")
+            index.execute("INSERT INTO sentinel VALUES ('original')")
+        digest = _digest(external)
+    index_path.unlink()
+    if damage == "external-symlink":
+        index_path.symlink_to(external)
+    with pytest.raises(ValueError, match="saved run index is missing or unsafe"):
+        controller.resume(run_dir)
+    if damage == "missing":
+        assert not index_path.exists()
+    else:
+        assert index_path.is_symlink()
+        assert _digest(external) == digest
+    assert json.loads((run_dir / "run.json").read_text())["status"] == "RUNNING"
+
+
+def test_run_store_refuses_external_hardlink_before_schema_writes(tmp_path: Path) -> None:
+    external = tmp_path / "external.sqlite3"
+    with sqlite3.connect(external) as index:
+        index.execute("CREATE TABLE sentinel(value TEXT)")
+        index.execute("INSERT INTO sentinel VALUES ('original')")
+    linked = tmp_path / "run.sqlite3"
+    os.link(external, linked)
+    before = _digest(external)
+    with pytest.raises(ValueError, match="not a regular file"):
+        RunStore(linked)
+    assert _digest(external) == before
 
 
 @pytest.mark.parametrize("intrusion", ["symlink", "public", "oversize"])
