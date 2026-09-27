@@ -278,18 +278,22 @@ def startup_identity_sha256() -> str:
                 raise ValueError("Python startup file is linked or not a regular file")
             startup_files.append((str(candidate), hashlib.sha256(candidate.read_bytes()).hexdigest()))
     source_root = Path(__file__).resolve().parents[1]
-    base_prefix = Path(sys.base_prefix).resolve()
     package_paths = sysconfig.get_paths()
     installed_roots = {
         Path(package_paths[name]).resolve()
         for name in ("purelib", "platlib") if package_paths.get(name)
+    }
+    stdlib_root = Path(package_paths["stdlib"]).resolve()
+    interpreter_roots = {
+        stdlib_root,
+        stdlib_root / "lib-dynload",
     }
     explicit_roots = {
         Path(entry).resolve() for entry in pythonpath.split(os.pathsep)
     } if pythonpath is not None else set()
     extra_import_paths = []
     for root in sorted(set(inherited_paths) - explicit_roots):
-        if root == source_root or root in installed_roots or root.is_relative_to(base_prefix):
+        if root == source_root or root in installed_roots or root in interpreter_roots:
             continue
         if _shadows_application(root, source_root):
             raise ValueError("Python import path may shadow the application package")

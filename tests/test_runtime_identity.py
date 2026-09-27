@@ -172,6 +172,23 @@ def test_startup_identity_detects_added_import_root_content(
         assert environment.startup_identity_sha256() != first
 
 
+def test_startup_identity_detects_custom_root_under_interpreter_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment.sysconfig.get_paths()
+    prefix = tmp_path / "python-prefix"
+    root = prefix / "custom-imports"
+    root.mkdir(parents=True)
+    module = root / "customer_module.py"
+    module.write_text("value = 'one'\n")
+    with monkeypatch.context() as patch:
+        patch.setattr(environment.sys, "base_prefix", str(prefix))
+        patch.syspath_prepend(str(root))
+        first = environment.startup_identity_sha256()
+        module.write_text("value = 'two'\n")
+        assert environment.startup_identity_sha256() != first
+
+
 def test_added_import_root_cannot_shadow_application(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
