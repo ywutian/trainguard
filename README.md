@@ -105,8 +105,8 @@ Version 0.2.2 binds each recovery decision to every progressing rank's state-loa
 
 ```bash
 uv build --wheel --sdist --out-dir dist
-uv run python scripts/verify_wheel.py dist/trainguard-0.3.1-py3-none-any.whl
-uv run python scripts/verify_install.py dist/trainguard-0.3.1-py3-none-any.whl
+uv run python scripts/verify_wheel.py dist/trainguard-0.3.2-py3-none-any.whl
+uv run python scripts/verify_install.py dist/trainguard-0.3.2-py3-none-any.whl
 ```
 
 See the [full closure assessment](docs/analysis/closure-assessment-2026-09-26.md) for the supported boundary, infrastructure gates and next acceptance steps.
@@ -118,7 +118,7 @@ Run the complete local gate from the repository root:
 
 ```bash
 uv sync --locked --group dev
-uv run python scripts/run_simulation_closure.py --output-root runs/simulation-closure --previous-ref a18ae9a
+uv run python scripts/run_simulation_closure.py --output-root runs/simulation-closure --previous-ref 12b673f
 ```
 
 The gate retains static checks, the full test suite, JUnit and raw test recovery directories, a fresh ten-case CPU acceptance campaign, a wheel and source distribution, and a wheel/source identity check in a uniquely named result directory. Its `result.json` and `report.md` record the outcome even if a gate fails. The CPU campaign requires the intended fault, exactly one recovery, the expected attempt statuses, and either exact agreement with the uninterrupted reference or the specified negative-control difference.
@@ -132,4 +132,6 @@ See the [simulation analysis](docs/analysis/simulation-closure-2026-09-26.md) an
 The package now includes an installed CPU template, a guarded configuration profile, explicit authorization for fault and omitted-state experiments at the controller entry, and a read-only allowlisted support export. The local gate installs the built wheel with locked dependencies in a new environment, verifies a real checkpoint recovery against a reference, checks the support export, and confirms the complete run directory survives uninstall. It also rehearses a source/runtime upgrade boundary using separate old and new locked environments: a new wheel rejects an interrupted old run, while the old environment resumes it to the reference result.
 
 These checks support a limited, isolated evaluation package. Run the [release readiness checker](docs/commercial/operations-runbook.md) against the candidate wheel, source distribution, lock and reviewed gate receipts. A `BLOCKED` result prevents a production claim. The current real GPU, multi-host, customer-workload, object-service, security operations and paid-customer gates remain open.
-The [version 0.3.1 local validation record](docs/commercial/evidence/local-validation-0.3.1.json) links the complete local gate outcomes to the candidate artifacts. An evaluation bundle remains labeled `EVALUATION_ONLY`; machine-checked receipts never authorize production release.
+The [version 0.3.1 local validation record](docs/commercial/evidence/local-validation-0.3.1.json) links its local outcomes to its artifacts. The [Linux verification failure](docs/commercial/evidence/linux-check-0.3.1.json) is retained separately; those artifacts and receipts are not used for the current candidate. An evaluation bundle remains labeled `EVALUATION_ONLY`; machine-checked receipts never authorize production release.
+
+Version 0.3.2 closes the Linux process-start ownership race and makes the CLI option check independent of terminal width. The [current local validation record](docs/commercial/evidence/local-validation-0.3.2.json) and the release gates identify its separate artifacts and evidence; the version 0.3.1 record remains historical.

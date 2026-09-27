@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from typer.main import get_command
 from typer.testing import CliRunner
 
 from trainguard.cli import app
@@ -17,9 +18,8 @@ def test_recovery_and_experiment_commands_are_available() -> None:
 
 
 def test_benchmark_exposes_optional_warmup_rounds() -> None:
-    result = CliRunner().invoke(app, ["benchmark", "--help"])
-    assert result.exit_code == 0
-    assert "--warmups" in result.stdout
+    command = get_command(app).commands["benchmark"]
+    assert any("--warmups" in parameter.opts for parameter in command.params)
 
 
 def test_installed_template_can_be_written_once(tmp_path: Path) -> None:

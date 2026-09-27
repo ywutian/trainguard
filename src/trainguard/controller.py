@@ -142,16 +142,9 @@ def _owned_process_alive(
     run_dir: Path,
 ) -> bool:
     if pid is not None and identity and _pid_identity(pid) == identity:
-        result = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "command="],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode == 0 and re.search(
-            r"--run-id " + re.escape(run_id) + r"(?=\s|$)", result.stdout
-        ):
-            return True
+        # The launcher may still be between fork and exec. A matching process
+        # identity is enough to block a second owner until its exit is known.
+        return True
     return bool(_owned_group_members(run_dir, run_id, attempt_id, pid))
 
 
