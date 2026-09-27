@@ -54,7 +54,13 @@ def test_warmup_runs_are_validated_but_excluded_from_statistics(tmp_path: Path, 
 
     def fake_validate(reference, recovered):
         validated.append(recovered)
-        return {"passed": True, "differences": []}
+        reference_row = reference.resolve() == recovered.resolve()
+        return {
+            "passed": True,
+            "differences": [],
+            "comparison_kind": "SELF_CHECK" if reference_row else "INDEPENDENT_REFERENCE",
+            "independent_reference": not reference_row,
+        }
 
     monkeypatch.setattr(benchmark, "run", fake_run)
     monkeypatch.setattr(benchmark, "validate_runs", fake_validate)
@@ -72,7 +78,15 @@ def test_warmup_runs_are_validated_but_excluded_from_statistics(tmp_path: Path, 
     assert all(row["training_seconds"] == 100.0 for row in result["warmup_runs"])
     assert all(value["median_seconds"] == 2.0 for value in result["training_summary"].values())
     assert all(row["checkpoint_bytes"] == 1024 for row in result["raw_runs"])
-    assert "Warm-up repetitions per mode: 1" in (directory / "report.md").read_text()
+    report = (directory / "report.md").read_text()
+    assert "Warm-up repetitions per mode: 1" in report
+    assert "reference integrity | yes" in report
+    assert "independent reference comparison | yes" in report
+    assert result["warmup_runs"][0]["validation_kind"] == "SELF_CHECK"
+    assert all(
+        row["validation_kind"] == "INDEPENDENT_REFERENCE"
+        for row in result["warmup_runs"][1:] + result["raw_runs"]
+    )
     assert all("load_average_before" in row for row in result["raw_runs"])
 
 

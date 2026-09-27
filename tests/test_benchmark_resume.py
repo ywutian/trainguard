@@ -33,9 +33,16 @@ def install_runs(monkeypatch, fail_at=None):
         benchmark, "resume",
         lambda path: json.loads((path / "run.json").read_text())["status"] == "SUCCEEDED",
     )
-    monkeypatch.setattr(
-        benchmark, "validate_runs", lambda a, b: {"passed": True, "differences": []}
-    )
+    def validate(reference, recovered):
+        reference_row = reference.resolve() == recovered.resolve()
+        return {
+            "passed": True,
+            "differences": [],
+            "comparison_kind": "SELF_CHECK" if reference_row else "INDEPENDENT_REFERENCE",
+            "independent_reference": not reference_row,
+        }
+
+    monkeypatch.setattr(benchmark, "validate_runs", validate)
     monkeypatch.setattr(
         benchmark,
         "_run_metrics",
@@ -73,6 +80,60 @@ def test_failed_experiment_can_continue_without_duplicate_rows(tmp_path, monkeyp
     assert len({(r["repeat"], r["mode"]) for r in final["raw_runs"]}) == 9
     resume(directory)
     assert len(calls) == 10
+
+
+def test_new_benchmark_rejects_self_check_for_distinct_run(tmp_path, monkeypatch):
+    install_runs(monkeypatch)
+    monkeypatch.setattr(benchmark, "validate_runs", lambda a, b: {
+        "passed": True, "differences": [],
+        "comparison_kind": "SELF_CHECK", "independent_reference": False,
+    })
+    config = Path(__file__).parents[1] / "configs/cpu_demo.yaml"
+    with pytest.raises(RuntimeError, match="independent evidence"):
+        benchmark.run_benchmark(config, tmp_path, repetitions=3, warmups=0)
+    directory = next(tmp_path.iterdir())
+    result = json.loads((directory / "results.json").read_text())
+    assert result["status"] == "FAILED"
+    assert len(result["raw_runs"]) == 1
+    assert result["raw_runs"][0]["validation_kind"] == "SELF_CHECK"
+    assert not (directory / "report.md").exists()
+
+
+@pytest.mark.parametrize("validation_kind", [None, "INDEPENDENT_REFERENCE"])
+def test_resume_rejects_missing_or_mislabelled_reference_row(
+    tmp_path, monkeypatch, validation_kind
+):
+    install_runs(monkeypatch)
+    config = Path(__file__).parents[1] / "configs/cpu_demo.yaml"
+    directory = benchmark.run_benchmark(config, tmp_path, repetitions=3, warmups=0)
+    result = json.loads((directory / "results.json").read_text())
+    row = result["slots"][0]["row"]
+    if validation_kind is None:
+        row.pop("validation_kind")
+    else:
+        row["validation_kind"] = validation_kind
+    (directory / "results.json").write_text(json.dumps(result))
+    with pytest.raises(ValueError, match="completed benchmark evidence"):
+        benchmark.resume_benchmark(directory)
+    failed = json.loads((directory / "results.json").read_text())
+    assert failed["status"] == "FAILED"
+    assert not (directory / "report.md").exists()
+
+
+def test_resume_rejects_later_row_replaying_reference(tmp_path, monkeypatch):
+    install_runs(monkeypatch)
+    config = Path(__file__).parents[1] / "configs/cpu_demo.yaml"
+    directory = benchmark.run_benchmark(config, tmp_path, repetitions=3, warmups=0)
+    result = json.loads((directory / "results.json").read_text())
+    replay = result["slots"][1]["row"]
+    replay["run_dir"] = result["reference_dir"]
+    replay["validation_kind"] = "SELF_CHECK"
+    (directory / "results.json").write_text(json.dumps(result))
+    with pytest.raises(ValueError, match="completed benchmark evidence"):
+        benchmark.resume_benchmark(directory)
+    failed = json.loads((directory / "results.json").read_text())
+    assert failed["status"] == "FAILED"
+    assert not (directory / "report.md").exists()
 
 
 def test_resume_rejects_source_changes(tmp_path, monkeypatch):

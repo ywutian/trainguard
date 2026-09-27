@@ -150,6 +150,10 @@ def _run_metrics(run_dir: Path) -> dict[str, float | int]:
 
 
 def _report_text(results: dict[str, Any]) -> str:
+    validation_labels = {
+        "SELF_CHECK": "reference integrity",
+        "INDEPENDENT_REFERENCE": "independent reference comparison",
+    }
     lines = [
         "# Checkpoint benchmark",
         "",
@@ -207,9 +211,9 @@ def _report_text(results: dict[str, Any]) -> str:
                 "",
                 (
                     "| Mode | Repeat | Elapsed (s) | Training (s) | Checkpoints | Payload (MiB) | "
-                    "Load 1m before / after | Valid |"
+                    "Load 1m before / after | Evidence check | Passed |"
                 ),
-                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
             ]
         )
         for row in rows:
@@ -218,6 +222,7 @@ def _report_text(results: dict[str, Any]) -> str:
                 f"{row['training_seconds']:.3f} | {row['checkpoint_count']} | "
                 f"{row['checkpoint_bytes'] / 2**20:.3f} | "
                 f"{row['load_average_before'][0]:.2f} / {row['load_average_after'][0]:.2f} | "
+                f"{validation_labels[row['validation_kind']]} | "
                 f"{'yes' if row['validation_passed'] else 'no'} |"
             )
     lines.extend(
@@ -243,7 +248,9 @@ def _report_text(results: dict[str, Any]) -> str:
             "",
             (
                 "Each raw row points to its run directory in `results.json`. "
-                "Validation uses exact hashes and effective sample IDs (atol=0, rtol=0). "
+                "The reference row checks its own completion evidence. Other rows compare "
+                "against that distinct reference using exact hashes and effective sample IDs "
+                "(atol=0, rtol=0). "
                 "Mode order balances six permutations across repetitions. The exact base configuration is in "
                 "`results.json`, and mode configurations are copied beside this report. "
                 "Payload bytes sum committed manifest files across all checkpoints in a run, "
@@ -303,21 +310,49 @@ def _persist(directory: Path, results: dict) -> None:
     write_json_atomic(directory / "results.json", results)
     if results["status"] == "SUCCEEDED":
         (directory / "report.md").write_text(_report_text(results), encoding="utf-8")
+    else:
+        (directory / "report.md").unlink(missing_ok=True)
 
 
 def _original_measurement(run_dir: Path) -> dict | None:
     return trusted_measurement(run_dir)
 
 
+def _accepted_validation(validation: dict, *, reference_row: bool) -> bool:
+    if validation.get("passed") is not True:
+        return False
+    if reference_row:
+        return (
+            validation.get("comparison_kind") == "SELF_CHECK"
+            and validation.get("independent_reference") is False
+        )
+    return (
+        validation.get("comparison_kind") == "INDEPENDENT_REFERENCE"
+        and validation.get("independent_reference") is True
+    )
+
+
 def _execute_slots(directory: Path, results: dict) -> Path:
     reference = Path(results["reference_dir"]) if results.get("reference_dir") else None
-    if reference is not None and not validate_runs(reference, reference)["passed"]:
+    if reference is not None and not _accepted_validation(
+        validate_runs(reference, reference), reference_row=True
+    ):
         raise ValueError("benchmark reference evidence is invalid")
     results["status"] = "RUNNING"
     _persist(directory, results)
-    for slot in results["slots"]:
+    for slot_index, slot in enumerate(results["slots"]):
         if slot["status"] == "VALIDATED":
-            if not validate_runs(reference, Path(slot["row"]["run_dir"]))["passed"]:
+            if reference is None:
+                raise ValueError("completed benchmark reference is missing")
+            row = slot["row"]
+            run_dir = Path(row["run_dir"])
+            validation = validate_runs(reference, run_dir)
+            if (
+                (reference.resolve() == run_dir.resolve()) != (slot_index == 0)
+                or not _accepted_validation(validation, reference_row=slot_index == 0)
+                or row.get("validation_kind") != validation["comparison_kind"]
+                or row.get("validation_passed") is not True
+            ):
                 raise ValueError("completed benchmark evidence is invalid")
             continue
         mode, repeat, phase = slot["mode"], slot["repeat"], slot["phase"]
@@ -368,9 +403,13 @@ def _execute_slots(directory: Path, results: dict) -> Path:
                 reference = run_dir
                 results["reference_dir"] = str(reference)
             validation = validate_runs(reference, run_dir)
-            if not validation["passed"]:
+            if (
+                (reference.resolve() == run_dir.resolve()) != (slot_index == 0)
+                or not _accepted_validation(validation, reference_row=slot_index == 0)
+            ):
                 raise RuntimeError(
-                    f"benchmark correctness comparison failed: {validation['differences']}"
+                    "benchmark correctness comparison lacks valid independent evidence: "
+                    f"{validation['differences']}"
                 )
             summary = json.loads((run_dir / "summary.json").read_text())
             rank_states = summary.get("rank_states", [])
@@ -399,6 +438,7 @@ def _execute_slots(directory: Path, results: dict) -> Path:
                 "load_average_before": measurement["load_average_before"],
                 "load_average_after": measurement["load_average_after"],
                 "validation_passed": validation["passed"],
+                "validation_kind": validation["comparison_kind"],
                 "validation_differences": validation["differences"],
                 **_run_metrics(run_dir),
             }
