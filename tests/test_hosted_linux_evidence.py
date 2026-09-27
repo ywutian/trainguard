@@ -19,7 +19,7 @@ def _write_json(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
 
 
-def _acceptance(source: str, python: str, commit: str) -> dict:
+def _acceptance(source: str, python: str, commit: str, platform: str) -> dict:
     cases = [
         {"name": f"{mode}-{fault}", "mode": mode, "fault": fault,
          "omit_state": "none", "expected_exact": True, "status": "PASSED",
@@ -40,7 +40,7 @@ def _acceptance(source: str, python: str, commit: str) -> dict:
         "status": "SUCCEEDED", "reference_status": "VALIDATED", "cases": cases,
         "config": {"run": {"device": "cpu", "backend": "gloo", "world_size": 2}},
         "environment": {"source_sha256": source, "python": python,
-                        "git_commit": commit},
+                        "git_commit": commit, "platform": platform},
     }
 
 
@@ -62,6 +62,8 @@ def evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     verifier = importlib.import_module("check_hosted_linux_evidence")
     release = importlib.import_module("check_release_readiness")
     version, commit, source = "0.3.5", "a" * 40, "b" * 64
+    inputs = "f" * 64
+    platform = "Linux-6.8.0-x86_64-with-glibc2.39"
     previous = {
         "git_commit": "c" * 40, "version": "0.3.4",
         "wheel_sha256": "d" * 64, "lock_sha256": "e" * 64,
@@ -102,7 +104,9 @@ def evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         shutil.copy2(sdist, pack / sdist.name)
         gates = [
             {"name": name, "exit_code": 0, "timed_out": False,
-             "output": f"/runner/verification/simulation-run/{name}.txt"}
+             "output": f"/runner/verification/simulation-run/{name}.txt",
+             "execution_inputs_before_sha256": inputs,
+             "execution_inputs_after_sha256": inputs}
             for name in sorted(verifier.REQUIRED_GATES)
         ]
         for gate in gates:
@@ -130,15 +134,18 @@ def evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         }) + "\n", encoding="utf-8")
         _write_json(run / "result.json", {
             "status": "SUCCEEDED", "version": version, "source_sha256": source,
+            "execution_commit": commit, "execution_commit_after": commit,
+            "execution_inputs_sha256": inputs, "execution_inputs_after_sha256": inputs,
             "lock_sha256": lock_sha, "artifact_sha256": artifacts,
-            "python": py, "platform": "Linux-6.8.0-x86_64", "gates": gates,
-            "acceptance": _acceptance(source, py, commit),
+            "python": py, "platform": platform, "gates": gates,
+            "acceptance": _acceptance(source, py, commit, platform),
         })
         summary[lane] = run.parent
         packages[lane] = pack.parent.parent
     return verifier, metadata, summary, packages, wheel, sdist, {
         "commit": commit, "version": version, "source_sha256": source,
-        "lock_sha256": lock_sha, "previous_release": previous,
+        "execution_inputs_sha256": inputs, "lock_sha256": lock_sha,
+        "previous_release": previous,
     }
 
 
@@ -153,6 +160,7 @@ def test_hosted_linux_evidence_requires_both_exact_candidate_lanes(evidence) -> 
     result = _verify(evidence)
     assert result["status"] == "HOSTED_LINUX_EVIDENCE_CONSISTENT"
     assert set(result["matrix"]) == {"3.11", "3.12"}
+    assert result["workflow_git_commit"] == result["candidate_git_commit"]
     assert result["customer_environment_validated"] is False
     assert result["production_release_authorized"] is False
 
@@ -229,6 +237,46 @@ def test_hosted_linux_evidence_rejects_acceptance_from_another_commit(evidence) 
     result["acceptance"]["environment"]["git_commit"] = "f" * 40
     _write_json(run / "result.json", result)
     with pytest.raises(ValueError, match="acceptance used another environment"):
+        _verify(evidence)
+
+
+def test_hosted_linux_evidence_rejects_result_from_another_commit(evidence) -> None:
+    run = evidence[2]["3.11"] / "simulation-run"
+    result = json.loads((run / "result.json").read_text())
+    result["execution_commit_after"] = "0" * 40
+    _write_json(run / "result.json", result)
+    with pytest.raises(ValueError, match="incomplete or mismatched gates"):
+        _verify(evidence)
+
+
+@pytest.mark.parametrize("platform", ["Linux-6.8.0-aarch64", "notLinux-6.8.0-x86_64"])
+def test_hosted_linux_evidence_rejects_wrong_runtime_architecture(
+    evidence, platform: str
+) -> None:
+    run = evidence[2]["3.11"] / "simulation-run"
+    result = json.loads((run / "result.json").read_text())
+    result["platform"] = platform
+    result["acceptance"]["environment"]["platform"] = platform
+    _write_json(run / "result.json", result)
+    with pytest.raises(ValueError, match="incomplete or mismatched gates"):
+        _verify(evidence)
+
+
+def test_hosted_linux_evidence_rejects_acceptance_platform_drift(evidence) -> None:
+    run = evidence[2]["3.11"] / "simulation-run"
+    result = json.loads((run / "result.json").read_text())
+    result["acceptance"]["environment"]["platform"] = "Linux-6.8.0-aarch64"
+    _write_json(run / "result.json", result)
+    with pytest.raises(ValueError, match="acceptance used another environment"):
+        _verify(evidence)
+
+
+def test_hosted_linux_evidence_rejects_stale_execution_input_digest(evidence) -> None:
+    run = evidence[2]["3.11"] / "simulation-run"
+    result = json.loads((run / "result.json").read_text())
+    result["gates"][0]["execution_inputs_after_sha256"] = "0" * 64
+    _write_json(run / "result.json", result)
+    with pytest.raises(ValueError, match="incomplete or mismatched gates"):
         _verify(evidence)
 
 

@@ -19,6 +19,7 @@ import torch
 from trainguard import __version__
 from trainguard.environment import source_sha256
 from trainguard.events import utc_now, write_json_atomic
+from trainguard.execution_inputs import execution_inputs_sha256
 
 GATE_TIMEOUT_SECONDS = {
     "static": 180,
@@ -130,6 +131,54 @@ def _run(directory: Path, name: str, command: list[str]) -> dict:
     }
 
 
+def _run_bound(
+    root: Path, directory: Path, name: str, command: list[str], expected: str
+) -> dict:
+    """Record the tested input bytes on both sides of every gate."""
+    output = directory / f"{name}.txt"
+    try:
+        before = execution_inputs_sha256(root)
+    except (OSError, ValueError) as exc:
+        before = None
+        error = f"cannot inspect execution inputs before {name}: {exc}"
+    else:
+        error = None if before == expected else f"execution inputs changed before {name}"
+    if error is not None:
+        output.write_text(error + "\n", encoding="utf-8")
+        gate = {"name": name, "command": command, "exit_code": 1,
+                "output": str(output), "timed_out": False}
+    elif name == "package":
+        try:
+            from verify_sdist import verify_build_inputs
+
+            verify_build_inputs(root)
+        except ValueError as exc:
+            output.write_text(f"source package input preflight failed: {exc}\n", encoding="utf-8")
+            gate = {"name": name, "command": command, "exit_code": 1,
+                    "output": str(output), "timed_out": False}
+        else:
+            gate = _run(directory, name, command)
+    else:
+        gate = _run(directory, name, command)
+    try:
+        after = execution_inputs_sha256(root)
+    except (OSError, ValueError) as exc:
+        after = None
+        error = f"cannot inspect execution inputs after {name}: {exc}"
+    else:
+        if after != expected:
+            error = f"execution inputs changed during {name}"
+    gate["execution_inputs_before_sha256"] = before
+    gate["execution_inputs_after_sha256"] = after
+    if error is not None:
+        gate["command_exit_code"] = gate["exit_code"]
+        gate["exit_code"] = 1
+        gate["input_integrity_error"] = error
+        with output.open("a", encoding="utf-8") as stream:
+            stream.write(error + "\n")
+    return gate
+
+
 def _persist(directory: Path, result: dict) -> None:
     write_json_atomic(directory / "result.json", result)
     lines = [
@@ -210,16 +259,23 @@ def main() -> int:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--previous-ref", required=True)
     args = parser.parse_args()
+    root = Path.cwd().resolve()
     release_manifest = json.loads(Path("docs/commercial/release-gates.json").read_text())
     previous = release_manifest["previous_release"]
     directory = (args.output_root / f"simulation-{uuid.uuid4().hex[:12]}").resolve()
     directory.mkdir(parents=True)
+    inputs_sha256 = execution_inputs_sha256(root)
+    execution_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True
+    ).stdout.strip()
     result = {
         "schema_version": 1,
         "status": "RUNNING",
         "started_at": utc_now(),
         "version": __version__,
         "source_sha256": source_sha256(),
+        "execution_commit": execution_commit,
+        "execution_inputs_sha256": inputs_sha256,
         "python": platform.python_version(),
         "torch": torch.__version__,
         "platform": platform.platform(),
@@ -245,69 +301,61 @@ def main() -> int:
         ),
         ("package", ["uv", "build", "--wheel", "--sdist", "--out-dir", str(directory / "dist")]),
     ]
+    class GateStopped(Exception):
+        pass
+
     try:
         for name, command in commands:
-            if name == "package":
-                try:
-                    from verify_sdist import verify_build_inputs
-
-                    verify_build_inputs(Path.cwd())
-                except ValueError as exc:
-                    output = directory / "package.txt"
-                    output.write_text(f"source package input preflight failed: {exc}\n")
-                    gate = {"name": name, "command": command, "exit_code": 1,
-                            "output": str(output)}
-                else:
-                    gate = _run(directory, name, command)
-            else:
-                gate = _run(directory, name, command)
+            gate = _run_bound(root, directory, name, command, inputs_sha256)
             result["gates"].append(gate)
             _persist(directory, result)
             if gate["exit_code"]:
                 result["status"] = "FAILED"
-                return 1
+                raise GateStopped
         acceptance_paths = list((directory / "acceptance").glob("*/acceptance.json"))
         if len(acceptance_paths) != 1:
             result["status"] = "FAILED"
             result["reason"] = "acceptance record missing or ambiguous"
-            return 1
+            raise GateStopped
         result["acceptance_path"] = str(acceptance_paths[0])
         result["acceptance"] = json.loads(acceptance_paths[0].read_text(encoding="utf-8"))
         if not _acceptance_complete(result["acceptance"]):
             result["status"] = "FAILED"
             result["reason"] = "acceptance matrix incomplete or inconsistent"
-            return 1
+            raise GateStopped
         wheels = list((directory / "dist").glob("trainguard-*.whl"))
         if len(wheels) != 1:
             result["status"] = "FAILED"
             result["reason"] = "built wheel missing or ambiguous"
-            return 1
-        gate = _run(
-            directory,
+            raise GateStopped
+        gate = _run_bound(
+            root, directory,
             "wheel",
             ["uv", "run", "python", "scripts/verify_wheel.py", str(wheels[0])],
+            inputs_sha256,
         )
         result["gates"].append(gate)
         if gate["exit_code"]:
             result["status"] = "FAILED"
-            return 1
+            raise GateStopped
         result["artifact_sha256"] = {
             path.name: hashlib.sha256(path.read_bytes()).hexdigest()
             for path in sorted((directory / "dist").iterdir())
             if path.is_file() and (path.name.endswith(".whl") or path.name.endswith(".tar.gz"))
         }
         result["lock_sha256"] = hashlib.sha256(Path("uv.lock").read_bytes()).hexdigest()
-        gate = _run(
-            directory,
+        gate = _run_bound(
+            root, directory,
             "fresh-install",
             ["uv", "run", "python", "scripts/verify_install.py", str(wheels[0])],
+            inputs_sha256,
         )
         result["gates"].append(gate)
         if gate["exit_code"]:
             result["status"] = "FAILED"
-            return 1
-        gate = _run(
-            directory,
+            raise GateStopped
+        gate = _run_bound(
+            root, directory,
             "upgrade-boundary",
             ["uv", "run", "python", "scripts/verify_upgrade_boundary.py",
              "--previous-ref", args.previous_ref,
@@ -315,14 +363,43 @@ def main() -> int:
              "--expected-previous-wheel-sha256", previous["wheel_sha256"],
              "--expected-previous-lock-sha256", previous["lock_sha256"],
              "--current-wheel", str(wheels[0])],
+            inputs_sha256,
         )
         result["gates"].append(gate)
         result["status"] = "SUCCEEDED" if gate["exit_code"] == 0 else "FAILED"
-        return 0 if result["status"] == "SUCCEEDED" else 1
+    except GateStopped:
+        pass
+    except Exception as exc:  # noqa: BLE001 - retain the failed gate record
+        result["status"] = "FAILED"
+        result["reason"] = f"gate execution failed: {type(exc).__name__}: {exc}"
     finally:
+        try:
+            result["execution_commit_after"] = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True,
+                text=True, check=True,
+            ).stdout.strip()
+        except (OSError, subprocess.CalledProcessError) as exc:
+            result["execution_commit_after"] = None
+            result["reason"] = f"cannot inspect final execution commit: {exc}"
+            result["status"] = "FAILED"
+        else:
+            if result["execution_commit_after"] != execution_commit:
+                result["reason"] = "candidate commit changed during verification"
+                result["status"] = "FAILED"
+        try:
+            result["execution_inputs_after_sha256"] = execution_inputs_sha256(root)
+        except (OSError, ValueError) as exc:
+            result["execution_inputs_after_sha256"] = None
+            result["reason"] = f"cannot inspect final execution inputs: {exc}"
+            result["status"] = "FAILED"
+        else:
+            if result["execution_inputs_after_sha256"] != inputs_sha256:
+                result["reason"] = "execution inputs changed during verification"
+                result["status"] = "FAILED"
         result["finished_at"] = utc_now()
         _persist(directory, result)
         print(directory)
+    return 0 if result["status"] == "SUCCEEDED" else 1
 
 
 if __name__ == "__main__":

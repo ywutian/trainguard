@@ -23,6 +23,7 @@ REQUIRED_GATES = {
     "cross_host_fencing", "real_gpu_matrix", "security_operations",
     "commercial_contract", "paid_pilot", "supported_matrix", "sustained_operations",
 }
+HOSTED_REPOSITORY = "ywutian/trainguard"
 SOURCE_MEMBERS = {
     "pyproject.toml": "pyproject.toml",
     "uv.lock": "uv.lock",
@@ -85,6 +86,7 @@ def verify_bundle(root: Path) -> dict:
         or not isinstance(files, dict)
         or not files
         or not _is_sha256(manifest.get("source_sha256"))
+        or not _is_sha256(manifest.get("execution_inputs_sha256"))
     ):
         raise DeliveryInvalid("delivery manifest has an invalid evaluation identity")
     expected = {}
@@ -111,14 +113,50 @@ def verify_bundle(root: Path) -> dict:
     if (
         report.get("schema_version") != 1
         or report.get("evaluation_allowed") is not True
+        or report.get("local_experiment_allowed") is not True
+        or report.get("linux_customer_evaluation_allowed") is not True
+        or report.get("customer_environment_validated") is not False
         or report.get("production_release_authorized") is not False
         or report.get("git_dirty") is not False
         or report.get("status") not in {"BLOCKED", "REVIEW_REQUIRED"}
         or report.get("candidate_source_sha256") != manifest["source_sha256"]
+        or report.get("candidate_execution_inputs_sha256") != manifest[
+            "execution_inputs_sha256"
+        ]
         or report.get("git_commit") != manifest.get("git_commit")
+        or report.get("hosted_linux_workflow_run_id") != manifest.get(
+            "hosted_linux_workflow_run_id"
+        )
         or not isinstance(report.get("previous_release"), dict)
     ):
         raise DeliveryInvalid("readiness report differs from the evaluation identity")
+    hosted = report.get("hosted_linux_evidence")
+    if (
+        type(manifest.get("hosted_linux_workflow_run_id")) is not int
+        or manifest["hosted_linux_workflow_run_id"] < 1
+        or not isinstance(hosted, dict)
+        or hosted.get("status") != "HOSTED_LINUX_EVIDENCE_CONSISTENT"
+        or hosted.get("workflow_run_id") != manifest["hosted_linux_workflow_run_id"]
+        or hosted.get("candidate_git_commit") != manifest["git_commit"]
+        or hosted.get("candidate_source_sha256") != manifest["source_sha256"]
+        or hosted.get("candidate_execution_inputs_sha256") != manifest[
+            "execution_inputs_sha256"
+        ]
+        or hosted.get("workflow_and_artifacts_fetched_live") is not True
+        or hosted.get("workflow_repository") != HOSTED_REPOSITORY
+        or hosted.get("download_origin_authenticated") is not False
+        or hosted.get("cryptographic_signature_verified") is not False
+        or hosted.get("workflow_event") != "push"
+        or not isinstance(hosted.get("workflow_git_commit"), str)
+        or len(hosted["workflow_git_commit"]) != 40
+        or any(character not in "0123456789abcdef"
+               for character in hosted["workflow_git_commit"])
+        or hosted.get("customer_environment_validated") is not False
+        or hosted.get("production_release_authorized") is not False
+        or not isinstance(hosted.get("matrix"), dict)
+        or set(hosted["matrix"]) != {"3.11", "3.12"}
+    ):
+        raise DeliveryInvalid("hosted Linux evidence is missing or differs")
     try:
         version = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))[
             "project"
@@ -127,6 +165,8 @@ def verify_bundle(root: Path) -> dict:
         raise DeliveryInvalid("bundle project metadata is invalid") from exc
     if version != manifest.get("version"):
         raise DeliveryInvalid("bundle version differs from project metadata")
+    if hosted.get("candidate_version") != version:
+        raise DeliveryInvalid("hosted Linux candidate version differs")
     previous = report["previous_release"]
     try:
         previous_parts = tuple(int(part) for part in previous["version"].split("."))
@@ -156,6 +196,17 @@ def verify_bundle(root: Path) -> dict:
         or any(expected.get(name) != digest for name, digest in artifacts.items())
     ):
         raise DeliveryInvalid("release artifacts differ from the readiness report")
+    if (
+        hosted.get("lock_sha256") != artifacts["uv.lock"]
+        or hosted.get("artifacts") != {
+            name: digest for name, digest in artifacts.items() if name != "uv.lock"
+        }
+        or any(
+            not isinstance(lane, dict) or lane.get("artifacts") != hosted["artifacts"]
+            for lane in hosted["matrix"].values()
+        )
+    ):
+        raise DeliveryInvalid("hosted Linux package evidence differs")
 
     sdist_name = next(name for name in artifacts if name.endswith(".tar.gz"))
     try:
@@ -179,6 +230,9 @@ def verify_bundle(root: Path) -> dict:
     if (
         gate_manifest.get("schema_version") != 1
         or gate_manifest.get("candidate_source_sha256") != manifest["source_sha256"]
+        or gate_manifest.get("candidate_execution_inputs_sha256") != manifest[
+            "execution_inputs_sha256"
+        ]
         or gate_manifest.get("previous_release") != report.get("previous_release")
     ):
         raise DeliveryInvalid("gate manifest has a different source or prior release identity")
@@ -226,6 +280,10 @@ def verify_bundle(root: Path) -> dict:
             receipt.get("gate_id") != gate_id
             or receipt.get("decision") != "PASS"
             or receipt.get("candidate_source_sha256") != manifest["source_sha256"]
+            or (gate_id in {"local_package", "local_cpu"} and
+                receipt.get("execution_inputs_sha256") != manifest[
+                    "execution_inputs_sha256"
+                ])
             or receipt.get("artifacts") != artifacts
         ):
             raise DeliveryInvalid(f"passing gate receipt differs: {gate_id}")
@@ -235,6 +293,11 @@ def verify_bundle(root: Path) -> dict:
         if expected.get(record_name) != receipt.get("record_sha256"):
             raise DeliveryInvalid(f"local gate record differs: {gate_id}")
         record = _mapping(root / record_name)
+        if (
+            record.get("execution_inputs_sha256") != manifest["execution_inputs_sha256"]
+            or record.get("execution_commit") != receipt.get("execution_commit")
+        ):
+            raise DeliveryInvalid(f"local gate execution identity differs: {gate_id}")
         raw_dir = _relative_name(record.get("raw_evidence_dir"))
         raw_files = record.get("raw_files")
         if not isinstance(raw_files, dict):

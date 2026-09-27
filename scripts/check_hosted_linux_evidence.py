@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import tarfile
 import tomllib
@@ -26,6 +27,8 @@ from check_release_readiness import (
 from run_simulation_closure import _acceptance_complete
 
 from trainguard.events import write_json_atomic
+from trainguard.evidence_lineage import require_evidence_only_descendant
+from trainguard.execution_inputs import execution_inputs_sha256 as input_digest
 
 PYTHON_LANES = ("3.11", "3.12")
 REQUIRED_GATES = {
@@ -141,12 +144,16 @@ def verify_evidence(
     sdist: Path,
     *,
     commit: str,
+    candidate_commit: str | None = None,
     version: str,
     source_sha256: str,
+    execution_inputs_sha256: str,
     lock_sha256: str,
     previous_release: dict,
 ) -> dict:
     """Return a scoped report only when both downloaded matrix lanes agree."""
+    if candidate_commit is None:
+        candidate_commit = commit
     if set(summary_directories) != set(PYTHON_LANES) or set(package_directories) != set(
         PYTHON_LANES
     ):
@@ -176,20 +183,26 @@ def verify_evidence(
         gates = result.get("gates")
         if (
             result.get("status") != "SUCCEEDED"
+            or result.get("execution_commit") != commit
+            or result.get("execution_commit_after") != commit
             or result.get("version") != version
             or result.get("source_sha256") != source_sha256
+            or result.get("execution_inputs_sha256") != execution_inputs_sha256
+            or result.get("execution_inputs_after_sha256") != execution_inputs_sha256
             or result.get("lock_sha256") != lock_sha256
             or result.get("artifact_sha256") != artifact_sha256
             or not isinstance(result.get("python"), str)
             or not result["python"].startswith(f"{lane}.")
             or not isinstance(result.get("platform"), str)
-            or "linux" not in result["platform"].lower()
+            or re.search(r"^Linux-.*-x86_64(?:-|$)", result["platform"]) is None
             or not isinstance(gates, list)
             or len(gates) != len(REQUIRED_GATES)
             or any(not isinstance(gate, dict) for gate in gates)
             or {gate.get("name") for gate in gates} != REQUIRED_GATES
             or any(
                 gate.get("exit_code") != 0 or gate.get("timed_out", False) is not False
+                or gate.get("execution_inputs_before_sha256") != execution_inputs_sha256
+                or gate.get("execution_inputs_after_sha256") != execution_inputs_sha256
                 or Path(gate.get("output", "")).name != f"{gate['name']}.txt"
                 or not (directory / f"{gate['name']}.txt").is_file()
                 for gate in gates
@@ -209,6 +222,7 @@ def verify_evidence(
             or not isinstance(environment, dict)
             or environment.get("source_sha256") != source_sha256
             or environment.get("git_commit") != commit
+            or environment.get("platform") != result["platform"]
             or not isinstance(environment.get("python"), str)
             or not environment["python"].startswith(f"{lane}.")
         ):
@@ -259,9 +273,11 @@ def verify_evidence(
         "checked_at": datetime.now(UTC).isoformat(),
         "status": "HOSTED_LINUX_EVIDENCE_CONSISTENT",
         "scope": "hosted Linux x86_64 CPU/Gloo and package verification; downloaded evidence only",
-        "candidate_git_commit": commit,
+        "candidate_git_commit": candidate_commit,
+        "workflow_git_commit": commit,
         "candidate_version": version,
         "candidate_source_sha256": source_sha256,
+        "candidate_execution_inputs_sha256": execution_inputs_sha256,
         "lock_sha256": lock_sha256,
         "workflow_run_id": workflow_run_id,
         "workflow_event": metadata["event"],
@@ -292,7 +308,7 @@ def main() -> int:
         if ignored.returncode:
             parser.error("report inside the checkout must be ignored")
     try:
-        commit = subprocess.run(
+        candidate_commit = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True
         ).stdout.strip()
         dirty = subprocess.run(
@@ -308,16 +324,22 @@ def main() -> int:
             root, _mapping(root / "docs/commercial/release-gates.json").get("previous_release"),
             version,
         )
+        metadata = _mapping(args.workflow_metadata)
+        workflow_commit = metadata.get("headSha")
+        require_evidence_only_descendant(root, workflow_commit, candidate_commit)
         report = verify_evidence(
-            _mapping(args.workflow_metadata),
+            metadata,
             {"3.11": args.python311_summary, "3.12": args.python312_summary},
             {"3.11": args.python311_packages, "3.12": args.python312_packages},
             args.wheel, args.sdist,
-            commit=commit, version=version, source_sha256=package_source_sha256(root),
+            commit=workflow_commit, candidate_commit=candidate_commit,
+            version=version, source_sha256=package_source_sha256(root),
+            execution_inputs_sha256=input_digest(root),
             lock_sha256=_sha256(root / "uv.lock"), previous_release=previous,
         )
     except (OSError, ValueError, TypeError, KeyError, ElementTree.ParseError,
-            subprocess.CalledProcessError, tarfile.TarError, zipfile.BadZipFile) as exc:
+            subprocess.CalledProcessError, subprocess.TimeoutExpired,
+            tarfile.TarError, zipfile.BadZipFile) as exc:
         report = {
             "schema_version": 1,
             "checked_at": datetime.now(UTC).isoformat(),

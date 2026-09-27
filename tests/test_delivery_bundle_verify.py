@@ -44,6 +44,7 @@ def _bundle(root: Path, module) -> Path:
     root.mkdir()
     version = "0.3.2"
     source = "a" * 64
+    inputs = "f" * 64
     commit = "b" * 40
     previous = {
         "git_commit": "c" * 40,
@@ -76,6 +77,7 @@ def _bundle(root: Path, module) -> Path:
     record_name = "docs/commercial/evidence/local-validation-0.3.2.json"
     _write(root / record_name, {
         "status": "SUCCEEDED", "candidate_source_sha256": source,
+        "execution_inputs_sha256": inputs, "execution_commit": commit,
         "artifacts": artifacts, "raw_evidence_dir": raw_dir,
         "raw_files": {"result.json": _sha(root / raw_name)},
     })
@@ -87,6 +89,7 @@ def _bundle(root: Path, module) -> Path:
             _write(root / name, {
                 "gate_id": gate_id, "decision": "PASS",
                 "candidate_source_sha256": source, "artifacts": artifacts,
+                "execution_inputs_sha256": inputs, "execution_commit": commit,
                 "record_reference": record_name,
                 "record_sha256": _sha(root / record_name),
             })
@@ -97,18 +100,46 @@ def _bundle(root: Path, module) -> Path:
             gates.append({"id": gate_id, "status": "BLOCKED", "reason": "pending"})
     _write(root / "release-gates.json", {
         "schema_version": 1, "candidate_source_sha256": source,
+        "candidate_execution_inputs_sha256": inputs,
         "previous_release": previous, "gates": gates,
     })
+    hosted_artifacts = {name: digest for name, digest in artifacts.items() if name != "uv.lock"}
+    hosted = {
+        "status": "HOSTED_LINUX_EVIDENCE_CONSISTENT",
+        "workflow_run_id": 123,
+        "candidate_git_commit": commit,
+        "workflow_git_commit": commit,
+        "workflow_event": "push",
+        "candidate_version": version,
+        "candidate_source_sha256": source,
+        "candidate_execution_inputs_sha256": inputs,
+        "lock_sha256": artifacts["uv.lock"],
+        "artifacts": hosted_artifacts,
+        "workflow_and_artifacts_fetched_live": True,
+        "workflow_repository": "ywutian/trainguard",
+        "download_origin_authenticated": False,
+        "cryptographic_signature_verified": False,
+        "customer_environment_validated": False,
+        "production_release_authorized": False,
+        "matrix": {lane: {"artifacts": hosted_artifacts} for lane in ("3.11", "3.12")},
+    }
     _write(root / "readiness-report.json", {
         "schema_version": 1, "status": "BLOCKED", "evaluation_allowed": True,
+        "local_experiment_allowed": True,
+        "linux_customer_evaluation_allowed": True,
+        "customer_environment_validated": False,
+        "hosted_linux_workflow_run_id": 123, "hosted_linux_evidence": hosted,
         "production_release_authorized": False, "git_dirty": False,
         "git_commit": commit, "candidate_source_sha256": source,
+        "candidate_execution_inputs_sha256": inputs,
         "artifacts": artifacts, "previous_release": previous, "gates": gates,
     })
     _write(root / "delivery-manifest.json", {
         "schema_version": 1, "version": version, "status": "EVALUATION_ONLY",
         "production_release_authorized": False, "git_commit": commit,
-        "source_sha256": source, "evidence_map": evidence_map, "files": {},
+        "source_sha256": source, "execution_inputs_sha256": inputs,
+        "hosted_linux_workflow_run_id": 123,
+        "evidence_map": evidence_map, "files": {},
     })
     _seal(root)
     return root
@@ -134,6 +165,41 @@ def test_transferred_bundle_rejects_self_consistent_file_list_with_stale_artifac
     _write(report_path, report)
     _seal(root)
     with pytest.raises(module.DeliveryInvalid, match="release artifacts differ"):
+        module.verify_bundle(root)
+
+
+def test_transferred_bundle_requires_bound_hosted_linux_evidence(tmp_path: Path) -> None:
+    module = _module()
+    root = _bundle(tmp_path / "bundle", module)
+    report_path = root / "readiness-report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["linux_customer_evaluation_allowed"] = False
+    _write(report_path, report)
+    _seal(root)
+    with pytest.raises(module.DeliveryInvalid, match="evaluation identity"):
+        module.verify_bundle(root)
+
+    report["linux_customer_evaluation_allowed"] = True
+    report["hosted_linux_evidence"]["cryptographic_signature_verified"] = True
+    _write(report_path, report)
+    _seal(root)
+    with pytest.raises(module.DeliveryInvalid, match="hosted Linux evidence"):
+        module.verify_bundle(root)
+
+    report["hosted_linux_evidence"]["cryptographic_signature_verified"] = False
+    report["hosted_linux_evidence"]["workflow_repository"] = "another/repository"
+    _write(report_path, report)
+    _seal(root)
+    with pytest.raises(module.DeliveryInvalid, match="hosted Linux evidence"):
+        module.verify_bundle(root)
+
+    report["hosted_linux_evidence"]["workflow_repository"] = "ywutian/trainguard"
+    report["hosted_linux_evidence"]["artifacts"][next(
+        name for name in report["artifacts"] if name.endswith(".whl")
+    )] = "0" * 64
+    _write(report_path, report)
+    _seal(root)
+    with pytest.raises(module.DeliveryInvalid, match="hosted Linux package"):
         module.verify_bundle(root)
 
 

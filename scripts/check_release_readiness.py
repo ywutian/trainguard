@@ -20,12 +20,15 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 from trainguard.events import write_json_atomic
+from trainguard.evidence_lineage import require_evidence_only_descendant
+from trainguard.execution_inputs import execution_inputs_sha256
 
 REQUIRED_GATES = {
     "local_package", "local_cpu", "customer_workload", "persistent_checkpoint",
     "cross_host_fencing", "real_gpu_matrix", "security_operations",
     "commercial_contract", "paid_pilot", "supported_matrix", "sustained_operations",
 }
+HOSTED_REPOSITORY = "ywutian/trainguard"
 LOCAL_RAW_FILES = {
     "result.json", "pytest.xml", "acceptance.json", "static.txt", "tests.txt",
     "cpu-acceptance.txt", "package.txt", "wheel.txt", "fresh-install.txt",
@@ -333,6 +336,21 @@ def _local_evidence(root: Path, details: dict, source_digest: str,
         if path.is_symlink() or not path.is_file() or _digest(path) != hashes[name]:
             raise ValueError(f"local raw evidence is missing or changed: {name}")
     result = json.loads((raw_dir / "result.json").read_text(encoding="utf-8"))
+    input_digest = execution_inputs_sha256(root)
+    if details.get("execution_inputs_sha256") != input_digest:
+        raise ValueError("local evidence was produced with different execution inputs")
+    execution_commit = result.get("execution_commit")
+    if (
+        not isinstance(execution_commit, str)
+        or result.get("execution_commit_after") != execution_commit
+        or details.get("execution_commit") != execution_commit
+    ):
+        raise ValueError("local evidence has no stable execution commit")
+    candidate_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True,
+        text=True, check=True,
+    ).stdout.strip()
+    require_evidence_only_descendant(root, execution_commit, candidate_commit)
     version = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
     expected_gates = {
         "static", "tests", "cpu-acceptance", "package", "wheel", "fresh-install",
@@ -342,6 +360,8 @@ def _local_evidence(root: Path, details: dict, source_digest: str,
     if (
         result.get("status") != "SUCCEEDED"
         or result.get("source_sha256") != source_digest
+        or result.get("execution_inputs_sha256") != input_digest
+        or result.get("execution_inputs_after_sha256") != input_digest
         or result.get("version") != version
         or not isinstance(result.get("artifact_sha256"), dict)
         or {name: digest for name, digest in result["artifact_sha256"].items()
@@ -354,6 +374,9 @@ def _local_evidence(root: Path, details: dict, source_digest: str,
         or {gate.get("name") for gate in gates if isinstance(gate, dict)} != expected_gates
         or any(
             gate.get("exit_code") != 0
+            or gate.get("timed_out") is not False
+            or gate.get("execution_inputs_before_sha256") != input_digest
+            or gate.get("execution_inputs_after_sha256") != input_digest
             or Path(gate.get("output", "")).name != f"{gate['name']}.txt"
             for gate in gates
         )
@@ -371,6 +394,7 @@ def _local_evidence(root: Path, details: dict, source_digest: str,
         acceptance.get("status") != "SUCCEEDED"
         or acceptance.get("reference_status") != "VALIDATED"
         or result.get("acceptance") != acceptance
+        or acceptance.get("environment", {}).get("git_commit") != execution_commit
         or not isinstance(cases, list)
         or len(cases) != len(expected_cases)
         or not all(isinstance(case, dict) and isinstance(case.get("name"), str)
@@ -452,6 +476,13 @@ def _receipt(path: Path, gate_id: str, source_digest: str, artifacts: dict[str, 
     except ValueError as exc:
         raise ValueError(f"{gate_id}: evidence review time is invalid") from exc
     if gate_id in {"local_package", "local_cpu"}:
+        if (
+            not isinstance(receipt.get("execution_commit"), str)
+            or receipt.get("execution_inputs_sha256") != execution_inputs_sha256(
+                Path(__file__).resolve().parents[1]
+            )
+        ):
+            raise ValueError(f"{gate_id}: local execution identity differs")
         checks = receipt.get("checks")
         required = (
             {"wheel_identity", "fresh_install", "upgrade_recovery"}
@@ -472,6 +503,8 @@ def _receipt(path: Path, gate_id: str, source_digest: str, artifacts: dict[str, 
             details.get("schema_version") != 1
             or details.get("status") != "SUCCEEDED"
             or details.get("candidate_source_sha256") != source_digest
+            or details.get("execution_inputs_sha256") != receipt["execution_inputs_sha256"]
+            or details.get("execution_commit") != receipt["execution_commit"]
             or details.get("artifacts") != artifacts
             or details["checks"].get("full_suite") is not True
             or details["checks"].get("cpu_fault_matrix") is not True
@@ -484,7 +517,82 @@ def _receipt(path: Path, gate_id: str, source_digest: str, artifacts: dict[str, 
     return receipt
 
 
-def evaluate(manifest: Path, wheel: Path, sdist: Path) -> dict:
+def _hosted_linux_from_run(
+    root: Path, run_id: int, wheel: Path, sdist: Path, *, commit: str,
+    version: str, source_digest: str, input_digest: str, artifacts: dict[str, str],
+) -> dict:
+    """Fetch one workflow directly and recheck its downloaded raw evidence."""
+    if type(run_id) is not int or run_id < 1:
+        raise ValueError("hosted Linux workflow run ID is invalid")
+    authenticated = subprocess.run(
+        ["gh", "auth", "status", "--active", "--hostname", "github.com"],
+        cwd=root, capture_output=True, text=True, check=False, timeout=30,
+    )
+    if authenticated.returncode:
+        raise ValueError("hosted workflow account is not authenticated")
+    with tempfile.TemporaryDirectory(prefix="hosted-linux-evidence-") as temporary:
+        work = Path(temporary)
+        metadata = work / "workflow.json"
+        viewed = subprocess.run(
+            ["gh", "run", "view", str(run_id), "--json",
+             "databaseId,headSha,conclusion,event,jobs,workflowName",
+             "--repo", HOSTED_REPOSITORY],
+            cwd=root, capture_output=True, text=True, check=False, timeout=120,
+        )
+        if viewed.returncode:
+            raise ValueError("hosted Linux workflow metadata could not be fetched")
+        metadata.write_text(viewed.stdout, encoding="utf-8")
+        for lane, label in (("3.11", "python311"), ("3.12", "python312")):
+            for kind, artifact_name in (
+                ("summary", f"recovery-summary-{lane}"),
+                ("packages", f"verified-packages-{lane}"),
+            ):
+                destination = work / f"{label}-{kind}"
+                fetched = subprocess.run(
+                    ["gh", "run", "download", str(run_id), "--name", artifact_name,
+                     "--dir", str(destination), "--repo", HOSTED_REPOSITORY],
+                    cwd=root, capture_output=True, text=True, check=False, timeout=300,
+                )
+                if fetched.returncode:
+                    raise ValueError(f"hosted Linux {artifact_name} could not be fetched")
+        report_path = work / "verified.json"
+        checked = subprocess.run(
+            [sys.executable, str(root / "scripts/check_hosted_linux_evidence.py"),
+             "--workflow-metadata", str(metadata),
+             "--python311-summary", str(work / "python311-summary"),
+             "--python311-packages", str(work / "python311-packages"),
+             "--python312-summary", str(work / "python312-summary"),
+             "--python312-packages", str(work / "python312-packages"),
+             "--wheel", str(wheel.resolve()), "--sdist", str(sdist.resolve()),
+             "--report", str(report_path)],
+            cwd=root, capture_output=True, text=True, check=False, timeout=300,
+        )
+        if checked.returncode or not report_path.is_file():
+            raise ValueError("hosted Linux raw evidence did not pass current-candidate checks")
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if (
+            report.get("status") != "HOSTED_LINUX_EVIDENCE_CONSISTENT"
+            or report.get("workflow_run_id") != run_id
+            or report.get("candidate_git_commit") != commit
+            or report.get("candidate_version") != version
+            or report.get("candidate_source_sha256") != source_digest
+            or report.get("candidate_execution_inputs_sha256") != input_digest
+            or report.get("lock_sha256") != artifacts["uv.lock"]
+            or report.get("artifacts") != {
+                name: digest for name, digest in artifacts.items() if name != "uv.lock"
+            }
+            or set(report.get("matrix", {})) != {"3.11", "3.12"}
+            or report.get("customer_environment_validated") is not False
+            or report.get("production_release_authorized") is not False
+        ):
+            raise ValueError("hosted Linux evidence differs from the candidate identity")
+        report["workflow_and_artifacts_fetched_live"] = True
+        report["workflow_repository"] = HOSTED_REPOSITORY
+        report["cryptographic_signature_verified"] = False
+        return report
+
+
+def evaluate(manifest: Path, wheel: Path, sdist: Path, hosted_run_id: int | None = None) -> dict:
     root = Path(__file__).resolve().parents[1]
     data = json.loads(manifest.read_text(encoding="utf-8"))
     if not isinstance(data, dict) or data.get("schema_version") != 1:
@@ -499,8 +607,11 @@ def evaluate(manifest: Path, wheel: Path, sdist: Path) -> dict:
     if len(gates) != len(REQUIRED_GATES):
         raise ValueError("release gate list contains duplicates")
     source_digest = package_source_sha256(root)
+    input_digest = execution_inputs_sha256(root)
     if data.get("candidate_source_sha256") != source_digest:
         raise ValueError("release gate manifest does not match current package source")
+    if data.get("candidate_execution_inputs_sha256") != input_digest:
+        raise ValueError("release gate manifest does not match current execution inputs")
     current_version = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
     previous_release = _previous_release(root, data.get("previous_release"), current_version)
     for path in (wheel, sdist, root / "uv.lock"):
@@ -511,6 +622,7 @@ def evaluate(manifest: Path, wheel: Path, sdist: Path) -> dict:
                  "uv.lock": _digest(root / "uv.lock")}
 
     checked = []
+    local_execution_commits = set()
     for gate in gates:
         state = gate.get("status")
         if state not in {"PASS", "FAIL", "BLOCKED"}:
@@ -527,7 +639,9 @@ def evaluate(manifest: Path, wheel: Path, sdist: Path) -> dict:
             digest = _digest(path)
             if digest != gate.get("sha256"):
                 raise ValueError(f"{gate['id']}: evidence digest differs")
-            _receipt(path, gate["id"], source_digest, artifacts, previous_release)
+            receipt = _receipt(path, gate["id"], source_digest, artifacts, previous_release)
+            if gate["id"] in {"local_package", "local_cpu"}:
+                local_execution_commits.add(receipt["execution_commit"])
             record.update(evidence=location, sha256=digest)
         elif not isinstance(gate.get("reason"), str) or not gate["reason"]:
             raise ValueError(f"{gate['id']}: nonpassing gate lacks a reason")
@@ -541,21 +655,65 @@ def evaluate(manifest: Path, wheel: Path, sdist: Path) -> dict:
     dirty = bool(subprocess.run(
         ["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True, check=True
     ).stdout.strip())
+    if len(local_execution_commits) > 1:
+        raise ValueError("local gate receipts use different execution commits")
     receipts_complete = all(gate["status"] == "PASS" for gate in checked) and not dirty
-    evaluation_allowed = (
+    local_experiment_allowed = (
         not dirty
         and all(gate["status"] == "PASS" for gate in checked
                 if gate["id"] in {"local_package", "local_cpu"})
         and not any(gate["status"] == "FAIL" for gate in checked)
     )
+    hosted_evidence = None
+    hosted_reason = "hosted Linux workflow run was not supplied"
+    if not local_experiment_allowed:
+        hosted_reason = "local candidate gates or clean checkout are incomplete"
+    elif hosted_run_id is not None:
+        try:
+            hosted_evidence = _hosted_linux_from_run(
+                root, hosted_run_id, wheel, sdist, commit=commit,
+                version=current_version, source_digest=source_digest,
+                input_digest=input_digest, artifacts=artifacts,
+            )
+        except (OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired) as exc:
+            hosted_reason = str(exc)
+        else:
+            hosted_reason = None
+    linux_customer_evaluation_allowed = local_experiment_allowed and hosted_evidence is not None
+    final_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    final_dirty = bool(subprocess.run(
+        ["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True, check=True
+    ).stdout.strip())
+    if (
+        final_commit != commit
+        or final_dirty != dirty
+        or package_source_sha256(root) != source_digest
+        or execution_inputs_sha256(root) != input_digest
+    ):
+        raise ValueError("candidate identity changed during release evidence review")
     return {
         "schema_version": 1,
         "checked_at": datetime.now(UTC).isoformat(),
         "status": "REVIEW_REQUIRED" if receipts_complete else "BLOCKED",
-        "evaluation_allowed": evaluation_allowed,
-        "decision_scope": "evidence_manifest_integrity_only",
+        "evaluation_allowed": linux_customer_evaluation_allowed,
+        "local_experiment_allowed": local_experiment_allowed,
+        "linux_customer_evaluation_allowed": linux_customer_evaluation_allowed,
+        "linux_customer_evaluation_reason": hosted_reason,
+        "hosted_linux_workflow_run_id": hosted_run_id,
+        "hosted_linux_evidence": hosted_evidence,
+        "customer_environment_validated": False,
+        "decision_scope": (
+            "hosted Linux candidate evaluation"
+            if linux_customer_evaluation_allowed else
+            "local experiments only" if local_experiment_allowed else
+            "no evaluation authorized"
+        ),
         "production_release_authorized": False,
         "candidate_source_sha256": source_digest,
+        "candidate_execution_inputs_sha256": input_digest,
+        "local_execution_commit": next(iter(local_execution_commits), None),
         "previous_release": previous_release,
         "git_commit": commit,
         "git_dirty": dirty,
@@ -570,9 +728,10 @@ def main() -> int:
     parser.add_argument("--wheel", type=Path, required=True)
     parser.add_argument("--sdist", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--hosted-run-id", type=int)
     args = parser.parse_args()
     try:
-        report = evaluate(args.manifest, args.wheel, args.sdist)
+        report = evaluate(args.manifest, args.wheel, args.sdist, args.hosted_run_id)
     except (
         OSError, ValueError, KeyError, TypeError, IndexError, StopIteration,
         ElementTree.ParseError, tarfile.TarError, zipfile.BadZipFile,

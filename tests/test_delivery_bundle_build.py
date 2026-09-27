@@ -30,7 +30,14 @@ def test_bundle_rejects_candidate_replaced_after_readiness_check(
     fresh = {
         "checked_at": "2026-09-27T00:00:00+00:00",
         "evaluation_allowed": True,
+        "linux_customer_evaluation_allowed": True,
+        "hosted_linux_workflow_run_id": 123,
+        "hosted_linux_evidence": {
+            "checked_at": "2026-09-27T00:00:01+00:00",
+            "workflow_run_id": 123,
+        },
         "candidate_source_sha256": "a" * 64,
+        "candidate_execution_inputs_sha256": "c" * 64,
         "git_commit": "b" * 40,
         "gates": [],
         "artifacts": {
@@ -40,7 +47,9 @@ def test_bundle_rejects_candidate_replaced_after_readiness_check(
         },
     }
     report = tmp_path / "readiness.json"
-    report.write_text(json.dumps(fresh), encoding="utf-8")
+    prior = json.loads(json.dumps(fresh))
+    prior["hosted_linux_evidence"]["checked_at"] = "2026-09-27T00:00:00+00:00"
+    report.write_text(json.dumps(prior), encoding="utf-8")
     monkeypatch.setattr(builder, "evaluate", lambda *args: fresh)
     monkeypatch.setattr(
         builder.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout="locked\n")

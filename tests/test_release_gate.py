@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 from xml.etree import ElementTree
 
 import pytest
@@ -149,6 +150,8 @@ def test_release_gate_blocks_missing_external_evidence_and_detects_tamper(
     manifest = tmp_path / "gates.json"
     manifest.write_text(json.dumps({"schema_version": 1,
                                     "candidate_source_sha256": module.package_source_sha256(root),
+                                    "candidate_execution_inputs_sha256":
+                                        module.execution_inputs_sha256(root),
                                     "previous_release": previous,
                                     "gates": gates}))
     result = module.evaluate(manifest, wheel, sdist)
@@ -158,6 +161,8 @@ def test_release_gate_blocks_missing_external_evidence_and_detects_tamper(
                 "sha256": hashlib.sha256((root / "README.md").read_bytes()).hexdigest()}
     manifest.write_text(json.dumps({"schema_version": 1,
                                     "candidate_source_sha256": module.package_source_sha256(root),
+                                    "candidate_execution_inputs_sha256":
+                                        module.execution_inputs_sha256(root),
                                     "previous_release": previous,
                                     "gates": gates}))
     with pytest.raises(ValueError, match="evidence receipt"):
@@ -167,10 +172,146 @@ def test_release_gate_blocks_missing_external_evidence_and_detects_tamper(
     gates[0]["sha256"] = "0" * 64
     manifest.write_text(json.dumps({"schema_version": 1,
                                     "candidate_source_sha256": module.package_source_sha256(root),
+                                    "candidate_execution_inputs_sha256":
+                                        module.execution_inputs_sha256(root),
                                     "previous_release": previous,
                                     "gates": gates}))
     with pytest.raises(ValueError, match="digest differs"):
         module.evaluate(manifest, wheel, sdist)
+
+
+def test_local_experiment_does_not_grant_linux_customer_evaluation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    root = Path(__file__).parents[1]
+    original_run = subprocess.run
+
+    def clean_status(command, **kwargs):
+        if command == ["git", "status", "--porcelain"]:
+            return SimpleNamespace(stdout="")
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(
+        module, "subprocess",
+        SimpleNamespace(run=clean_status, TimeoutExpired=subprocess.TimeoutExpired),
+    )
+    monkeypatch.setattr(module, "_verify_artifacts", lambda *args: None)
+    monkeypatch.setattr(module, "_previous_release", lambda *args: {})
+    commit = original_run(
+        ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    monkeypatch.setattr(module, "_receipt", lambda *args: {"execution_commit": commit})
+    wheel, sdist = tmp_path / "candidate.whl", tmp_path / "candidate.tar.gz"
+    wheel.write_bytes(b"wheel")
+    sdist.write_bytes(b"source")
+    readme = root / "README.md"
+    gates = [
+        ({"id": gate_id, "status": "PASS", "evidence": "README.md",
+          "sha256": hashlib.sha256(readme.read_bytes()).hexdigest()}
+         if gate_id in {"local_package", "local_cpu"}
+         else {"id": gate_id, "status": "BLOCKED", "reason": "pending"})
+        for gate_id in sorted(module.REQUIRED_GATES)
+    ]
+    manifest = tmp_path / "gates.json"
+    manifest.write_text(json.dumps({
+        "schema_version": 1,
+        "candidate_source_sha256": module.package_source_sha256(root),
+        "candidate_execution_inputs_sha256": module.execution_inputs_sha256(root),
+        "previous_release": {}, "gates": gates,
+    }), encoding="utf-8")
+    local = module.evaluate(manifest, wheel, sdist)
+    assert local["local_experiment_allowed"] is True
+    assert local["evaluation_allowed"] is False
+    assert local["linux_customer_evaluation_allowed"] is False
+    assert local["decision_scope"] == "local experiments only"
+    assert local["hosted_linux_evidence"] is None
+
+    def hosted(*args, **kwargs):
+        assert args[1] == 123
+        return {"workflow_run_id": 123, "status": "HOSTED_LINUX_EVIDENCE_CONSISTENT"}
+
+    monkeypatch.setattr(module, "_hosted_linux_from_run", hosted)
+    scoped = module.evaluate(manifest, wheel, sdist, 123)
+    assert scoped["evaluation_allowed"] is True
+    assert scoped["linux_customer_evaluation_allowed"] is True
+    assert scoped["decision_scope"] == "hosted Linux candidate evaluation"
+
+    original_input_digest = module.execution_inputs_sha256
+
+    def hosted_with_candidate_drift(*args, **kwargs):
+        monkeypatch.setattr(module, "execution_inputs_sha256", lambda root: "0" * 64)
+        return hosted(*args, **kwargs)
+
+    monkeypatch.setattr(module, "_hosted_linux_from_run", hosted_with_candidate_drift)
+    with pytest.raises(ValueError, match="changed during release evidence review"):
+        module.evaluate(manifest, wheel, sdist, 123)
+    monkeypatch.setattr(module, "execution_inputs_sha256", original_input_digest)
+    monkeypatch.setattr(
+        module, "_hosted_linux_from_run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("workflow evidence differs")),
+    )
+    rejected = module.evaluate(manifest, wheel, sdist, 123)
+    assert rejected["linux_customer_evaluation_allowed"] is False
+    assert rejected["linux_customer_evaluation_reason"] == "workflow evidence differs"
+
+
+def test_hosted_evidence_fetch_uses_authenticated_pinned_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    commands = []
+    commit, source, inputs = "a" * 40, "b" * 64, "c" * 64
+    wheel = tmp_path / "candidate.whl"
+    sdist = tmp_path / "candidate.tar.gz"
+    artifacts = {wheel.name: "d" * 64, sdist.name: "e" * 64, "uv.lock": "f" * 64}
+
+    def fetched(command, **kwargs):
+        commands.append(command)
+        if command[:3] == ["gh", "run", "download"]:
+            Path(command[command.index("--dir") + 1]).mkdir()
+        elif command[0] == sys.executable:
+            report_path = Path(command[command.index("--report") + 1])
+            report_path.write_text(json.dumps({
+                "status": "HOSTED_LINUX_EVIDENCE_CONSISTENT",
+                "workflow_run_id": 123,
+                "candidate_git_commit": commit,
+                "candidate_version": "0.3.5",
+                "candidate_source_sha256": source,
+                "candidate_execution_inputs_sha256": inputs,
+                "lock_sha256": artifacts["uv.lock"],
+                "artifacts": {wheel.name: artifacts[wheel.name], sdist.name: artifacts[sdist.name]},
+                "matrix": {"3.11": {}, "3.12": {}},
+                "customer_environment_validated": False,
+                "production_release_authorized": False,
+            }), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="{}")
+
+    monkeypatch.setattr(module, "subprocess", SimpleNamespace(run=fetched))
+    report = module._hosted_linux_from_run(
+        Path(__file__).parents[1], 123, wheel, sdist,
+        commit=commit, version="0.3.5", source_digest=source,
+        input_digest=inputs, artifacts=artifacts,
+    )
+    assert commands[0] == ["gh", "auth", "status", "--active", "--hostname", "github.com"]
+    assert len([command for command in commands if command[:2] == ["gh", "run"]]) == 5
+    assert all(
+        command[-2:] == ["--repo", module.HOSTED_REPOSITORY]
+        for command in commands if command[:2] == ["gh", "run"]
+    )
+    assert report["workflow_repository"] == module.HOSTED_REPOSITORY
+    assert report["cryptographic_signature_verified"] is False
+
+    monkeypatch.setattr(
+        module, "subprocess",
+        SimpleNamespace(run=lambda *args, **kwargs: SimpleNamespace(returncode=1)),
+    )
+    with pytest.raises(ValueError, match="not authenticated"):
+        module._hosted_linux_from_run(
+            Path(__file__).parents[1], 123, wheel, sdist,
+            commit=commit, version="0.3.5", source_digest=source,
+            input_digest=inputs, artifacts=artifacts,
+        )
 
 
 def test_upgrade_rehearsal_rejects_a_different_same_version_commit() -> None:
