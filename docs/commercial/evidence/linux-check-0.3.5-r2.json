@@ -1,0 +1,79 @@
+{
+  "candidate_source_sha256": "48e7bb77ba360fb7885c8ea2c5e25553efce38c3e79cc9d38db4c5770ea4a1ca",
+  "candidate_version": "0.3.5",
+  "customer_environment_validated": false,
+  "disposition": "This revision supersedes the failed first Linux check. Downloaded raw tests, ten-case CPU acceptance, prior-version rehearsal and wheel/sdist bytes agree with the local candidate. External customer and production gates remain blocked.",
+  "download_origin_authenticated_by_offline_report": false,
+  "lock_sha256": "253c45b9a210dfcd154a5c1daafa1cc911bf50160283cc394027f1eb3e3c562a",
+  "matrix": {
+    "3.11": {
+      "artifacts": {
+        "trainguard-0.3.5-py3-none-any.whl": "d6fb211cbf34a2818383e9caba15916632b559f9c3bb076ff57ce510d0dbd370",
+        "trainguard-0.3.5.tar.gz": "1f76f1c17a48a4b402285289cc248eff08f4769c98180065a34e6f7e45c34e9b"
+      },
+      "cpu_acceptance_cases_passed": 10,
+      "junit_sha256": "b7fb87b06dfce60cbb6c4b8429c5d39e4d3c240ca97077786454b1e83a399045",
+      "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "python": "3.11.14",
+      "result_sha256": "d389b92e817d57863e1dad5674596cd573b79547b02f438bffedf405c4949b84",
+      "tests": {
+        "passed": 229,
+        "skipped_device_preflight": 0,
+        "skipped_no_gpu": 4
+      }
+    },
+    "3.12": {
+      "artifacts": {
+        "trainguard-0.3.5-py3-none-any.whl": "d6fb211cbf34a2818383e9caba15916632b559f9c3bb076ff57ce510d0dbd370",
+        "trainguard-0.3.5.tar.gz": "1f76f1c17a48a4b402285289cc248eff08f4769c98180065a34e6f7e45c34e9b"
+      },
+      "cpu_acceptance_cases_passed": 10,
+      "junit_sha256": "b78dfb0645e31875108c0b2362a66b0f058b8cba9da28ba85a6fd840f2a729cb",
+      "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "python": "3.12.3",
+      "result_sha256": "4af59d3874e0188ad4d7cf5574bec023b8bb7fa6abfec826589956d50eb71c1b",
+      "tests": {
+        "passed": 229,
+        "skipped_device_preflight": 0,
+        "skipped_no_gpu": 4
+      }
+    }
+  },
+  "offline_verifier_status": "HOSTED_LINUX_EVIDENCE_CONSISTENT",
+  "production_release_authorized": false,
+  "pull_request_workflow": "https://github.com/ywutian/trainguard/actions/runs/36313324763",
+  "push_workflow": "https://github.com/ywutian/trainguard/actions/runs/36313322739",
+  "raw_evidence_dir": "docs/commercial/evidence/linux-0.3.5-r2",
+  "raw_files": {
+    "summary-311/simulation-c9bb1be84d2f/cpu-acceptance.txt": "a916828b0474530da4f9523ad0a386755e8d71ce139bbf99f61250e532520eb9",
+    "summary-311/simulation-c9bb1be84d2f/fresh-install.txt": "2497289c2c58862136cccfb12608ab339ac77beafd0e7df4e1e7b2a0cdfe5e80",
+    "summary-311/simulation-c9bb1be84d2f/package.txt": "84e8610b7ee6d6c6e6ce310abecaa58d5be7c3dabb6723831bef8769d9ef12d4",
+    "summary-311/simulation-c9bb1be84d2f/pytest.xml": "b7fb87b06dfce60cbb6c4b8429c5d39e4d3c240ca97077786454b1e83a399045",
+    "summary-311/simulation-c9bb1be84d2f/report.md": "2b938d0e5c6897fd1d593f1530a6a622d6f7f2096e09a479f40ec88be3984aa9",
+    "summary-311/simulation-c9bb1be84d2f/result.json": "d389b92e817d57863e1dad5674596cd573b79547b02f438bffedf405c4949b84",
+    "summary-311/simulation-c9bb1be84d2f/static.txt": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+    "summary-311/simulation-c9bb1be84d2f/tests.txt": "6c5e968e328d3785dd05720ce2759cb3df4bc1f127e720c370a41bef53fefb83",
+    "summary-311/simulation-c9bb1be84d2f/upgrade-boundary.txt": "d063dede4cca3c36513671a7435cc0bbd3cdd8a0676b730c38a1294441308149",
+    "summary-311/simulation-c9bb1be84d2f/wheel.txt": "83d4a57621ee9eff68590cce0d8b827a8146f502c3865f820b4fea260d68e649",
+    "summary-312/simulation-d2455c6a4963/cpu-acceptance.txt": "cddf7a9d27b863b57f28d2a88f711337c6c3b8bb7b20f2eb8a4db30cafcd6ff3",
+    "summary-312/simulation-d2455c6a4963/fresh-install.txt": "2497289c2c58862136cccfb12608ab339ac77beafd0e7df4e1e7b2a0cdfe5e80",
+    "summary-312/simulation-d2455c6a4963/package.txt": "1ccf9e6cbe969638ff81e8bdd42c6fe76da45284aec73aeb4044868a6f986ebc",
+    "summary-312/simulation-d2455c6a4963/pytest.xml": "b78dfb0645e31875108c0b2362a66b0f058b8cba9da28ba85a6fd840f2a729cb",
+    "summary-312/simulation-d2455c6a4963/report.md": "d4726a140fa8befff5627fed6e949d6c61907b84af3652061533a3ef7da6c50c",
+    "summary-312/simulation-d2455c6a4963/result.json": "4af59d3874e0188ad4d7cf5574bec023b8bb7fa6abfec826589956d50eb71c1b",
+    "summary-312/simulation-d2455c6a4963/static.txt": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+    "summary-312/simulation-d2455c6a4963/tests.txt": "6ce975a47cab4769d8fe72d3020dda5394926082a93a500e3e2985ec9dcaa763",
+    "summary-312/simulation-d2455c6a4963/upgrade-boundary.txt": "4674f18b927f3b25cc52786c1b41681c2342fb9f673705225199f6671db69962",
+    "summary-312/simulation-d2455c6a4963/wheel.txt": "83d4a57621ee9eff68590cce0d8b827a8146f502c3865f820b4fea260d68e649",
+    "verification.json": "19463a37d62704ef9be42b6dbe1ce83405053ec630b33e1b0687a8bd9fa7b1cb",
+    "workflow-metadata.json": "71bf8f20c89d49d692b68e5b105651f08081099b1ba2e3f58ecf6248df6d3876"
+  },
+  "schema_version": 1,
+  "scope": "Hosted Linux x86_64 CPU/Gloo synthetic recovery and package verification for Python 3.11/3.12 only",
+  "status": "SUCCEEDED",
+  "tested_commit": "d54961ec3825a8dfb4802e094042d67a1e90364a",
+  "workflow_conclusions": {
+    "pull_request": "success",
+    "push": "success"
+  }
+}

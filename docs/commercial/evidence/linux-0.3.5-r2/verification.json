@@ -1,0 +1,51 @@
+{
+  "artifacts": {
+    "trainguard-0.3.5-py3-none-any.whl": "d6fb211cbf34a2818383e9caba15916632b559f9c3bb076ff57ce510d0dbd370",
+    "trainguard-0.3.5.tar.gz": "1f76f1c17a48a4b402285289cc248eff08f4769c98180065a34e6f7e45c34e9b"
+  },
+  "candidate_git_commit": "d54961ec3825a8dfb4802e094042d67a1e90364a",
+  "candidate_source_sha256": "48e7bb77ba360fb7885c8ea2c5e25553efce38c3e79cc9d38db4c5770ea4a1ca",
+  "candidate_version": "0.3.5",
+  "checked_at": "2026-09-27T10:59:14.693086+00:00",
+  "customer_environment_validated": false,
+  "download_origin_authenticated": false,
+  "lock_sha256": "253c45b9a210dfcd154a5c1daafa1cc911bf50160283cc394027f1eb3e3c562a",
+  "matrix": {
+    "3.11": {
+      "artifacts": {
+        "trainguard-0.3.5-py3-none-any.whl": "d6fb211cbf34a2818383e9caba15916632b559f9c3bb076ff57ce510d0dbd370",
+        "trainguard-0.3.5.tar.gz": "1f76f1c17a48a4b402285289cc248eff08f4769c98180065a34e6f7e45c34e9b"
+      },
+      "cpu_acceptance_cases_passed": 10,
+      "job_id": 108603276925,
+      "junit_sha256": "b7fb87b06dfce60cbb6c4b8429c5d39e4d3c240ca97077786454b1e83a399045",
+      "result_sha256": "d389b92e817d57863e1dad5674596cd573b79547b02f438bffedf405c4949b84",
+      "tests": {
+        "passed": 229,
+        "skipped_device_preflight": 0,
+        "skipped_no_gpu": 4
+      }
+    },
+    "3.12": {
+      "artifacts": {
+        "trainguard-0.3.5-py3-none-any.whl": "d6fb211cbf34a2818383e9caba15916632b559f9c3bb076ff57ce510d0dbd370",
+        "trainguard-0.3.5.tar.gz": "1f76f1c17a48a4b402285289cc248eff08f4769c98180065a34e6f7e45c34e9b"
+      },
+      "cpu_acceptance_cases_passed": 10,
+      "job_id": 108603277152,
+      "junit_sha256": "b78dfb0645e31875108c0b2362a66b0f058b8cba9da28ba85a6fd840f2a729cb",
+      "result_sha256": "4af59d3874e0188ad4d7cf5574bec023b8bb7fa6abfec826589956d50eb71c1b",
+      "tests": {
+        "passed": 229,
+        "skipped_device_preflight": 0,
+        "skipped_no_gpu": 4
+      }
+    }
+  },
+  "production_release_authorized": false,
+  "schema_version": 1,
+  "scope": "hosted Linux x86_64 CPU/Gloo and package verification; downloaded evidence only",
+  "status": "HOSTED_LINUX_EVIDENCE_CONSISTENT",
+  "workflow_event": "push",
+  "workflow_run_id": 36313322739
+}

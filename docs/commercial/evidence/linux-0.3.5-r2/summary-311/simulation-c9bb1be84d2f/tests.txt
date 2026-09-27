@@ -1,0 +1,26 @@
+........................................................................ [ 30%]
+.............................ssss....................................... [ 61%]
+........................................................................ [ 92%]
+.................                                                        [100%]
+=============================== warnings summary ===============================
+tests/test_checkpoint.py: 1 warning
+tests/test_checkpoint_crash_matrix.py: 7 warnings
+tests/test_lifecycle.py: 1 warning
+tests/test_remote_dcp_roundtrip.py: 1 warning
+  /home/runner/work/trainguard/trainguard/.venv/lib/python3.11/site-packages/torch/distributed/checkpoint/utils.py:488: UserWarning: torch.distributed is disabled, unavailable or uninitialized, assuming the intent is to save in a single process.
+    return func(*args, **kwargs)
+
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[during_payload_fsync]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_rank_sidecar]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[during_payload_scan]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_manifest]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_marker_replace]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_marker_durable]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_commit_before_index]
+tests/test_lifecycle.py::test_retention_preserves_two_loadable_backups_after_two_restore_failures
+tests/test_remote_dcp_roundtrip.py::test_real_dcp_bytes_publish_fallback_and_restore_through_remote_model
+  /home/runner/work/trainguard/trainguard/.venv/lib/python3.11/site-packages/torch/distributed/checkpoint/utils.py:488: UserWarning: torch.distributed is disabled, unavailable or uninitialized, assuming the intent is to load in a single process.
+    return func(*args, **kwargs)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+229 passed, 4 skipped, 19 warnings in 757.59s (0:12:37)

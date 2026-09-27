@@ -1,0 +1,1 @@
+{"version": "0.3.5", "source_sha256": "48e7bb77ba360fb7885c8ea2c5e25553efce38c3e79cc9d38db4c5770ea4a1ca", "sdist_members": 95, "passed": true}
