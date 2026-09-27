@@ -24,10 +24,10 @@
 3. 成功后归档本机安全摘要：
 
    ```bash
-   uv run python scripts/archive_local_evidence.py <成功的 simulation 目录> --label local-0.3.6-r3
+   uv run python scripts/archive_local_evidence.py <成功的 simulation 目录> --label 0.3.6-r<N>
    ```
 
-   以归档命令输出的两个收据路径和 SHA-256 更新 `docs/commercial/release-gates.json` 的 `local_package`、`local_cpu` 及当前候选源码/执行输入摘要。只提交证据和放行清单；若改变执行输入，返回第 1 步重跑。保留原始本机目录，不把客户敏感原文上传。
+   脚本会自动加 `local-` 前缀，输出目录为 `docs/commercial/evidence/local-0.3.6-r<N>`。以归档命令输出的两个收据路径和 SHA-256 更新 `docs/commercial/release-gates.json` 的 `local_package`、`local_cpu` 及当前候选源码/执行输入摘要。只提交证据和放行清单；若改变执行输入，返回第 1 步重跑。保留原始本机目录，不把客户敏感原文上传。
 4. 推送同一分支，并选用该提交的 **push** 工作流运行 ID；不要用独立诊断运行或旧 PR 重复运行冒充验收。等待 Ubuntu 24.04、Python 3.11 和 3.12 两条完整 lane 均成功，确认各自原始摘要、供应链记录和 wheel/sdist 已按工作流规则留存。若任一失败，定位原因并从第 1 步重新冻结候选。
 5. 使用第 2 步产出的 wheel、sdist 与第 4 步运行 ID 执行：
 
