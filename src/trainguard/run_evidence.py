@@ -65,6 +65,15 @@ def saved_completed_metadata_errors(status: Any, config: ProjectConfig) -> list[
         "config_fingerprint"
     ) != config.fingerprint():
         errors.append("run configuration differs from saved configuration")
+    if status.get("local_reference_store") != config.checkpoint.reference_store_path:
+        errors.append("saved local reference database identity differs")
+    requires_experiment = (
+        config.fault.kind != "none"
+        or config.recovery.omit_state != "none"
+        or config.checkpoint.reference_store_path is not None
+    )
+    if requires_experiment and status.get("experiment_authorized") is not True:
+        errors.append("saved experiment authorization is missing")
     if "execution_started_monotonic" in status or "execution_load_before" in status:
         errors.append("completed run retains an unfinished timing window")
     try:

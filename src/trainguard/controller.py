@@ -33,7 +33,7 @@ from trainguard.lifecycle import prune_checkpoints
 from trainguard.privacy import key_for_run, load_sample_key, sample_key_id
 from trainguard.records import parse_event
 from trainguard.reference_backend import LocalReferenceSession, check_reference_mode
-from trainguard.remote_protocol import InvalidRemoteCheckpoint, RemoteProtocolError
+from trainguard.remote_protocol import InvalidRemoteCheckpoint
 from trainguard.restore_failures import (
     failed_restore_candidates,
     record_group_ended,
@@ -954,17 +954,6 @@ def resume(run_dir: Path) -> bool:
         raise ValueError("saved config fingerprint differs from run metadata")
     configured_reference = config.checkpoint.reference_store_path
     reference_path = status.get("local_reference_store")
-    if reference_path != configured_reference:
-        raise ValueError("saved local reference database identity differs")
-    if configured_reference is not None:
-        try:
-            reference_path = check_reference_mode(config, run_dir, Path(configured_reference))
-        except (OSError, ValueError):
-            if status["status"] == "SUCCEEDED":
-                return _invalidate_completed_run(
-                    run_dir, status, "completed reference database path is invalid"
-                )
-            raise
     if not isinstance(status.get("run_id"), str) or not isinstance(
         status.get("started_at"), str
     ):
@@ -997,11 +986,40 @@ def resume(run_dir: Path) -> bool:
                 or identity["started_at"] != status["started_at"]
             ):
                 raise ValueError("run index identity differs from run metadata")
-            _assert_no_owned_workers(run_dir, status["run_id"], store.attempts(status["run_id"]))
+            attempts = store.attempts(status["run_id"])
+            _assert_no_owned_workers(run_dir, status["run_id"], attempts)
+
+            def reject_reference(reason: str) -> bool:
+                if status["status"] == "SUCCEEDED":
+                    return _invalidate_completed_run(
+                        run_dir, status, reason, lock_held=True
+                    )
+                for field in (
+                    "execution_started_monotonic", "execution_load_before", "measurement"
+                ):
+                    status.pop(field, None)
+                audit = status.get("post_run_audit")
+                if isinstance(audit, dict) and audit.get("status") == "PENDING":
+                    audit.update(status="FAILED", reason=reason)
+                if attempts and attempts[-1]["status"] == "RUNNING":
+                    store.finish_attempt(
+                        attempts[-1]["attempt_id"], "INTERRUPTED", None,
+                        "controller exited before reference verification",
+                    )
+                store.set_run_status(status["run_id"], "FAILED")
+                _set_status(run_dir, status, "FAILED", reason)
+                return False
+
+            if reference_path != configured_reference:
+                if status["status"] == "SUCCEEDED":
+                    return reject_reference(
+                        "saved local reference database identity differs"
+                    )
+                raise ValueError("saved local reference database identity differs")
             if status["status"] == "SUCCEEDED":
-                attempts = store.attempts(status["run_id"])
+                evidence_errors = completed_index_errors(run_dir, status, config)
                 if (
-                    completed_index_errors(run_dir, status, config)
+                    evidence_errors
                     or not attempts
                     or status.get("attempt_id") != attempts[-1]["attempt_id"]
                     or _valid_attempt_summary(
@@ -1010,7 +1028,10 @@ def resume(run_dir: Path) -> bool:
                     is None
                 ):
                     return _invalidate_completed_run(
-                        run_dir, status, "completion evidence missing or invalid", lock_held=True
+                        run_dir, status,
+                        "completion evidence missing or invalid"
+                        + (": " + "; ".join(evidence_errors) if evidence_errors else ""),
+                        lock_held=True,
                     )
             try:
                 reference = (
@@ -1018,13 +1039,12 @@ def resume(run_dir: Path) -> bool:
                         run_dir, reference_path, config, status["run_id"], resume=True
                     ) if reference_path is not None else None
                 )
-            except (OSError, ValueError, sqlite3.Error, RemoteProtocolError):
-                if status["status"] == "SUCCEEDED":
-                    return _invalidate_completed_run(
-                        run_dir, status, "completed reference authority is invalid",
-                        lock_held=True,
-                    )
-                raise
+            except (OSError, ValueError, sqlite3.Error, RuntimeError) as exc:
+                if configured_reference is None:
+                    raise
+                return reject_reference(
+                    f"reference authority is invalid: {type(exc).__name__}: {exc}"
+                )
             if status["status"] != "SUCCEEDED":
                 # A different controller cannot reconstruct the original wall-time window.
                 status.pop("execution_started_monotonic", None)

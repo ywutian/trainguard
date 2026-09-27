@@ -254,6 +254,19 @@ def test_old_local_configuration_without_reference_field_remains_valid(
     assert build_support_bundle(run_dir)["status"] == "SUCCEEDED"
     assert controller.resume(run_dir)
     assert json.loads(status_path.read_text())["status"] == "SUCCEEDED"
+    injected = json.loads(status_path.read_text())
+    injected["local_reference_store"] = str(tmp_path / "wrong.sqlite3")
+    write_json_atomic(status_path, injected)
+    comparison = validate_runs(run_dir, run_dir)
+    assert comparison["passed"] is False
+    assert any(
+        "saved local reference database identity differs" in item
+        for item in comparison["differences"]
+    )
+    with pytest.raises(SupportBundleError, match="database identity differs"):
+        build_support_bundle(run_dir)
+    assert not controller.resume(run_dir)
+    assert json.loads(status_path.read_text())["status"] == "FAILED"
 
 
 def test_reference_initialization_failure_is_saved_as_failed(
@@ -358,8 +371,8 @@ def test_head_restores_real_two_rank_training_after_local_checkpoints_are_delete
     assert saved["config"]["checkpoint"]["reference_store_path"] == str(database)
     saved.pop("local_reference_store")
     write_json_atomic(recovered / "run.json", saved)
-    with pytest.raises(ValueError, match="database identity differs"):
-        controller.resume(recovered)
+    assert not controller.resume(recovered)
+    assert json.loads((recovered / "run.json").read_text())["status"] == "FAILED"
 
 
 def test_local_committed_without_head_is_not_recovery_authority(
@@ -377,6 +390,103 @@ def test_local_committed_without_head_is_not_recovery_authority(
     assert len(ordered_candidates(recovered)) == 2
     assert not controller.resume(recovered)
     assert "no valid checkpoint" in json.loads((recovered / "run.json").read_text())["reason"]
+
+
+@pytest.mark.parametrize(
+    "damage,expected",
+    [
+        ("public-database", "not private"),
+        ("corrupt-database", "DatabaseError"),
+        ("corrupt-head", "run head cannot be decoded"),
+        ("corrupt-authority", "stored authority cannot be decoded"),
+    ],
+)
+def test_unfinished_reference_authority_failure_is_recorded_after_workers_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str, expected: str
+) -> None:
+    database = tmp_path / "objects.sqlite3"
+    with monkeypatch.context() as patch:
+        stopped = _stop_after_first_attempt(patch)
+        with pytest.raises(stopped):
+            controller.run(
+                _config(tmp_path, recover=True), tmp_path / "runs",
+                allow_experiment=True, reference_store_path=database,
+            )
+    run_dir = next((tmp_path / "runs").iterdir())
+    saved = json.loads((run_dir / "run.json").read_text())
+    assert saved["status"] == "RUNNING"
+    store = LocalReferenceObjectStore(database)
+    if damage == "public-database":
+        database.chmod(0o644)
+    elif damage == "corrupt-database":
+        database.write_bytes(b"invalid sqlite content")
+    else:
+        key = f"runs/{saved['run_id']}/{'HEAD' if damage == 'corrupt-head' else 'AUTHORITY'}"
+        current = store.get(key)
+        assert current is not None
+        store.put(key, b"{", if_match=current.etag)
+    assert not controller.resume(run_dir)
+    after = json.loads((run_dir / "run.json").read_text())
+    assert after["status"] == "FAILED"
+    assert expected in after["reason"]
+    assert not any((run_dir / "attempts").glob("attempt-002"))
+    with sqlite3.connect(run_dir / "run.sqlite3") as index:
+        assert index.execute("SELECT status FROM runs").fetchone() == ("FAILED",)
+        assert index.execute("SELECT status FROM attempts").fetchone() == ("INTERRUPTED",)
+
+
+def test_reference_identity_mismatch_is_not_reclassified_as_resource_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "objects.sqlite3"
+    with monkeypatch.context() as patch:
+        stopped = _stop_after_first_attempt(patch)
+        with pytest.raises(stopped):
+            controller.run(
+                _config(tmp_path, recover=True), tmp_path / "runs",
+                allow_experiment=True, reference_store_path=database,
+            )
+    run_dir = next((tmp_path / "runs").iterdir())
+    status_path = run_dir / "run.json"
+    saved = json.loads(status_path.read_text())
+    saved["local_reference_store"] = str(tmp_path / "another.sqlite3")
+    write_json_atomic(status_path, saved)
+    with pytest.raises(ValueError, match="database identity differs"):
+        controller.resume(run_dir)
+    assert json.loads(status_path.read_text())["status"] == "RUNNING"
+
+
+@pytest.mark.parametrize(
+    "damage,expected",
+    [
+        ("reference-identity", "reference database identity"),
+        ("authorization", "experiment authorization"),
+    ],
+)
+def test_completed_reference_claim_rejects_saved_identity_or_authorization_change(
+    tmp_path: Path, damage: str, expected: str
+) -> None:
+    run_dir, ok = controller.run(
+        _sync_without_fault(tmp_path), tmp_path / "runs",
+        allow_experiment=True, reference_store_path=tmp_path / "objects.sqlite3",
+    )
+    assert ok, (run_dir / "launcher.log").read_text()
+    status_path = run_dir / "run.json"
+    saved = json.loads(status_path.read_text())
+    if damage == "reference-identity":
+        saved["local_reference_store"] = str(tmp_path / "another.sqlite3")
+    else:
+        saved["experiment_authorized"] = False
+    write_json_atomic(status_path, saved)
+    comparison = validate_runs(run_dir, run_dir)
+    assert comparison["passed"] is False
+    assert any(expected in item for item in comparison["differences"])
+    with pytest.raises(SupportBundleError, match=expected):
+        build_support_bundle(run_dir)
+    assert not controller.resume(run_dir)
+    assert json.loads(status_path.read_text())["status"] == "FAILED"
+    with sqlite3.connect(run_dir / "run.sqlite3") as index:
+        assert index.execute("SELECT status FROM runs").fetchone() == ("FAILED",)
 
 
 @pytest.mark.parametrize("intrusion", ["symlink", "public", "oversize"])
