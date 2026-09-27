@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from trainguard import controller
+from trainguard.checkpoint import candidate_path
 from trainguard.config import load_config
 from trainguard.run_store import RunStore
 from trainguard.support import build_support_bundle
@@ -119,6 +120,52 @@ def test_unsatisfied_retention_budget_cannot_pass_post_run_audit(tmp_path):
     assert resumed_status["post_run_audit"]["budget_satisfied"] is False
     with sqlite3.connect(run_dir / "run.sqlite3") as database:
         assert database.execute("SELECT status FROM attempts").fetchall() == [("SUCCEEDED",)]
+
+
+def test_older_checkpoint_cannot_certify_completed_attempt(tmp_path, monkeypatch):
+    settings = config().model_dump()
+    settings["training"]["total_steps"] = 4
+    settings["checkpoint"].update(mode="sync", interval_steps=1, keep_last_k=2)
+    source = tmp_path / "final-checkpoint-config.json"
+    source.write_text(json.dumps(settings))
+    original = controller._scan_checkpoints
+    final_marker = None
+
+    def damage_final_at_audit(run_dir, *args, **kwargs):
+        nonlocal final_marker
+        if kwargs.get("audit") and final_marker is None:
+            final = candidate_path(run_dir, "attempt-001", 4)
+            final_marker = (final / "COMMITTED").read_bytes()
+            (final / "COMMITTED").write_bytes(b"invalid final checkpoint\n")
+        return original(run_dir, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(controller, "_scan_checkpoints", damage_final_at_audit)
+        with pytest.raises(RuntimeError, match="no valid final checkpoint"):
+            controller.run(source, tmp_path / "runs")
+    run_dir = next((tmp_path / "runs").iterdir())
+    status = json.loads((run_dir / "run.json").read_text())
+    assert status["status"] == "FINALIZING"
+    assert status["post_run_audit"]["status"] == "FAILED"
+    assert final_marker is not None
+    with sqlite3.connect(run_dir / "run.sqlite3") as database:
+        checkpoints = {
+            Path(path).name: state for path, state in database.execute(
+                "SELECT path, status FROM checkpoints"
+            )
+        }
+        assert checkpoints["step-000004-attempt-001"] == "INVALID"
+        assert checkpoints["step-000003-attempt-001"] == "VALID"
+    with pytest.raises(RuntimeError, match="no valid final checkpoint"):
+        controller.resume(run_dir)
+    assert json.loads((run_dir / "run.json").read_text())["status"] == "FINALIZING"
+
+    (candidate_path(run_dir, "attempt-001", 4) / "COMMITTED").write_bytes(final_marker)
+    assert controller.resume(run_dir)
+    status = json.loads((run_dir / "run.json").read_text())
+    assert status["status"] == "SUCCEEDED"
+    assert status["post_run_audit"]["status"] == "PASSED"
+    assert status["post_run_audit"]["final_checkpoint"]["global_step"] == 4
 
 
 @pytest.mark.parametrize("failure", ["pid", "events"])

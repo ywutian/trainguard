@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
-INPUT_DIRECTORIES = ("src", "tests", "scripts", "configs")
-INPUT_FILES = ("pyproject.toml", "uv.lock")
+INPUT_DIRECTORIES = ("src", "tests", "scripts", "configs", "examples", ".github/workflows")
+INPUT_FILES = (
+    ".gitignore", "LICENSE", "README.md", "pyproject.toml", "uv.lock",
+    "docs/commercial/customer-pilot-template.md",
+    "docs/commercial/market-evidence-2026-09-26.md",
+    "docs/commercial/operations-runbook.md",
+    "docs/commercial/pilot-ledger-template.json",
+    "docs/plans/product-closure-2026-09-26.md",
+)
 GENERATED_DIRECTORIES = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
 GENERATED_SUFFIXES = {".pyc", ".pyo"}
 
@@ -44,4 +52,14 @@ def execution_inputs_sha256(root: Path) -> str:
         digest.update(relative)
         digest.update(len(content).to_bytes(8, "big"))
         digest.update(content)
+    gate_manifest = root / "docs/commercial/release-gates.json"
+    if gate_manifest.is_symlink() or not gate_manifest.is_file():
+        raise ValueError("release gate manifest is missing or linked")
+    previous = json.loads(gate_manifest.read_text(encoding="utf-8"))["previous_release"]
+    content = json.dumps(previous, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    label = b"docs/commercial/release-gates.json:previous_release"
+    digest.update(len(label).to_bytes(8, "big"))
+    digest.update(label)
+    digest.update(len(content).to_bytes(8, "big"))
+    digest.update(content)
     return digest.hexdigest()

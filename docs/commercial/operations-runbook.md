@@ -47,13 +47,15 @@ Sev1 包含疑似错误恢复、重复有效写入、无有效候选或数据泄
 
 ## 4. 发布与证据
 
-运行 `scripts/run_simulation_closure.py --output-root <结果目录> --previous-ref <已审查上一版本完整提交>` 取得静态检查、全量测试、固定十案例 CPU 故障矩阵、wheel/sdist、源码身份、锁依赖新环境安装和卸载证据。上一版提交、wheel 与锁摘要由 `release-gates.json` 固定；不匹配即拒绝升级演练。每个本机步骤有期限，超时记为失败并保留原始输出；门禁会清理发现的子进程组。再运行 `scripts/check_release_readiness.py` 核对候选源码、完整重建的交付件、锁、原始本机测试身份与摘要以及每个门槛证据哈希。下载托管 Linux 3.11/3.12 工作流的摘要和包后，运行 `scripts/check_hosted_linux_evidence.py`，以工作流元数据、两个版本的原始结果及交付件核对当前提交与本机包的逐字节一致性。该离线检查只证明所提供文件的内部一致性，下载来源仍须由操作者从受信任工作流核实，也不代表客户环境验收。任何门槛为 `FAIL`/`BLOCKED` 或文件变化时返回非零；即使全部收据完整，报告也仅给出 `REVIEW_REQUIRED`，绝不自动授权生产发布。当前真实基础设施和客户签收门槛保持 `BLOCKED`。
+运行 `scripts/run_simulation_closure.py --output-root <结果目录> --previous-ref <已审查上一版本完整提交>` 取得静态检查、全量测试、固定十案例 CPU 故障矩阵、wheel/sdist、源码身份、锁依赖新环境安装和卸载证据。上一版提交、wheel 与锁摘要由 `release-gates.json` 固定；不匹配即拒绝升级演练。每个本机步骤有期限，超时记为失败并保留原始输出；门禁会清理发现的子进程组。执行输入摘要覆盖源码、测试、脚本、配置、示例、工作流及随包文档；每步前后都须一致。证据收据可在仅新增文档/证据的提交中保存，任何执行输入变化均要求重新跑本机门禁。再运行 `scripts/check_release_readiness.py` 核对候选源码、完整重建的交付件、锁、原始本机测试身份与摘要以及每个门槛证据哈希。若只做本机实验，可不指定托管运行 ID；此时 `local_experiment_allowed` 可为真，但 `evaluation_allowed` 和 `linux_customer_evaluation_allowed` 必须为假。
+
+客户 Linux 受限评价还须把已成功的固定仓库 push 工作流 ID 交给 `scripts/check_release_readiness.py --hosted-run-id <运行 ID>`。检查器通过当前已认证账户实时读取工作流元数据，下载 Python 3.11/3.12 的原始摘要和包，并用 `scripts/check_hosted_linux_evidence.py` 重新核对同一候选提交、执行输入、测试身份、故障矩阵和交付件字节。操作者可以单独运行离线核验器排查问题，但手工提供的离线文件不授予客户评价包构建权限。在线账户读取证明的是当次下载路径，报告仍不含独立密码学签名，也不代表客户环境验收。任何商业门槛为 `FAIL`/`BLOCKED` 时生产状态仍是 `BLOCKED`；即使全部收据完整，报告也仅给出 `REVIEW_REQUIRED`，绝不自动授权生产发布。当前真实基础设施和客户签收门槛保持 `BLOCKED`。
 
 哈希检查能发现证据文件变化，不能证明证据内容真实、客户授权有效或结论适用于另一环境。每个门槛须由指定技术/商业负责人审阅原始记录并签收；脚本只执行完整性和状态阻断。
 
 放行清单中的 `PASS` 对应结构化收据，绑定候选源码、wheel/sdist/锁摘要、作用域、原始记录摘要与审核引用。本机收据还绑定可复核的合成测试证据副本；仓库副本会替换本机工作区路径和主机名，未经改写的原件留在本机结果目录并记录哈希，交付前仍需逐项审阅。客户保密原件留在客户控制的存储中。外部收据中的审核引用是供人工核验的索引，脚本不能判断签名、授权或原始内容真实性，因此即便收据齐全也只能进入人工复核。生产上线须由合同指定的技术、安全和商业负责人核对客户控制的原件及适用范围，独立批准具体版本/环境/作业后执行，不能把机器状态当作批准。当前源码摘要在候选构建后写入清单；模板状态未绑定源码时会返回 `INVALID`，不得作为放行报告。
 
-`scripts/verify_upgrade_boundary.py --previous-ref <旧提交> --current-wheel <当前 wheel>` 使用相邻补丁版本各自的依赖锁和环境，演练新版本拒绝旧版中断运行且不改旧运行任何文件、旧版从有效检查点恢复并与独立参考一致。生成阻断报告后，可用 `scripts/build_delivery_bundle.py --wheel <wheel> --sdist <sdist> --readiness-report <报告> --output-dir <目录>` 生成带 SHA-256 清单、门槛收据和本机合成测试摘要的 `EVALUATION_ONLY` 候选包；仅当本机安装和 CPU 门槛已通过、源码清洁且没有明确失败时，才允许交客户审查或按研究工作说明书在隔离环境评估。该命令不生成生产发布标签；正式发布由上一段的独立人工批准流程控制。
+`scripts/verify_upgrade_boundary.py --previous-ref <旧提交> --current-wheel <当前 wheel>` 使用相邻补丁版本各自的依赖锁和环境，演练新版本拒绝旧版中断运行且不改旧运行任何文件、旧版从有效检查点恢复并与独立参考一致。取得上述在线托管 Linux 检查通过的阻断报告后，可用 `scripts/build_delivery_bundle.py --wheel <wheel> --sdist <sdist> --readiness-report <报告> --output-dir <目录>` 生成带 SHA-256 清单、门槛收据和本机合成测试摘要的 `EVALUATION_ONLY` 候选包。只有 `linux_customer_evaluation_allowed=true` 才能构建和接收这一受限评价包；本机实验通过不足以生成客户评价包。该命令不生成生产发布标签；正式发布由上一段的独立人工批准流程控制。
 
 收件方先运行 `python scripts/verify_delivery_bundle.py <交付包目录>`，确认清单中每个文件、候选 wheel/sdist/锁以及本机证据引用仍一致，并将输出的 `manifest_sha256` 与通过独立可信渠道收到的摘要比对。包内脚本和清单的自洽性检查只能检测传输或误操作引起的变化，不能单独证明发送者身份或原始审查结论真实。校验失败时隔离该包并要求重新交付，不安装其中的候选件。
 

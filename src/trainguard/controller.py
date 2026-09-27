@@ -462,8 +462,19 @@ def _finalize_completed_attempt(
     store.set_run_status(run_id, "FINALIZING")
     try:
         if config.checkpoint.mode != "none":
-            if _scan_checkpoints(run_dir, config, run_id, store, audit=True) is None:
+            selected = _scan_checkpoints(run_dir, config, run_id, store, audit=True)
+            if selected is None:
                 raise RuntimeError("no valid checkpoint remains after training")
+            if (
+                selected.global_step != config.training.total_steps
+                or selected.attempt_id != attempt_id
+            ):
+                raise RuntimeError("completed attempt has no valid final checkpoint")
+            audit["final_checkpoint"] = {
+                "attempt_id": selected.attempt_id,
+                "global_step": selected.global_step,
+                "manifest_sha256": selected.manifest_sha256,
+            }
             retention = prune_checkpoints(run_dir, config, run_id)
             audit["retention_enabled"] = retention.get("enabled")
             audit["budget_satisfied"] = retention.get("budget_satisfied")
