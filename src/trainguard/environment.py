@@ -273,6 +273,87 @@ def require_output_outside_import_roots(output: Path) -> None:
             raise ValueError("run output must be outside active Python import roots")
 
 
+def _trusted_system_directory(path: Path, boundary: Path, owner_uid: int) -> bool:
+    if not path.is_relative_to(boundary):
+        return False
+    for current in (path, *path.parents):
+        if not current.is_relative_to(boundary):
+            break
+        try:
+            metadata = current.lstat()
+        except OSError:
+            return False
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != owner_uid
+            or metadata.st_mode & 0o022
+        ):
+            return False
+    return True
+
+
+def _system_sitecustomize_identity(
+    candidate: Path, stdlib_root: Path, *,
+    system_lib_root: Path = Path("/usr/lib"), config_root: Path = Path("/etc"),
+    owner_uid: int = 0,
+) -> tuple[str, str, str, str, str]:
+    """Bind the fixed Debian/Ubuntu interpreter hook without trusting arbitrary links."""
+    version = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    expected_source = system_lib_root / version / "sitecustomize.py"
+    expected_target = config_root / version / "sitecustomize.py"
+    if (
+        sys.platform != "linux"
+        or stdlib_root != expected_source.parent
+        or candidate != expected_source
+        or not _trusted_system_directory(candidate.parent, system_lib_root.parent, owner_uid)
+        or not _trusted_system_directory(expected_target.parent, config_root, owner_uid)
+    ):
+        raise ValueError("Python startup file is linked or not a regular file")
+    try:
+        before = candidate.lstat()
+        link_text = os.readlink(candidate)
+        if (
+            not stat.S_ISLNK(before.st_mode)
+            or before.st_uid != owner_uid
+            or link_text != str(expected_target)
+            or expected_target.is_symlink()
+        ):
+            raise ValueError("Python startup file is linked or not a regular file")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(expected_target, flags)
+        try:
+            first = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(first.st_mode)
+                or first.st_uid != owner_uid
+                or first.st_mode & 0o022
+                or first.st_size > 65536
+            ):
+                raise ValueError("system Python startup target is unsafe")
+            with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                content = stream.read(65537)
+            last = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        identity = lambda item: (
+            item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns
+        )
+        after = candidate.lstat()
+        if (
+            len(content) > 65536
+            or identity(first) != identity(last)
+            or identity(before) != identity(after)
+            or os.readlink(candidate) != link_text
+        ):
+            raise ValueError("system Python startup link changed during verification")
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("system Python startup link cannot be verified") from exc
+    return (
+        str(candidate), "system_sitecustomize_symlink", link_text,
+        str(expected_target), hashlib.sha256(content).hexdigest(),
+    )
+
+
 def startup_identity_sha256() -> str:
     """Bind import lookup paths, startup hooks, and Python path controls without exposing paths."""
     paths = [Path(entry or os.getcwd()).resolve() for entry in sys.path]
@@ -296,9 +377,12 @@ def startup_identity_sha256() -> str:
                 str(root), _import_entry_sha256(zip_root[0] if zip_root is not None else root)
             ))
     startup_files = []
+    system_hook: tuple[Path, Path, str] | None = None
     scan_paths = set(paths)
     if pythonpath:
         scan_paths.update(Path(entry).resolve() for entry in pythonpath.split(os.pathsep))
+    package_paths = sysconfig.get_paths()
+    stdlib_root = Path(package_paths["stdlib"]).resolve()
     for directory in sorted(scan_paths):
         zip_root = _zip_import_container(directory)
         if zip_root is not None or directory.is_file():
@@ -315,11 +399,15 @@ def startup_identity_sha256() -> str:
         for candidate in sorted(candidates):
             if not candidate.exists() and not candidate.is_symlink():
                 continue
-            if candidate.is_symlink() or not candidate.is_file():
+            if candidate.is_symlink():
+                linked = _system_sitecustomize_identity(candidate, stdlib_root)
+                startup_files.append(linked)
+                system_hook = (candidate, Path(linked[3]), linked[4])
+                continue
+            if not candidate.is_file():
                 raise ValueError("Python startup file is linked or not a regular file")
             startup_files.append((str(candidate), hashlib.sha256(candidate.read_bytes()).hexdigest()))
     source_root = Path(__file__).resolve().parents[1]
-    package_paths = sysconfig.get_paths()
     installed_roots = {
         Path(package_paths[name]).resolve()
         for name in ("purelib", "platlib") if package_paths.get(name)
@@ -351,7 +439,13 @@ def startup_identity_sha256() -> str:
         source = getattr(module, "__file__", None)
         if not isinstance(source, str):
             raise TypeError(f"Python startup hook identity is incomplete: {name}")
-        hooks[name] = hashlib.sha256(Path(source).read_bytes()).hexdigest()
+        source_path = Path(source)
+        if name == "sitecustomize" and system_hook is not None and source_path in system_hook[:2]:
+            hooks[name] = system_hook[2]
+        elif source_path.is_symlink() or not source_path.is_file():
+            raise ValueError("Python startup hook is linked or not a regular file")
+        else:
+            hooks[name] = hashlib.sha256(source_path.read_bytes()).hexdigest()
     payload = {
         "sys_path": [str(path) for path in paths],
         "pythonpath_entries": import_entries,
