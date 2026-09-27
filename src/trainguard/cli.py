@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib.resources import files
 from pathlib import Path
 from typing import Annotated
 
@@ -11,7 +12,7 @@ from trainguard import __version__
 from trainguard.benchmark import resume_benchmark, run_benchmark
 from trainguard.campaign import resume_campaign, run_campaign
 from trainguard.config import load_config
-from trainguard.controller import RunActiveError
+from trainguard.controller import ExperimentNotAuthorizedError, RunActiveError
 from trainguard.controller import resume as resume_run
 from trainguard.controller import run as launch_run
 from trainguard.events import write_json_atomic
@@ -27,6 +28,24 @@ def version() -> None:
     typer.echo(__version__)
 
 
+@app.command("init-config")
+def init_config(
+    output: Annotated[Path, typer.Option("--output")] = Path("cpu_demo.yaml"),
+) -> None:
+    """Write the packaged CPU example without replacing an existing file."""
+    try:
+        template = files("trainguard").joinpath("templates/cpu_demo.yaml").read_text(
+            encoding="utf-8"
+        )
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with output.open("x", encoding="utf-8") as stream:
+            stream.write(template)
+    except FileExistsError as exc:
+        typer.echo(f"Configuration already exists: {output}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Configuration written: {output}")
+
+
 @app.command("validate-config")
 def validate_config(
     config: Annotated[Path, typer.Option("--config", exists=True, file_okay=True, dir_okay=False)],
@@ -40,14 +59,37 @@ def validate_config(
 def run(
     config: Annotated[Path, typer.Option("--config", exists=True, file_okay=True, dir_okay=False)],
     output_root: Annotated[Path, typer.Option("--output-root")] = DEFAULT_OUTPUT_ROOT,
+    allow_experiment: Annotated[bool, typer.Option("--allow-experiment")] = False,
 ) -> None:
     """Run a fixed-size training workload with bounded recovery."""
-    run_dir, succeeded = launch_run(config, output_root)
+    try:
+        run_dir, succeeded = launch_run(
+            config, output_root, allow_experiment=allow_experiment
+        )
+    except ExperimentNotAuthorizedError as exc:
+        typer.echo(f"{exc}; pass --allow-experiment in an isolated test", err=True)
+        raise typer.Exit(2) from exc
     typer.echo(f"Run directory: {run_dir}")
     if not succeeded:
         typer.echo(f"Training failed; inspect {run_dir / 'launcher.log'}", err=True)
         raise typer.Exit(1)
     typer.echo(f"Training completed; summary: {run_dir / 'summary.json'}")
+
+
+@app.command("support-bundle")
+def support_bundle(
+    run_dir: Annotated[Path, typer.Argument(exists=True, file_okay=False, dir_okay=True)],
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Export a limited, read-only diagnostic summary for customer review."""
+    from trainguard.support import SupportBundleError, export_support_bundle
+
+    try:
+        export_support_bundle(run_dir, output)
+    except SupportBundleError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Diagnostic bundle: {output}")
 
 
 @app.command("resume")

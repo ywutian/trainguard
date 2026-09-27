@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import platform
 import subprocess
@@ -68,9 +69,46 @@ def _persist(directory: Path, result: dict) -> None:
     (directory / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _acceptance_complete(acceptance: dict) -> bool:
+    expected = {
+        f"{mode}-{fault}": (mode, fault, "none", True)
+        for mode, fault in [
+            ("sync", "worker_exit"), ("async", "worker_exit"),
+            ("sync", "save_interrupt"), ("async", "save_interrupt"),
+            ("sync", "corrupt"), ("async", "corrupt"), ("sync", "hang"),
+        ]
+    }
+    expected.update({
+        f"omit-{state}": ("sync", "worker_exit", state, False)
+        for state in ("rng", "optimizer", "cursor")
+    })
+    cases = acceptance.get("cases")
+    if (
+        acceptance.get("status") != "SUCCEEDED"
+        or acceptance.get("reference_status") != "VALIDATED"
+        or not isinstance(cases, list)
+        or len(cases) != len(expected)
+        or not all(isinstance(case, dict) and isinstance(case.get("name"), str)
+                   for case in cases)
+        or {case["name"] for case in cases} != set(expected)
+    ):
+        return False
+    return all(
+        case.get("status") == "PASSED"
+        and (case.get("mode"), case.get("fault"), case.get("omit_state"),
+             case.get("expected_exact")) == expected[case["name"]]
+        and case.get("recovery_count") == 1
+        and case.get("fault_attributed") is True
+        and isinstance(case.get("validation"), dict)
+        and case["validation"].get("passed") is case["expected_exact"]
+        for case in cases
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--previous-ref", required=True)
     args = parser.parse_args()
     directory = (args.output_root / f"simulation-{uuid.uuid4().hex[:12]}").resolve()
     directory.mkdir(parents=True)
@@ -120,8 +158,9 @@ def main() -> int:
             return 1
         result["acceptance_path"] = str(acceptance_paths[0])
         result["acceptance"] = json.loads(acceptance_paths[0].read_text(encoding="utf-8"))
-        if result["acceptance"]["status"] != "SUCCEEDED":
+        if not _acceptance_complete(result["acceptance"]):
             result["status"] = "FAILED"
+            result["reason"] = "acceptance matrix incomplete or inconsistent"
             return 1
         wheels = list((directory / "dist").glob("trainguard-*.whl"))
         if len(wheels) != 1:
@@ -132,6 +171,31 @@ def main() -> int:
             directory,
             "wheel",
             ["uv", "run", "python", "scripts/verify_wheel.py", str(wheels[0])],
+        )
+        result["gates"].append(gate)
+        if gate["exit_code"]:
+            result["status"] = "FAILED"
+            return 1
+        result["artifact_sha256"] = {
+            path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted((directory / "dist").iterdir())
+            if path.is_file() and (path.name.endswith(".whl") or path.name.endswith(".tar.gz"))
+        }
+        result["lock_sha256"] = hashlib.sha256(Path("uv.lock").read_bytes()).hexdigest()
+        gate = _run(
+            directory,
+            "fresh-install",
+            ["uv", "run", "python", "scripts/verify_install.py", str(wheels[0])],
+        )
+        result["gates"].append(gate)
+        if gate["exit_code"]:
+            result["status"] = "FAILED"
+            return 1
+        gate = _run(
+            directory,
+            "upgrade-boundary",
+            ["uv", "run", "python", "scripts/verify_upgrade_boundary.py",
+             "--previous-ref", args.previous_ref, "--current-wheel", str(wheels[0])],
         )
         result["gates"].append(gate)
         result["status"] = "SUCCEEDED" if gate["exit_code"] == 0 else "FAILED"

@@ -1,0 +1,2 @@
+W0926 23:12:20.368000 1300 torch/distributed/elastic/multiprocessing/redirects.py:35] NOTE: Redirects are currently not supported in MacOs.
+Acceptance report: /workspace/runs/commercial-readiness-verified/simulation-26a04e3857fc/acceptance/acceptance-50f5804ea812/report.md

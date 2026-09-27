@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "currency": "USD",
+  "gpu_hour_rate": "0",
+  "engineer_hour_rate": "0",
+  "paired_injection_scenarios": [
+    {
+      "scenario_id": "replace-with-frozen-scenario-id",
+      "baseline_lost_gpu_hours": "0",
+      "trial_lost_gpu_hours": "0",
+      "baseline_engineer_hours": "0",
+      "trial_engineer_hours": "0"
+    }
+  ],
+  "trial_overhead": {
+    "checkpoint_gpu_hours": "0",
+    "additional_engineer_hours": "0",
+    "storage_cost": "0",
+    "exercise_cost": "0",
+    "service_fee": "0"
+  }
+}

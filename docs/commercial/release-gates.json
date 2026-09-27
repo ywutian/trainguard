@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "candidate_source_sha256": "686da13fb9de691ed48cda72d430ba873f56d68cb50416eb5029cc2ee2adcbfb",
+  "gates": [
+    {
+      "id": "local_package",
+      "status": "PASS",
+      "evidence": "docs/commercial/evidence/local_package-0.3.1.json",
+      "sha256": "243c66522ea8a5b6f1be7e7aa5950013157fe0c02182145ad1e43420920a16b1"
+    },
+    {
+      "id": "local_cpu",
+      "status": "PASS",
+      "evidence": "docs/commercial/evidence/local_cpu-0.3.1.json",
+      "sha256": "a0ee0066d943605f0cbbefbacd0c425f86fb3d45274f14de55ea21b3998c55bc"
+    },
+    {
+      "id": "customer_workload",
+      "status": "BLOCKED",
+      "reason": "尚无非内置客户作业适配及状态清单验收"
+    },
+    {
+      "id": "persistent_checkpoint",
+      "status": "BLOCKED",
+      "reason": "尚无真实对象服务与强一致发布权威的生产接线和验收"
+    },
+    {
+      "id": "cross_host_fencing",
+      "status": "BLOCKED",
+      "reason": "尚无两主机隔离、接管与旧身份拒写实测"
+    },
+    {
+      "id": "real_gpu_matrix",
+      "status": "BLOCKED",
+      "reason": "尚无客户目标 GPU、驱动和 NCCL 故障矩阵实测"
+    },
+    {
+      "id": "security_operations",
+      "status": "BLOCKED",
+      "reason": "客户身份权限、告警、支持值班和数据流尚未验收"
+    },
+    {
+      "id": "commercial_contract",
+      "status": "BLOCKED",
+      "reason": "订单、责任、支持及适用法律条款尚未经客户与专业人员定稿"
+    },
+    {
+      "id": "paid_pilot",
+      "status": "BLOCKED",
+      "reason": "尚无真实客户付费、技术验收、价值核算和双方签收"
+    },
+    {
+      "id": "supported_matrix",
+      "status": "BLOCKED",
+      "reason": "尚无公开支持矩阵在目标环境逐项复测与版本维护证据"
+    },
+    {
+      "id": "sustained_operations",
+      "status": "BLOCKED",
+      "reason": "尚无连续事故/SLO 观察与有人员承接的支持履约证据"
+    }
+  ]
+}

@@ -8,6 +8,9 @@ The CPU recovery path is implemented and tested with two Gloo workers. It suppor
 
 For the proposed customer deployment, integration, operations, security and commercial acceptance scope, see the [product closure and release gates](docs/plans/product-closure-2026-09-26.md). The current release is an experiment package and has not passed those production gates.
 
+The [customer pilot template](docs/commercial/customer-pilot-template.md), [operations runbook](docs/commercial/operations-runbook.md), and [machine-readable release gates](docs/commercial/release-gates.json) record the commercial scope and evidence required before customer production use. The existing code is MIT licensed; pilot fees cover agreed integration, validation and support services.
+The [market evidence](docs/commercial/market-evidence-2026-09-26.md) separates current competitor facts from unvalidated positioning and pricing hypotheses.
+
 ## Quick start
 
 Requires Python 3.11 or 3.12 and [uv](https://docs.astral.sh/uv/).
@@ -16,10 +19,12 @@ Requires Python 3.11 or 3.12 and [uv](https://docs.astral.sh/uv/).
 uv sync
 uv run trainguard validate-config --config configs/cpu_demo.yaml
 uv run trainguard run --config configs/cpu_demo.yaml
-uv run trainguard run --config configs/recovery_demo.yaml
+uv run trainguard run --config configs/recovery_demo.yaml --allow-experiment
 ```
 
 The first run is an uninterrupted reference. The second injects a rank-0 exit after step 2, restarts the group from a committed checkpoint, and completes. Each command prints its run directory. Compare the two directories:
+
+An installed wheel can write its packaged CPU example outside the source checkout with `trainguard init-config --output cpu_demo.yaml`. A configuration with `run.profile: guarded` requires checkpointing and rejects fault injection or omitted recovery state. This guard does not imply production acceptance.
 
 ```bash
 uv run trainguard validate --reference runs/<reference-id> --recovered runs/<recovered-id>
@@ -40,6 +45,10 @@ Resume refuses to start while the previous owned launcher or worker group is sti
 Each candidate is stored under `runs/<run-id>/checkpoints/step-<step>-<attempt>/`. DCP writes model and optimizer state. Every rank writes its scheduler, Python/NumPy/Torch CPU and optional CUDA RNG, scaler, update and consumed-batch counters, and compatibility fingerprints. Rank 0 validates all expected files, records sizes and SHA-256 hashes in `manifest.json`, then publishes `COMMITTED`. Recovery scans these files and ignores incomplete, incompatible, or corrupted candidates, falling back to the newest valid older checkpoint.
 
 The run directory also contains `run.json`, a SQLite index (`run.sqlite3`), `launcher.log`, per-attempt rank event logs and summaries, and a final `summary.json`. The committed manifest is the checkpoint validity source if the controller stops before updating SQLite.
+
+Raw run evidence can contain sample identifiers and paths. Keep it in a restricted customer-controlled directory. `trainguard support-bundle runs/<run-id> --output support.json` produces a read-only summary with allowlisted scalar fields; the customer should review and approve it before sharing.
+
+For a paired trial cost calculation, fill in [the pilot ledger template](docs/commercial/pilot-ledger-template.json) with customer rates and measured results, then run `python scripts/calculate_pilot_value.py <ledger.json> --output <result.json>`. The result is conditional on the injected scenarios and is not a realized savings or billing record.
 
 ## Experiments
 
@@ -96,7 +105,8 @@ Version 0.2.2 binds each recovery decision to every progressing rank's state-loa
 
 ```bash
 uv build --wheel --sdist --out-dir dist
-uv run python scripts/verify_wheel.py dist/trainguard-0.3.0-py3-none-any.whl
+uv run python scripts/verify_wheel.py dist/trainguard-0.3.1-py3-none-any.whl
+uv run python scripts/verify_install.py dist/trainguard-0.3.1-py3-none-any.whl
 ```
 
 See the [full closure assessment](docs/analysis/closure-assessment-2026-09-26.md) for the supported boundary, infrastructure gates and next acceptance steps.
@@ -108,7 +118,7 @@ Run the complete local gate from the repository root:
 
 ```bash
 uv sync --locked --group dev
-uv run python scripts/run_simulation_closure.py --output-root runs/simulation-closure
+uv run python scripts/run_simulation_closure.py --output-root runs/simulation-closure --previous-ref a18ae9a
 ```
 
 The gate retains static checks, the full test suite, JUnit and raw test recovery directories, a fresh ten-case CPU acceptance campaign, a wheel and source distribution, and a wheel/source identity check in a uniquely named result directory. Its `result.json` and `report.md` record the outcome even if a gate fails. The CPU campaign requires the intended fault, exactly one recovery, the expected attempt statuses, and either exact agreement with the uninterrupted reference or the specified negative-control difference.
@@ -116,3 +126,10 @@ The gate retains static checks, the full test suite, JUnit and raw test recovery
 The suite also exercises two independent local launchers with a real two-rank Gloo group, hard process exits across checkpoint publication boundaries, rank-coordinated async cancellation and deadlines, event-log durability ordering, and candidate fallback when DCP metadata or payload cannot be loaded. An isolated in-memory protocol model exercises immutable remote generations, conditional head publication, response-loss reconciliation, and epoch takeover after an independent isolation assertion. Bridge tests publish actual DCP checkpoint bytes through the model, damage the newer version, and restore the older one; a two-rank training run resumes from the downloaded version after all local candidates are removed. The model is not a production remote backend or a real object service.
 
 See the [simulation analysis](docs/analysis/simulation-closure-2026-09-26.md) and [local result](docs/experiments/simulation-closure-2026-09-26.md). Actual CUDA devices, multiple hosts, a selected object service and isolation authority, and controlled host power loss still require their own acceptance runs.
+
+## Version 0.3.1 commercial evaluation boundary
+
+The package now includes an installed CPU template, a guarded configuration profile, explicit authorization for fault and omitted-state experiments at the controller entry, and a read-only allowlisted support export. The local gate installs the built wheel with locked dependencies in a new environment, verifies a real checkpoint recovery against a reference, checks the support export, and confirms the complete run directory survives uninstall. It also rehearses a source/runtime upgrade boundary using separate old and new locked environments: a new wheel rejects an interrupted old run, while the old environment resumes it to the reference result.
+
+These checks support a limited, isolated evaluation package. Run the [release readiness checker](docs/commercial/operations-runbook.md) against the candidate wheel, source distribution, lock and reviewed gate receipts. A `BLOCKED` result prevents a production claim. The current real GPU, multi-host, customer-workload, object-service, security operations and paid-customer gates remain open.
+The [version 0.3.1 local validation record](docs/commercial/evidence/local-validation-0.3.1.json) links the complete local gate outcomes to the candidate artifacts. An evaluation bundle remains labeled `EVALUATION_ONLY`; machine-checked receipts never authorize production release.

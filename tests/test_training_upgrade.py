@@ -26,7 +26,7 @@ def test_real_data_with_workers_accumulation_and_recovery(tmp_path):
     raw['checkpoint'] = {'mode': 'async', 'interval_steps': 1}
     raw['fault'] = {'kind': 'worker_exit', 'step': 3, 'rank': 0, 'require_committed_step': 1}
     path.write_text(json.dumps(raw))
-    recovered, ok = run(path, tmp_path / 'runs')
+    recovered, ok = run(path, tmp_path / 'runs', allow_experiment=True)
     assert ok, (recovered / 'launcher.log').read_text()
     result = validate_runs(reference, recovered)
     assert result['passed'], result
@@ -47,6 +47,6 @@ def test_cpu_bfloat16_accumulation_is_recoverable(tmp_path):
     raw['checkpoint'] = {'mode': 'sync', 'interval_steps': 1}
     raw['fault'] = {'kind': 'worker_exit', 'step': 2, 'rank': 0}
     path.write_text(json.dumps(raw))
-    recovered, ok = run(path, tmp_path / 'runs')
+    recovered, ok = run(path, tmp_path / 'runs', allow_experiment=True)
     assert ok, (recovered / 'launcher.log').read_text()
     assert validate_runs(reference, recovered)['passed']

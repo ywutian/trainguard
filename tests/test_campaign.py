@@ -33,7 +33,7 @@ def test_failed_reference_can_be_retried_without_discarding_history(tmp_path, mo
     real_run = campaign.run
     launches = []
 
-    def failed_once(config, root):
+    def failed_once(config, root, *, allow_experiment=False):
         launches.append(root)
         if len(launches) == 1:
             directory = root / "failed-reference"
@@ -41,7 +41,7 @@ def test_failed_reference_can_be_retried_without_discarding_history(tmp_path, mo
             (directory / "config.json").write_text(config.read_text())
             (directory / "run.json").write_text(json.dumps({"status": "FAILED"}))
             return directory, False
-        return real_run(config, root)
+        return real_run(config, root, allow_experiment=allow_experiment)
 
     monkeypatch.setattr(campaign, "run", failed_once)
     monkeypatch.setattr(campaign, "resume", lambda path: False)
@@ -97,7 +97,7 @@ def test_case_retry_waits_for_old_worker_ownership_check(tmp_path, monkeypatch):
     owner = {"run_dir": str(old_run)}
     monkeypatch.setattr(campaign, "_persist", lambda *args: None)
     launches = []
-    monkeypatch.setattr(campaign, "run", lambda *args: launches.append(args))
+    monkeypatch.setattr(campaign, "run", lambda *args, **kwargs: launches.append((args, kwargs)))
 
     def active(path):
         raise RunActiveError("worker group remains active")

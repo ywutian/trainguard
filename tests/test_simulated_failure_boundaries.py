@@ -33,7 +33,7 @@ def _configuration(root: Path, *, recover: bool) -> Path:
     raw = load_config(Path(__file__).parents[1] / "configs/cpu_demo.yaml").model_dump()
     raw["model"]["dropout"] = 0.2
     raw["checkpoint"].update(mode="sync" if recover else "none", interval_steps=1)
-    raw["recovery"].update(max_restarts=2, progress_timeout_seconds=5)
+    raw["recovery"].update(max_restarts=2, progress_timeout_seconds=30)
     if recover:
         raw["fault"].update(kind="worker_exit", step=3, rank=0)
     path = root / ("recovery-config.json" if recover else "reference-config.json")
@@ -115,7 +115,8 @@ def test_self_consistent_unloadable_newest_candidate_recovers_from_older_real_dc
         patch.setattr(controller, "_launch_attempt", stop_after_fault)
         with pytest.raises(StopAfterFirstAttempt):
             controller.run(
-                _configuration(tmp_path, recover=True), tmp_path / "recovery-runs"
+                _configuration(tmp_path, recover=True), tmp_path / "recovery-runs",
+                allow_experiment=True,
             )
 
     recovered = next((tmp_path / "recovery-runs").iterdir())

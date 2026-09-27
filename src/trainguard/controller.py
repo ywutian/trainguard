@@ -37,6 +37,10 @@ class RunActiveError(RuntimeError):
     """A controller or an owned worker group still runs for this directory."""
 
 
+class ExperimentNotAuthorizedError(ValueError):
+    """Fault injection or omitted recovery state needs explicit authorization."""
+
+
 @dataclass
 class AttemptResult:
     succeeded: bool
@@ -254,6 +258,8 @@ def _launch_attempt(
         "trainguard.trainer",
         "--config",
         str(run_dir / "config.json"),
+        "--expected-config-fingerprint",
+        config.fingerprint(),
         "--run-dir",
         str(run_dir),
         "--run-id",
@@ -390,9 +396,8 @@ def _set_status(run_dir: Path, status: dict, value: str, reason: str) -> None:
     write_json_atomic(run_dir / "run.json", status)
 
 
-def _drive(run_dir: Path, status: dict, store: RunStore) -> bool:
+def _drive(run_dir: Path, status: dict, store: RunStore, config: ProjectConfig) -> bool:
     run_id = status["run_id"]
-    config = load_config(run_dir / "config.json")
     attempts = store.attempts(run_id)
     if attempts:
         last = attempts[-1]
@@ -508,10 +513,16 @@ def _drive(run_dir: Path, status: dict, store: RunStore) -> bool:
         attempts = store.attempts(run_id)
 
 
-def run(config_path: Path, output_root: Path) -> tuple[Path, bool]:
+def run(
+    config_path: Path, output_root: Path, *, allow_experiment: bool = False
+) -> tuple[Path, bool]:
     execution_started = time.monotonic()
     execution_load_before = list(os.getloadavg())
     config = load_config(config_path.resolve())
+    if (config.fault.kind != "none" or config.recovery.omit_state != "none") and not allow_experiment:
+        raise ExperimentNotAuthorizedError(
+            "fault injection or omitted recovery state requires explicit experiment authorization"
+        )
     preflight(config)
     run_id = uuid.uuid4().hex[:12]
     run_dir = (output_root / run_id).resolve()
@@ -523,6 +534,7 @@ def run(config_path: Path, output_root: Path) -> tuple[Path, bool]:
         "attempt_id": None,
         "status": "RUNNING",
         "config_fingerprint": config.fingerprint(),
+        "experiment_authorized": allow_experiment,
         "started_at": started_at,
         "config": config.model_dump(),
         "run_schema_version": 2,
@@ -535,7 +547,7 @@ def run(config_path: Path, output_root: Path) -> tuple[Path, bool]:
     try:
         store.create_run(run_id, config.fingerprint(), started_at)
         with _controller_lock(run_dir):
-            succeeded = _drive(run_dir, status, store)
+            succeeded = _drive(run_dir, status, store, config)
     finally:
         store.close()
     return run_dir, succeeded
@@ -547,6 +559,10 @@ def resume(run_dir: Path) -> bool:
     config = load_config(run_dir / "config.json")
     if status.get("run_schema_version") != 2:
         raise ValueError("run schema is unsupported; use its original source and runtime")
+    if (
+        config.fault.kind != "none" or config.recovery.omit_state != "none"
+    ) and status.get("experiment_authorized") is not True:
+        raise ExperimentNotAuthorizedError("saved experiment authorization is missing")
     current = environment_snapshot(config.run.world_size, config.run.device, run_dir)
     for field in ("source_sha256", "python", "torch", "versions"):
         if current[field] != status["environment"].get(field):
@@ -598,6 +614,6 @@ def resume(run_dir: Path) -> bool:
                     store.set_run_status(status["run_id"], "FAILED")
                     _set_status(run_dir, status, "FAILED", "completion evidence missing or invalid")
                     return False
-            return _drive(run_dir, status, store)
+            return _drive(run_dir, status, store, config)
     finally:
         store.close()

@@ -10,9 +10,14 @@ import pytest
 
 from trainguard import controller
 from trainguard.config import load_config
-from trainguard.controller import RunActiveError, resume, run
+from trainguard.controller import RunActiveError, resume
+from trainguard.controller import run as run_controller
 from trainguard.run_store import RunStore
 from trainguard.validation import validate_runs
+
+
+def run(config: Path, output: Path):
+    return run_controller(config, output, allow_experiment=True)
 
 
 def _config(tmp_path: Path, *, checkpoint: str, fault: str = "none", step: int | None = None) -> Path:
@@ -290,7 +295,7 @@ def test_resume_reuses_unrecorded_attempt_directory(tmp_path: Path, monkeypatch)
     class SimulatedControllerExit(Exception):
         pass
 
-    def exit_after_directory(run_dir, status, store):
+    def exit_after_directory(run_dir, status, store, config):
         (run_dir / "attempts" / "attempt-001").mkdir(parents=True)
         raise SimulatedControllerExit
 

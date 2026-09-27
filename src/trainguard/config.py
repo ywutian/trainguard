@@ -16,6 +16,7 @@ class StrictModel(BaseModel):
 
 
 class RunSettings(StrictModel):
+    profile: Literal["experiment", "guarded"] = "experiment"
     seed: int = Field(default=42, ge=0)
     world_size: int = Field(default=2, ge=1)
     backend: Literal["gloo", "nccl"] = "gloo"
@@ -112,6 +113,11 @@ class ProjectConfig(StrictModel):
 
     @model_validator(mode="after")
     def validate_fault(self) -> ProjectConfig:
+        if self.run.profile == "guarded":
+            if self.fault.kind != "none" or self.recovery.omit_state != "none":
+                raise ValueError("guarded runs forbid fault injection and omitted recovery state")
+            if self.checkpoint.mode == "none":
+                raise ValueError("guarded runs require an enabled checkpoint mode")
         if self.run.strategy == "fsdp2" and self.run.device != "cuda":
             raise ValueError("FSDP2 requires CUDA")
         if (self.run.device == "cuda") != (self.run.backend == "nccl"):
@@ -176,9 +182,25 @@ class ProjectConfig(StrictModel):
         )
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    def construct_mapping(self, node: yaml.nodes.MappingNode, deep: bool = False) -> dict:
+        seen: set[object] = set()
+        for key_node, _ in node.value:
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                raise ValueError("YAML merge keys are not supported in run configuration")
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                if key in seen:
+                    raise ValueError(f"duplicate YAML configuration key: {key!r}")
+                seen.add(key)
+            except TypeError as exc:
+                raise ValueError("YAML configuration keys must be hashable") from exc
+        return super().construct_mapping(node, deep=deep)
+
+
 def load_config(path: Path) -> ProjectConfig:
     with path.open(encoding="utf-8") as stream:
-        raw = yaml.safe_load(stream)
+        raw = yaml.load(stream, Loader=_UniqueKeyLoader)
     if not isinstance(raw, dict):
         raise TypeError("configuration must be a YAML mapping")
     config = ProjectConfig.model_validate(raw)

@@ -88,7 +88,7 @@ def _reconcile_or_retry(
     # A subsequent coordinator must discover any new run even if launch never returns.
     owner.pop(run_key, None)
     _persist(directory, result)
-    return run(config_copy, root)
+    return run(config_copy, root, allow_experiment=True)
 
 
 def _case_evidence(reference, run_dir, case, expected):

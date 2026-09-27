@@ -60,8 +60,11 @@ def train(
     run_id: str,
     attempt_id: str,
     resume_checkpoint: Path | None = None,
+    expected_config_fingerprint: str | None = None,
 ) -> None:
     config = load_config(config_path)
+    if expected_config_fingerprint is not None and config.fingerprint() != expected_config_fingerprint:
+        raise ValueError("worker configuration differs from controller-approved configuration")
     rank, world_size = int(os.environ["RANK"]), int(os.environ["WORLD_SIZE"])
     if world_size != config.run.world_size:
         raise ValueError("launched world size differs from configuration")
@@ -386,13 +389,17 @@ def train(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--expected-config-fingerprint")
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--attempt-id", required=True)
     parser.add_argument("--resume-checkpoint", type=Path)
     parser.add_argument("--local-rank", "--local_rank", type=int)
     args = parser.parse_args()
-    train(args.config, args.run_dir, args.run_id, args.attempt_id, args.resume_checkpoint)
+    train(
+        args.config, args.run_dir, args.run_id, args.attempt_id,
+        args.resume_checkpoint, args.expected_config_fingerprint,
+    )
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@
 | PyTorch `torchrun` + DCP | 整组重启、分片保存/加载；客户训练脚本需实现状态保存和恢复。 | 独立审计状态覆盖与恢复语义，给出可重复的故障验证报告。 |
 | Ray Train | worker/node/driver 级恢复、共享存储、提交与异步验证；训练函数仍需保存/加载状态。 | 验证客户现有任务的样本和优化器进度，并提供跨尝试的可移植验收证据。 |
 | SageMaker / HyperPod | S3 检查点、Spot 与集群恢复；HyperPod 弹性训练文档指出，单 epoch 作业在故障后以不同 world size 恢复且未保存 dataloader 状态时，已处理样本可能重读。 | 对不同客户数据流显式证明或拒绝“无重复/精确恢复”声明。 |
+| SageMaker HyperPod checkpointless | AWS 已在真实 Llama-3 70B 训练中公布逐步 loss 位级一致和 checksum 对照，以及不同 GPU 规模恢复时间。 | 必须以客户现有栈为基线验证接入与独立审计价值；逐步等价本身不是首创。 |
 | NVIDIA Megatron Bridge | 故障恢复、异步与本地复制检查点；Energon 已保存 dataloader 状态，且生态中有故障注入矩阵。 | 对已有框架提供独立发布门禁和证据交换；具体差异需客户对照验证。 |
 | Determined | 训练平台及现有 Transformers 回调，能上传检查点、处理抢占并自动恢复。 | 在不替换客户整套训练平台的前提下交付验证与审计。 |
 
@@ -30,7 +31,7 @@
 | 客户训练接入 | `trainer.py` 固定 `TinyTransformer`、AdamW、Cosine 调度器和 token 数据流。 | 无稳定 SDK、客户状态适配和真实客户训练作业验收。 |
 | 远端存储 | `remote_protocol.py` 是内存对象/隔离模型；桥接测试手工搬运真实 DCP 字节。 | 生产 `checkpoint_io.py` 仍读写本地路径，无对象服务适配和远端恢复接线。 |
 | 跨主机接管 | 本地控制器使用 `flock`、SQLite、本机进程身份和 `--nnodes=1`。 | 无多节点调度、持久 fencing epoch、独立隔离权威和两主机验收。 |
-| 交付运维 | 可构建 wheel，已有本机验证工作流和离线报告。 | 无客户安装/升级/回滚包、运行监控、值班手册、权限边界、付费试点记录。 |
+| 交付运维 | 0.3.1 候选包已有仓库外锁依赖安装/运行/卸载脚本、N/N−1 拒绝与旧版恢复演练、白名单诊断、试点模板和阻断式发布门槛；本机同版证据归入[本地验证记录](../commercial/evidence/local-validation-0.3.1.json)。 | 无客户目标环境安装/升级/回滚、运行监控和值班实测、权限边界与付费试点记录。 |
 
 目前没有可用的实卡、多主机、选定对象服务或受控断电环境。上表的开放项在这些环境中取得原始证据前，始终保持未通过。Git 提交、单元测试和内存模拟不能替代生产放行证据。
 
@@ -105,11 +106,11 @@ flowchart LR
 
 报告必须列明 `PASS`、`FAIL` 或 `BLOCKED` 和证据路径；缺少环境或记录为 `BLOCKED`，不得折算为通过。对客户展示的“可用”状态只来自上表全绿的特定版本、环境和作业等级。
 
-放行有两道明确边界：**有限付费试点**只覆盖冻结的一个 DDP 客户作业、一个版本、一个实际拓扑和一种对象服务，上表除“已有付费试点签收”外均须通过，合同逐项列明能力和支持；**广泛商用发布**需在试点签收后扩展并复测公开支持矩阵，连续记录 SLO/事故证据，再承诺可公开执行的服务等级。试点合同不得把尚未验证的 FSDP2、其他拓扑或多租户能力列入支持范围。故障矩阵正确性要求零错误；少量演练不能直接推算线上可用率或通用 SLA。
+商业阶段分三道边界：**有限付费接入研究**可在本机包与 CPU 门槛通过后，以 `EVALUATION_ONLY` 包和明确研究工作说明书进入客户隔离环境，逐项写明未实现能力、失败/阻断归因、费用和退出条件，不承诺生产自动接管；**客户环境受限技术验收**是在该合作中对冻结的一个 DDP 客户作业、版本、实际拓扑与对象服务跑全矩阵并由双方签收，只有实际通过的范围可称已验收；**广泛商用发布**还需付费试点结果、公开支持矩阵扩展复测、可运营的安全与支持机制及持续 SLO/事故证据，才能承诺公开执行的服务等级。试点合同不得把尚未验证的 FSDP2、其他拓扑或多租户能力列入支持范围。故障矩阵正确性要求零错误；少量演练不能直接推算线上可用率或通用 SLA。
 
 ## 7. 价值证明与首单包装
 
-建议先销售**客户环境部署的付费试点**：固定接入一个训练作业、一个集群、一个对象服务，交付恢复正确性报告、故障演练结果、部署/回滚手册和约定支持时段。试点验收后再报价年度软件许可与支持；并发 GPU/作业数可作为容量分档，但定价必须由客户采购访谈与成本账本校准。若采用按受保护时长计费，只有作业处于支持矩阵内且存在可验证、未过期的可恢复检查点时才计入；需建立可重放、可去重、可对账的内部计量记录。避免在缺少实测前宣称固定节省比例或通用 RTO。
+建议先销售**客户环境部署的有限付费审计/接入试点**：固定接入一个训练作业、一个集群、一个对象服务，交付恢复正确性报告、故障演练结果、部署/回滚手册和约定支持时段。当前代码采用 MIT 许可，现有代码的使用权不能再包装为排他性年度软件许可；试点费用应对应明确的接入、验证、报告与支持服务。只有另行开发并经权属与法律审核的新增专有组件，才可在未来另列许可条款。年度阶段可对已验收的工作负载族和环境提供持续复测、适配与支持订阅；并发 GPU/作业数可作为容量参考，但定价须由客户采购访谈与成本账本校准。若采用按受保护时长计费，只有作业处于支持矩阵内且存在可验证、未过期的可恢复检查点时才计入；需建立可重放、可去重、可对账的内部计量记录。避免在缺少实测前宣称固定节省比例或通用 RTO。
 
 每次试点记录：故障前基线、故障次数和原因、GPU 单价、有效回滚 GPU 小时、首次恢复更新的 RTO、保存/存储额外开销、平台工程师处置时间。可归因净价值 = 相对**客户原有恢复方案**避免的重跑计算与人工处置成本 − 产品引入的计算、存储、运维、许可和服务费用；对无故障窗口也应报告净开销。客户原有 Ray、SageMaker、NVIDIA 或 Determined 能力应作为对照基线，不以“从零恢复”夸大收益。
 
@@ -128,6 +129,7 @@ flowchart LR
 - [PyTorch `torchrun` 故障与重启](https://docs.pytorch.org/docs/main/elastic/run.html)、[DCP API](https://docs.pytorch.org/docs/2.14/distributed.checkpoint.html)、[可复现性限制](https://docs.pytorch.org/docs/2.14/notes/randomness.html)。
 - [Ray Train 故障恢复](https://docs.ray.io/en/latest/train/user-guides/fault-tolerance.html)、[共享持久存储](https://docs.ray.io/en/latest/train/user-guides/persistent-storage.html)、[检查点提交/验证](https://docs.ray.io/en/latest/train/user-guides/checkpoints.html)。
 - [SageMaker 检查点](https://docs.aws.amazon.com/sagemaker/latest/dg/model-checkpoints.html)、[托管 Spot 恢复](https://docs.aws.amazon.com/en_us/sagemaker/latest/dg/model-managed-spot-training.html)、[HyperPod 弹性训练](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-eks-elastic-training.html)、[S3 条件写入](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html)、[DynamoDB 单调条件更新](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/BestPractices_OptimisticLocking.html)。
+- [AWS HyperPod 真实规模 checkpointless 恢复验证](https://aws.amazon.com/blogs/machine-learning/checkpointless-training-on-amazon-sagemaker-hyperpod-production-scale-training-with-faster-fault-recovery/)、[HyperPod 集群恢复指标](https://docs.aws.amazon.com/sagemaker/latest/dg/hyperpod-observability-cluster-metrics.html)。
 - [NVIDIA Megatron Bridge resiliency](https://docs.nvidia.com/nemo/megatron-bridge/latest/training/resiliency.html)、[检查点与数据状态](https://docs.nvidia.com/nemo/megatron-bridge/latest/training/checkpointing.html)、[NVIDIA 故障注入流程](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/src/nvidia_resiliency_ext/skills/nvrx-attr/fault-injection-loop/SKILL.md)、[Determined Transformers 回调](https://docs.determined.ai/reference/training/api-transformers-reference.html)。
 - [Kubernetes Job 失败/重试语义](https://kubernetes.io/docs/concepts/workloads/controllers/job/)、[安全检查表](https://kubernetes.io/docs/concepts/security/security-checklist/)。
 - [NIST SSDF](https://csrc.nist.gov/pubs/sp/800/218/final)、[SLSA 构建来源](https://slsa.dev/spec/v1.2/provenance)、[OpenTelemetry 服务语义](https://opentelemetry.io/docs/specs/semconv/resource/service/)。

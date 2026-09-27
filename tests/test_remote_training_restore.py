@@ -55,7 +55,8 @@ def test_two_rank_training_recovers_from_remote_model_after_local_loss(
         patch.setattr(controller, "_launch_attempt", stop_after_fault)
         with pytest.raises(StopAfterFault):
             controller.run(
-                _configuration(tmp_path, recover=True), tmp_path / "recovery-runs"
+                _configuration(tmp_path, recover=True), tmp_path / "recovery-runs",
+                allow_experiment=True,
             )
 
     recovered = next((tmp_path / "recovery-runs").iterdir())
