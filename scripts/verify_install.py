@@ -37,6 +37,27 @@ def _directory_digest(root: Path) -> dict[str, str]:
     return digest
 
 
+def _runtime_profile(python: Path, root: Path, environment: dict[str, str]) -> dict:
+    profile_code = (
+        "import importlib.metadata as m, json, torch; "
+        "print(json.dumps({'torch_version': torch.__version__, "
+        "'torch_cuda_version': torch.version.cuda, "
+        "'packages': sorted({d.metadata['Name'].lower().replace('_', '-') "
+        "for d in m.distributions()})}))"
+    )
+    profile = json.loads(_run([
+        str(python), "-c", profile_code,
+    ], root, environment))
+    if sys.platform == "linux" and (
+        profile["torch_version"] != "2.14.0+cpu"
+        or profile["torch_cuda_version"] is not None
+        or any(name.startswith(("nvidia-", "cuda-")) or name == "triton"
+               for name in profile["packages"])
+    ):
+        raise RuntimeError("Linux evaluation environment contains a non-CPU PyTorch closure")
+    return profile
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("wheel", type=Path)
@@ -46,6 +67,7 @@ def main() -> None:
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)
     environment.pop("VIRTUAL_ENV", None)
+    environment.pop("UV_PROJECT_ENVIRONMENT", None)
     with tempfile.TemporaryDirectory(prefix="trainguard-install-") as temporary:
         root = Path(temporary)
         virtual_environment = root / "environment"
@@ -59,15 +81,15 @@ def main() -> None:
             project_root,
             environment,
         )
-        _run(
-            ["uv", "pip", "install", "--python", str(python), "--require-hashes", "-r",
-             str(requirements)], root, environment
-        )
+        active_environment = {**environment, "VIRTUAL_ENV": str(virtual_environment)}
+        _run(["uv", "sync", "--locked", "--no-dev", "--no-install-project", "--active"],
+             project_root, active_environment)
         _run(
             ["uv", "pip", "install", "--python", str(python), "--no-deps", str(wheel)],
             root,
             environment,
         )
+        profile = _runtime_profile(python, root, environment)
         version = _run([str(executable), "version"], root, environment).strip()
         config = root / "cpu.yaml"
         _run([str(executable), "init-config", "--output", str(config)], root, environment)
@@ -136,6 +158,9 @@ def main() -> None:
         print(json.dumps({
             "version": version,
             "wheel_sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+            "torch_version": profile["torch_version"],
+            "torch_cuda_version": profile["torch_cuda_version"],
+            "linux_cpu_profile_checked": sys.platform == "linux",
             "installed_outside_checkout": True,
             "completed_run": True,
             "recovered_run_matches_reference": True,

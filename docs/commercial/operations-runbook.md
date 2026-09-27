@@ -6,15 +6,21 @@
 
 交付包至少含 wheel、sdist、`pyproject.toml`、`uv.lock`、`build-requirements.in`、`build-constraints.txt`、`requirements.txt`、`LICENSE`、`SECURITY.md`、本手册、SBOM、第三方许可证清单、已知漏洞扫描收据和每项 SHA-256。候选包和报告必须引用同一源码指纹与测试版本。源码包仅含明列的交付文档及已审查仓库源码，不收录历史实验原始证据；构建前拒绝未跟踪输入，构建后逐项核对成员、类型、内容及完整重建摘要。构建使用固定的构建依赖闭包及分发哈希；安装锁文件固定运行依赖解析。两者均须在目标操作系统、CPU/GPU 驱动及 Python 版本上实装，不能把本机安装当成客户 Linux 验收。安装时检查 manifest 哈希，使用 Python 3.11 或 3.12 新环境：
 
-当前候选包**不包含依赖 wheelhouse**，安装需要能访问锁文件对应的软件包索引。客户若限网或需离线交付，先在目标 Linux/Python/设备平台制作并审核完整依赖 wheelhouse，再在完全断网的目标环境实装和演练；在此之前该环境的安装门槛为 `BLOCKED`。CUDA 驱动、容器镜像和底层集群资源也由订单页列出，不由 Python wheel 自动提供。
+当前候选包**不包含依赖 wheelhouse**，安装需要能访问锁文件对应的软件包索引。Linux 当前候选固定 `torch==2.14.0+cpu`，使用 PyTorch 官方 CPU 索引，锁文件不含 CUDA、NVIDIA 或 Triton 运行依赖；仅供 CPU/Gloo 评价。直接安装 wheel 并让普通包索引自行解析依赖不能代表锁定安装；`requirements.txt` 仅为带摘要的审计导出，未编码包专属 CPU 索引，不用它单独安装。客户若限网或需离线交付，先在目标 Linux/Python/设备平台制作并审核完整依赖 wheelhouse，再在完全断网的目标环境实装和演练；在此之前该环境的安装门槛为 `BLOCKED`。GPU 依赖配置、驱动、容器镜像和底层集群资源须另立候选并实测，不由当前 CPU 包自动提供。
+
+先按**第 4 节的顺序**用独立可信摘要核对交付清单和校验器，并完成包内文件核验；然后才执行本节安装命令。设置已验证包目录 `BUNDLE` 与客户控制的**新建绝对环境路径** `TARGET_ENV`。`TARGET_ENV` 必须位于交付包和运行数据之外，且不得指向已有客户环境；下列命令遇到既有路径或符号链接即停止。锁文件同步在已验证交付包根目录执行，运行依赖直接按锁文件中的索引和 wheel 摘要安装：
 
 ```bash
-uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python --require-hashes -r requirements.txt
-uv pip install --python .venv/bin/python --no-deps trainguard-<version>-py3-none-any.whl
-.venv/bin/trainguard version
-.venv/bin/trainguard init-config --output cpu_demo.yaml
-.venv/bin/trainguard validate-config --config cpu_demo.yaml
+BUNDLE=/absolute/verified/bundle
+TARGET_ENV=/absolute/customer-controlled/new-cpu-environment
+test ! -e "$TARGET_ENV" && test ! -L "$TARGET_ENV" || exit 1
+uv venv --python 3.12 "$TARGET_ENV"
+(cd "$BUNDLE" && VIRTUAL_ENV="$TARGET_ENV" uv sync --active --locked --no-dev --no-install-project)
+uv pip install --python "$TARGET_ENV/bin/python" --no-deps "$BUNDLE/trainguard-<version>-py3-none-any.whl"
+if [ "$(uname)" = Linux ]; then "$TARGET_ENV/bin/python" -c 'import torch; assert torch.__version__ == "2.14.0+cpu" and torch.version.cuda is None'; fi
+"$TARGET_ENV/bin/trainguard" version
+"$TARGET_ENV/bin/trainguard" init-config --output cpu_demo.yaml
+"$TARGET_ENV/bin/trainguard" validate-config --config cpu_demo.yaml
 ```
 
 模板是合成 CPU 实验，不是客户真实作业适配。演练输出根目录与软件环境分离，并配置客户可控备份、容量及访问权限。新建运行目录权限为 `0700`，关键记录文件以 `0600` 创建；已有运行目录及外层输出目录须由客户另行核查和收紧，且同一系统身份仍能访问。原始 `run.json`、rank 事件、日志、SQLite、检查点可能包含绝对路径、样本标识和训练状态，只允许客户授权人员读取；禁止将整个运行目录自动上传供应商或公共 CI。DCP 元数据读取会反序列化，只接收受信任身份在隔离目录创建的检查点；哈希与目录权限不证明任意上传内容安全。
@@ -60,11 +66,11 @@ Sev1 包含疑似错误恢复、重复有效写入、无有效候选或数据泄
 
 ## 4. 发布与证据
 
-运行 `scripts/run_simulation_closure.py --output-root <结果目录> --previous-ref <已审查上一版本完整提交>` 取得静态检查、全量测试、固定十案例 CPU 故障矩阵、wheel/sdist、源码身份、锁依赖新环境安装和卸载证据。供应链步骤在隔离工具环境中使用 `scripts/supply-chain-tools.txt` 的哈希锁定版本，将当前候选 wheel 与锁依赖安装到另一干净环境，生成 CycloneDX SBOM、由已声明元数据提取的许可证清单、PyPI 已知漏洞扫描原始 JSON 和绑定 wheel/源码/输入摘要的收据；第三方包漏扫、缺声明或有已知漏洞均阻断本机包门槛。上一版提交、wheel 与锁摘要由 `release-gates.json` 固定；不匹配即拒绝升级演练。每个本机步骤有期限，超时记为失败并保留原始输出；门禁会清理发现的子进程组。执行输入摘要覆盖源码、测试、脚本、配置、示例、工作流及随包文档；每步前后都须一致。证据收据可在仅新增文档/证据的提交中保存，任何执行输入变化均要求重新跑本机门禁。再运行 `scripts/check_release_readiness.py` 核对候选源码、完整重建的交付件、锁、原始本机测试身份与摘要以及每个门槛证据哈希。若只做本机实验，可不指定托管运行 ID；此时 `local_experiment_allowed` 可为真，但 `evaluation_allowed` 和 `linux_customer_evaluation_allowed` 必须为假。
+运行 `scripts/run_simulation_closure.py --output-root <结果目录> --previous-ref <已审查上一版本完整提交>` 取得静态检查、全量测试、固定十案例 CPU 故障矩阵、wheel/sdist、源码身份、锁依赖新环境安装和卸载证据。供应链步骤在隔离工具环境中使用 `scripts/supply-chain-tools.txt` 的哈希锁定版本，将当前候选 wheel 与锁依赖安装到另一干净环境，生成 CycloneDX SBOM、由已声明元数据提取的许可证清单、OSV 对实际安装版本的已知漏洞扫描原始 JSON 和绑定 wheel/源码/输入摘要的收据；第三方包漏扫、缺声明或有已知漏洞均阻断本机包门槛。Linux 安装与扫描还必须证明实际 PyTorch 版本为 `2.14.0+cpu`、运行时不含 CUDA，并且安装清单没有 CUDA、NVIDIA 或 Triton 包。上一版提交、wheel 与锁摘要由 `release-gates.json` 固定；不匹配即拒绝升级演练。每个本机步骤有期限，超时记为失败并保留原始输出；门禁会清理发现的子进程组。执行输入摘要覆盖源码、测试、脚本、配置、示例、工作流及随包文档；每步前后都须一致。证据收据可在仅新增文档/证据的提交中保存，任何执行输入变化均要求重新跑本机门禁。再运行 `scripts/check_release_readiness.py` 核对候选源码、完整重建的交付件、锁、原始本机测试身份与摘要以及每个门槛证据哈希。若只做本机实验，可不指定托管运行 ID；此时 `local_experiment_allowed` 可为真，但 `evaluation_allowed` 和 `linux_customer_evaluation_allowed` 必须为假。
 
 客户 Linux 受限评价前还须实时核对仓库私密漏洞报告入口处于启用状态；历史启用记录及当时入口见 `security-channel-2026-09-27.json`，报告入口以 `SECURITY.md` 为准。已知漏洞扫描只代表扫描时服务返回的结果，不是无漏洞证明；许可证清单照录包元数据，不是法律兼容性结论。新披露、换版本或换目标环境时须重新扫描并审阅许可义务。客户 Linux 受限评价还须把已成功的固定仓库 push 工作流 ID 交给 `scripts/check_release_readiness.py --hosted-run-id <运行 ID>`。检查器通过当前已认证账户实时读取工作流元数据，下载 Python 3.11/3.12 的原始摘要、供应链报告和包，并用 `scripts/check_hosted_linux_evidence.py` 重新核对同一候选提交、执行输入、测试身份、故障矩阵、交付件字节及每条 Linux lane 的 wheel/锁绑定扫描收据。两个 Python 版本可安装不同的合法传递依赖；核验分别检查组件覆盖和扫描结果，不要求两份 SBOM 字节相同。操作者可以单独运行离线核验器排查问题，但手工提供的离线文件不授予客户评价包构建权限。在线账户读取证明的是当次下载路径，报告仍不含独立密码学签名，也不代表客户环境验收。任何商业门槛为 `FAIL`/`BLOCKED` 时生产状态仍是 `BLOCKED`；即使全部收据完整，报告也仅给出 `REVIEW_REQUIRED`，绝不自动授权生产发布。当前真实基础设施和客户签收门槛保持 `BLOCKED`。
 
-本轮 Linux Python 3.11/3.12 的供应链许可证核验仍为 `BLOCKED`。两个指定 CUDA 依赖的包内元数据、厂商原文与精确摘要见 [Linux 许可证据](linux-license-evidence-0.3.6.md)。该记录不替代两条 lane 的原始扫描收据，也不授予客户交付或生产资格；须在最终候选身份上重跑并审阅。
+旧候选的 Linux Python 3.11/3.12 供应链许可证核验为 `BLOCKED`；其 CUDA 依赖元数据和厂商条款见[历史许可证据](linux-license-evidence-0.3.6.md)。当前 CPU 锁文件移除了这些依赖，但旧扫描不转为通过。须在最终 CPU 候选身份上重跑并审阅两条 Linux 安装、许可证和漏洞扫描；GPU 交付仍须独立解决其依赖许可与实卡验收。
 
 哈希检查能发现证据文件变化，不能证明证据内容真实、客户授权有效或结论适用于另一环境。每个门槛须由指定技术/商业负责人审阅原始记录并签收；脚本只执行完整性和状态阻断。
 

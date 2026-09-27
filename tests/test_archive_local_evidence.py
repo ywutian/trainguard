@@ -217,7 +217,7 @@ def archive_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     receipt = {
         "schema_version": 1, "status": "PASS", "generated_at_utc": "2026-09-27T00:00:00+00:00",
         **chain_expected, "python_version": "3.12.12", "platform": "Darwin",
-        "machine": "arm64", "audit_service": "pypi", "audit_exit_code": 0,
+        "machine": "arm64", "audit_service": "osv", "audit_exit_code": 0,
         "audit_tool_version": AUDIT_TOOL_VERSION, "uv_version": "uv 0.9.1",
         "sbom_tool_version": SBOM_TOOL_VERSION,
         "sbom_private_references_removed": 0, "database_snapshot_available": False,
@@ -562,7 +562,7 @@ def test_supply_chain_projection_preserves_graph_without_private_references(
                 "first_party_license_sha256", "security_channel_record_sha256",
             )},
             "python_version": "3.12.12", "platform": "Darwin", "machine": "arm64",
-            "audit_service": "pypi", "audit_exit_code": 0, "audit_tool_version": "2.10.1",
+            "audit_service": "osv", "audit_exit_code": 0, "audit_tool_version": "2.10.1",
             "uv_version": "uv 0.9.1", "sbom_tool_version": "7.4.0",
             "sbom_private_references_removed": 0, "database_snapshot_available": False,
             "candidate_version": "0.3.6", "component_count": 1, "third_party_count": 1,

@@ -57,15 +57,36 @@ def _environment(
         ["uv", "export", "--locked", "--no-dev", "--no-emit-project", "--format",
          "requirements.txt", "--output-file", str(requirements)], source, environ
     )
-    _run(
-        ["uv", "pip", "install", "--python", str(python), "--require-hashes", "-r",
-         str(requirements)], sandbox, environ
-    )
+    active_environment = {**environ, "VIRTUAL_ENV": str(virtual_environment)}
+    _run(["uv", "sync", "--locked", "--no-dev", "--no-install-project", "--active"],
+         source, active_environment)
     _run(
         ["uv", "pip", "install", "--python", str(python), "--no-deps", str(wheel)],
         sandbox, environ
     )
     return virtual_environment / "bin" / "trainguard"
+
+
+def _new_runtime_profile(executable: Path, sandbox: Path, environ: dict[str, str]) -> dict:
+    python = executable.parent / "python"
+    profile_code = (
+        "import importlib.metadata as m, json, torch; "
+        "print(json.dumps({'torch_version': torch.__version__, "
+        "'torch_cuda_version': torch.version.cuda, "
+        "'packages': sorted({d.metadata['Name'].lower().replace('_', '-') "
+        "for d in m.distributions()})}))"
+    )
+    profile = json.loads(_run([
+        str(python), "-c", profile_code,
+    ], sandbox, environ).stdout)
+    if sys.platform == "linux" and (
+        profile["torch_version"] != "2.14.0+cpu"
+        or profile["torch_cuda_version"] is not None
+        or any(name.startswith(("nvidia-", "cuda-")) or name == "triton"
+               for name in profile["packages"])
+    ):
+        raise RuntimeError("new Linux environment contains a non-CPU PyTorch closure")
+    return profile
 
 
 def _interrupted_run(executable: Path, config: Path, sandbox: Path, environ: dict[str, str]) -> Path:
@@ -118,6 +139,7 @@ def main() -> None:
     environ = os.environ.copy()
     environ.pop("PYTHONPATH", None)
     environ.pop("VIRTUAL_ENV", None)
+    environ.pop("UV_PROJECT_ENVIRONMENT", None)
     resolved_previous = _run(
         ["git", "rev-parse", "--verify", f"{args.previous_ref}^{{commit}}"], root, environ
     ).stdout.strip()
@@ -163,6 +185,7 @@ def main() -> None:
             raise RuntimeError("previous release lock differs from approved artifact")
         old_executable = _environment(sandbox, "old-environment", source, previous_wheel, environ)
         new_executable = _environment(sandbox, "new-environment", root, current_wheel, environ)
+        new_profile = _new_runtime_profile(new_executable, sandbox, environ)
         config = sandbox / "workload.json"
         config.write_text(json.dumps({
             "run": {"seed": 42, "world_size": 2, "backend": "gloo", "device": "cpu"},
@@ -203,6 +226,9 @@ def main() -> None:
             "previous_lock_sha256": _digest(source / "uv.lock"),
             "current_wheel_sha256": _digest(current_wheel),
             "current_lock_sha256": _digest(root / "uv.lock"),
+            "new_torch_version": new_profile["torch_version"],
+            "new_torch_cuda_version": new_profile["torch_cuda_version"],
+            "new_linux_cpu_profile_checked": sys.platform == "linux",
             "new_version_rejected_interrupted_old_run": True,
             "old_run_files_unchanged_after_rejection": len(before),
             "old_locked_environment_resumed_exactly": True,

@@ -10,6 +10,8 @@ Version 0.3.3 added a single-file external CPU DDP workload interface for local 
 
 Version 0.3.6 is a candidate with a bounded v2 external workload contract for local two-rank CPU/Gloo evaluation. It tests an external one-group SGD optimizer with momentum, external StepLR, complete stream state, and extra loss state. A reference run, worker-exit recovery, and omitted-state controls compare exact final state. This remains a local experiment and does not change customer or production gates.
 
+The 0.3.6 Linux evaluation dependency is exactly `torch==2.14.0+cpu` from PyTorch's CPU index; the non-Linux resolver branch selects `torch==2.14.0` from PyPI. The Linux lock excludes CUDA, NVIDIA, and Triton packages. Hosted evaluation scope remains Linux x86_64 CPU/Gloo; the non-Linux resolver branch does not add a supported customer platform. CUDA adapters need a separate GPU dependency profile and real-device acceptance before they can be delivered for GPU training. Install dependencies with the bundled `pyproject.toml` and `uv.lock` using the [locked environment procedure](docs/commercial/operations-runbook.md); the exported `requirements.txt` is an audit record and does not encode the package-specific CPU index.
+
 For the proposed customer deployment, integration, operations, security and commercial acceptance scope, see the [product closure and release gates](docs/plans/product-closure-2026-09-26.md). The current release is an experiment package and has not passed those production gates.
 
 The [customer pilot template](docs/commercial/customer-pilot-template.md), [operations runbook](docs/commercial/operations-runbook.md), and [machine-readable release gates](docs/commercial/release-gates.json) record the commercial scope and evidence required before customer production use. The existing code is MIT licensed; pilot fees cover agreed integration, validation and support services.
@@ -109,7 +111,7 @@ MIT. See [LICENSE](LICENSE).
 
 ## Upgrade workflow
 
-Version 0.2 adds strict completion evidence and cleanup, early async commit, upload deadlines and stage metrics, retryable retention, resumable benchmarks, JSONL data with deterministic shuffle/crop and prefetch, gradient accumulation, CPU BF16, optional CUDA FP16 scaler, and CUDA DDP/FSDP2 adapters. The default dependency is PyTorch 2.14. GPU adapters require actual-device acceptance; multi-node/object-storage control and power-loss durability remain open infrastructure gates. Format 2 rejects older schemas, source changes and runtime changes; historical evidence remains intact.
+Version 0.2 adds strict completion evidence and cleanup, early async commit, upload deadlines and stage metrics, retryable retention, resumable benchmarks, JSONL data with deterministic shuffle/crop and prefetch, gradient accumulation, CPU BF16, optional CUDA FP16 scaler, and CUDA DDP/FSDP2 adapters. The current Linux package resolves PyTorch 2.14.0+cpu. GPU adapters require a separately locked CUDA environment and actual-device acceptance; multi-node/object-storage control and power-loss durability remain open infrastructure gates. Format 2 rejects older schemas, source changes and runtime changes; historical evidence remains intact.
 
 ```bash
 uv run trainguard acceptance --config configs/cpu_demo.yaml
@@ -120,13 +122,7 @@ uv run trainguard audit-checkpoints runs/<id>
 uv run trainguard storage-benchmark --repetitions 3
 ```
 
-On a host with two CUDA GPUs:
-
-```bash
-uv run trainguard acceptance --config configs/cuda_ddp.yaml
-uv run trainguard acceptance --config configs/cuda_fsdp2.yaml
-uv run pytest tests/test_gpu_acceptance.py
-```
+The `configs/cuda_ddp.yaml` and `configs/cuda_fsdp2.yaml` examples remain future GPU acceptance fixtures. Do not execute them with the current Linux CPU lock as evidence of GPU support. A separate GPU candidate must first fix its CUDA dependency closure and licensing, then run those fixtures and `tests/test_gpu_acceptance.py` on the target devices.
 
 The JSONL example contains illustrative token rows, not a real-corpus performance claim. Supply an immutable token file and its SHA-256 for real training. See [current acceptance and remaining gates](docs/experiments/full-upgrade-2026-09-26.md).
 
@@ -162,7 +158,7 @@ See the [simulation analysis](docs/analysis/simulation-closure-2026-09-26.md) an
 
 ## Version 0.3.1 commercial evaluation boundary
 
-The package now includes an installed CPU template, a guarded configuration profile, explicit authorization for fault and omitted-state experiments at the controller entry, and a read-only allowlisted support export. The local gate installs the built wheel with locked dependencies in a new environment, verifies a real checkpoint recovery against a reference, checks the support export, and confirms the complete run directory survives uninstall. It also rehearses a source/runtime upgrade boundary using separate old and new locked environments: a new wheel rejects an interrupted old run, while the old environment resumes it to the reference result.
+The package now includes an installed CPU template, a guarded configuration profile, explicit authorization for fault and omitted-state experiments at the controller entry, and a read-only allowlisted support export. The local gate syncs locked dependencies to a new environment, installs the built wheel without dependency resolution, verifies a real checkpoint recovery against a reference, checks the support export, and confirms the complete run directory survives uninstall. It also rehearses a source/runtime upgrade boundary using separate old and new locked environments: a new wheel rejects an interrupted old run, while the old environment resumes it to the reference result.
 
 These checks support a limited, isolated evaluation package. Run the [release readiness checker](docs/commercial/operations-runbook.md) against the candidate wheel, source distribution, lock and reviewed gate receipts. A `BLOCKED` result prevents a production claim. The current real GPU, multi-host, customer-workload, object-service, security operations and paid-customer gates remain open.
 The [version 0.3.1 local validation record](docs/commercial/evidence/local-validation-0.3.1.json) links its local outcomes to its artifacts. The [Linux verification failure](docs/commercial/evidence/linux-check-0.3.1.json) is retained separately; those artifacts and receipts are not used for the current candidate. An evaluation bundle remains labeled `EVALUATION_ONLY`; machine-checked receipts never authorize production release.

@@ -168,6 +168,24 @@ def _packages(rows: object, *, kind: str) -> dict[str, str]:
     return found
 
 
+def _verify_linux_cpu_closure(
+    installed: dict[str, str], *, target_platform: str,
+    torch_runtime_version: object, torch_cuda_version: object,
+) -> None:
+    if target_platform != "Linux":
+        return
+    forbidden = sorted(name for name in installed if (
+        name.startswith(("nvidia-", "cuda-")) or name == "triton"
+    ))
+    if (
+        installed.get("torch") != "2.14.0+cpu"
+        or torch_runtime_version != "2.14.0+cpu"
+        or torch_cuda_version is not None
+        or forbidden
+    ):
+        raise SupplyChainInvalid("Linux candidate is not the locked CPU-only PyTorch closure")
+
+
 def _analysis(directory: Path) -> dict:
     installed = _load(directory / "supply-chain-installed.json")
     bom = _load(directory / "supply-chain-sbom.json")
@@ -290,9 +308,15 @@ def verify_supply_chain(directory: Path, expected: dict[str, str]) -> dict:
             raise SupplyChainInvalid(f"supply-chain evidence differs: {name}")
     _verify_output_privacy(directory)
     analysis = _analysis(directory)
+    _verify_linux_cpu_closure(
+        _packages(_load(directory / "supply-chain-installed.json"), kind="installed"),
+        target_platform=receipt.get("platform"),
+        torch_runtime_version=receipt.get("torch_runtime_version"),
+        torch_cuda_version=receipt.get("torch_cuda_version"),
+    )
     if (
         receipt.get("status") != "PASS"
-        or receipt.get("audit_service") != "pypi"
+        or receipt.get("audit_service") != "osv"
         or receipt.get("audit_exit_code") != 0
         or receipt.get("database_snapshot_available") is not False
         or receipt.get("sbom_tool_version") != SBOM_TOOL_VERSION
@@ -356,6 +380,7 @@ def _generate_stage(root: Path, wheel: Path, output: Path) -> dict:
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)
     environment.pop("VIRTUAL_ENV", None)
+    environment.pop("UV_PROJECT_ENVIRONMENT", None)
     environment["PYTHONNOUSERSITE"] = "1"
     export = _run(
         ["uv", "export", "--locked", "--no-dev", "--no-emit-project", "--format",
@@ -371,11 +396,9 @@ def _generate_stage(root: Path, wheel: Path, output: Path) -> dict:
                  cwd=root, environment=environment)
         runtime_python = runtime / "bin" / "python"
         tool_python = tools / "bin" / "python"
-        _run(
-            ["uv", "pip", "install", "--python", str(runtime_python), "--require-hashes",
-             "-r", str(output / "supply-chain-requirements.txt")],
-            cwd=root, environment=environment,
-        )
+        active_environment = {**environment, "VIRTUAL_ENV": str(runtime)}
+        _run(["uv", "sync", "--locked", "--no-dev", "--no-install-project", "--active"],
+             cwd=root, environment=active_environment)
         _run(["uv", "pip", "install", "--python", str(runtime_python), "--no-deps",
               str(wheel)], cwd=root, environment=environment)
         installed_source = _run(
@@ -395,6 +418,20 @@ def _generate_stage(root: Path, wheel: Path, output: Path) -> dict:
             cwd=root, environment=environment,
         )
         installed_data = json.loads(installed.stdout)
+        profile_code = (
+            "import json, torch; print(json.dumps({'torch_runtime_version': torch.__version__, "
+            "'torch_cuda_version': torch.version.cuda}))"
+        )
+        runtime_profile = json.loads(_run(
+            [str(runtime_python), "-c", profile_code],
+            cwd=root, environment=environment,
+        ).stdout)
+        _verify_linux_cpu_closure(
+            _packages(installed_data, kind="installed"),
+            target_platform=platform.system(),
+            torch_runtime_version=runtime_profile["torch_runtime_version"],
+            torch_cuda_version=runtime_profile["torch_cuda_version"],
+        )
         (output / "supply-chain-installed.json").write_text(
             json.dumps(installed_data, sort_keys=True, indent=2) + "\n", encoding="utf-8"
         )
@@ -428,7 +465,7 @@ def _generate_stage(root: Path, wheel: Path, output: Path) -> dict:
         audit_path = output / "supply-chain-audit.json"
         audit = _run(
             [str(tools / "bin" / "pip-audit"), "--path", site_packages,
-             "--vulnerability-service", "pypi", "--format", "json", "--output",
+             "--vulnerability-service", "osv", "--format", "json", "--output",
              str(audit_path), "--cache-dir", str(temporary_root / "audit-cache"),
              "--progress-spinner", "off"],
             cwd=root, environment=environment, allow_audit_findings=True,
@@ -467,7 +504,8 @@ def _generate_stage(root: Path, wheel: Path, output: Path) -> dict:
         "python_version": platform.python_version(),
         "platform": platform.system(),
         "machine": platform.machine(),
-        "audit_service": "pypi",
+        "audit_service": "osv",
+        **runtime_profile,
         "audit_exit_code": audit.returncode,
         "audit_tool_version": AUDIT_TOOL_VERSION,
         "uv_version": uv_version,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -75,7 +76,8 @@ def supply_fixture(root: Path) -> dict[str, str]:
         "first_party_license_sha256": "2" * 64,
     }
     _write(root / "supply-chain-receipt.json", {
-        "schema_version": 1, "status": "PASS", "audit_service": "pypi",
+        "schema_version": 1, "status": "PASS", "audit_service": "osv",
+        "platform": "Darwin",
         "audit_exit_code": 0, "database_snapshot_available": False,
         "uv_version": "uv 0.9.10 (test)",
         "generated_at_utc": "2026-09-27T00:00:00+00:00",
@@ -105,6 +107,50 @@ def test_supply_chain_receipt_rejects_missing_and_changed_files(tmp_path: Path) 
     (root / "supply-chain-licenses.json").unlink()
     with pytest.raises(module.SupplyChainInvalid, match="evidence differs"):
         module.verify_supply_chain(root, expected)
+
+
+def test_linux_cpu_closure_rejects_gpu_and_wrong_runtime() -> None:
+    module = _module()
+    installed = {"trainguard": "0.3.6", "torch": "2.14.0+cpu", "sympy": "1.14.0"}
+    options = {"target_platform": "Linux", "torch_runtime_version": "2.14.0+cpu",
+               "torch_cuda_version": None}
+    module._verify_linux_cpu_closure(installed, **options)
+    for changed in (
+        {**installed, "torch": "2.14.0"},
+        {**installed, "nvidia-cudnn-cu13": "1.0"},
+        {**installed, "cuda-toolkit": "13.0"},
+        {**installed, "triton": "3.8"},
+    ):
+        with pytest.raises(module.SupplyChainInvalid, match="CPU-only"):
+            module._verify_linux_cpu_closure(changed, **options)
+    with pytest.raises(module.SupplyChainInvalid, match="CPU-only"):
+        module._verify_linux_cpu_closure(installed, **{**options, "torch_cuda_version": "13.0"})
+
+
+def test_linux_cpu_dependency_profile_is_locked() -> None:
+    root = Path(__file__).parents[1]
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    lock = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))
+    assert "torch==2.14.0+cpu; sys_platform == 'linux'" in project["project"]["dependencies"]
+    assert project["tool"]["uv"]["sources"]["torch"] == [
+        {"index": "pytorch-cpu", "marker": "sys_platform == 'linux'"}
+    ]
+    assert project["tool"]["uv"]["index"] == [
+        {"name": "pytorch-cpu", "url": "https://download.pytorch.org/whl/cpu",
+         "explicit": True}
+    ]
+    packages = lock["package"]
+    assert not any(package["name"].startswith(("nvidia-", "cuda-"))
+                   or package["name"] == "triton" for package in packages)
+    cpu_torch = [package for package in packages if package["name"] == "torch"
+                 and package["version"] == "2.14.0+cpu"]
+    assert len(cpu_torch) == 1
+    assert cpu_torch[0]["source"]["registry"] == "https://download.pytorch.org/whl/cpu"
+    assert all("sys_platform == 'linux'" in marker
+               for marker in cpu_torch[0]["resolution-markers"])
+    assert all(wheel["hash"].startswith("sha256:") and
+               wheel["url"].startswith("https://download-r2.pytorch.org/whl/cpu/")
+               for wheel in cpu_torch[0]["wheels"])
 
 
 @pytest.mark.parametrize("change, message", [
