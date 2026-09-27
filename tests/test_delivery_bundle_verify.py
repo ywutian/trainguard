@@ -64,7 +64,9 @@ def _bundle(root: Path, module) -> Path:
         path = root / staged_name
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
-            if staged_name == "scripts/supply_chain.py":
+            if (staged_name == "scripts/supply_chain.py"
+                    or staged_name in module.DELIVERY_LINK_DOCUMENTS
+                    or staged_name == "README.md"):
                 path.write_bytes((Path(__file__).parents[1] / staged_name).read_bytes())
             else:
                 path.write_bytes(f"reviewed {staged_name}".encode())
@@ -107,7 +109,7 @@ def _bundle(root: Path, module) -> Path:
         "wheel_sha256": artifacts[wheel], "lock_sha256": artifacts["uv.lock"],
         "tool_lock_sha256": _sha(root / "scripts/supply-chain-tools.txt"),
         "security_policy_sha256": _sha(root / "SECURITY.md"),
-        "security_channel_record_sha256": _sha(root / "security-channel-2026-09-27.json"),
+        "security_channel_record_sha256": _sha(root / "docs/commercial/security-channel-2026-09-27.json"),
         "first_party_license_sha256": _sha(root / "LICENSE"),
     })
     supply_receipt = root / raw_dir / "supply-chain-receipt.json"
@@ -155,7 +157,7 @@ def _bundle(root: Path, module) -> Path:
             evidence_map[gate_id] = name
         else:
             gates.append({"id": gate_id, "status": "BLOCKED", "reason": "pending"})
-    _write(root / "release-gates.json", {
+    _write(root / "docs/commercial/release-gates.json", {
         "schema_version": 1, "candidate_source_sha256": source,
         "candidate_execution_inputs_sha256": inputs,
         "previous_release": previous, "gates": gates,
@@ -212,6 +214,25 @@ def test_transferred_bundle_checks_files_and_evidence_bindings(tmp_path: Path) -
     (root / "trainguard-0.3.2-py3-none-any.whl").write_bytes(b"changed wheel")
     with pytest.raises(module.DeliveryInvalid, match="file digest differs"):
         module.verify_bundle(root)
+
+
+def test_customer_handoff_document_links_resolve_inside_bundle(tmp_path: Path) -> None:
+    module = _module()
+    root = _bundle(tmp_path / "bundle", module)
+    module._verify_document_links(root)
+    document = root / "docs/commercial/operations-runbook.md"
+    original = document.read_bytes()
+    document.write_text("[missing](../../missing.md)\n", encoding="utf-8")
+    with pytest.raises(module.DeliveryInvalid, match="link target is unavailable"):
+        module._verify_document_links(root)
+    document.write_bytes(original)
+    (root / "README.md").unlink()
+    with pytest.raises(module.DeliveryInvalid, match="link target is unavailable"):
+        module._verify_document_links(root)
+    (root / "README.md").write_bytes((Path(__file__).parents[1] / "README.md").read_bytes())
+    (root / "SECURITY.md").unlink()
+    with pytest.raises(module.DeliveryInvalid, match="link target is unavailable"):
+        module._verify_document_links(root)
 
 
 def test_trusted_manifest_digest_is_checked_before_bundle_data_or_code(
@@ -300,7 +321,7 @@ def test_transferred_bundle_rejects_extra_files_and_links(tmp_path: Path) -> Non
 def test_transferred_bundle_rejects_gate_manifest_drift(tmp_path: Path) -> None:
     module = _module()
     root = _bundle(tmp_path / "bundle", module)
-    gate_path = root / "release-gates.json"
+    gate_path = root / "docs/commercial/release-gates.json"
     gates = json.loads(gate_path.read_text(encoding="utf-8"))
     gates["gates"][0]["reason"] = "a different blocker"
     _write(gate_path, gates)
@@ -312,7 +333,7 @@ def test_transferred_bundle_rejects_gate_manifest_drift(tmp_path: Path) -> None:
 def test_transferred_bundle_rejects_prior_release_pin_drift(tmp_path: Path) -> None:
     module = _module()
     root = _bundle(tmp_path / "bundle", module)
-    gate_path = root / "release-gates.json"
+    gate_path = root / "docs/commercial/release-gates.json"
     gates = json.loads(gate_path.read_text(encoding="utf-8"))
     gates["previous_release"]["lock_sha256"] = "0" * 64
     _write(gate_path, gates)
@@ -356,7 +377,7 @@ def test_transferred_bundle_rejects_loose_file_rewritten_after_source_review(
 def test_transferred_bundle_requires_reviewed_license_document(tmp_path: Path) -> None:
     module = _module()
     root = _bundle(tmp_path / "bundle", module)
-    license_document = root / "linux-license-evidence-0.3.6.md"
+    license_document = root / "docs/commercial/linux-license-evidence-0.3.6.md"
     license_document.unlink()
     _seal(root)
     with pytest.raises(module.DeliveryInvalid, match="reviewed source distribution"):

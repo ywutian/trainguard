@@ -125,7 +125,7 @@ def main() -> None:
         files = [
             args.wheel, args.sdist, root / "pyproject.toml", root / "uv.lock",
             root / "build-requirements.in", root / "build-constraints.txt",
-            root / "LICENSE", root / "SECURITY.md",
+            root / "LICENSE", root / "README.md", root / "SECURITY.md",
             root / "docs/commercial/security-channel-2026-09-27.json",
             root / "docs/commercial/linux-license-evidence-0.3.6.md",
             root / "docs/commercial/operations-runbook.md",
@@ -133,17 +133,23 @@ def main() -> None:
             root / "docs/commercial/pilot-ledger-template.json",
             root / "docs/commercial/market-evidence-2026-09-26.md",
         ]
-        if len({path.name for path in files}) != len(files) or any(
-            path.name in {"release-gates.json", "readiness-report.json",
-                          "delivery-manifest.json", "requirements.txt"}
+        destinations = [
+            path.name if path in {args.wheel, args.sdist} else path.relative_to(root).as_posix()
             for path in files
+        ]
+        if len(set(destinations)) != len(destinations) or any(
+            name in {"docs/commercial/release-gates.json", "readiness-report.json",
+                     "delivery-manifest.json", "requirements.txt"}
+            for name in destinations
         ):
             raise ValueError("delivery inputs contain conflicting file names")
-        for path in files:
-            shutil.copy2(path, stage / path.name)
+        for path, name in zip(files, destinations, strict=True):
+            target = stage / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
         for name, digest in fresh["artifacts"].items():
             _check_digest(stage / name, digest)
-        shutil.copy2(args.gate_manifest, stage / "release-gates.json")
+        shutil.copy2(args.gate_manifest, stage / "docs/commercial/release-gates.json")
         write_json_atomic(stage / "readiness-report.json", fresh)
         scripts = stage / "scripts"
         scripts.mkdir()
@@ -188,7 +194,7 @@ def main() -> None:
         if requirements.read_bytes() != (raw_dir / "supply-chain-requirements.txt").read_bytes():
             raise ValueError("delivery requirements differ from scanned candidate inputs")
         version = tomllib.loads((stage / "pyproject.toml").read_text())["project"]["version"]
-        _check_stage(stage, fresh, "release-gates.json", version, args.sdist.name)
+        _check_stage(stage, fresh, "docs/commercial/release-gates.json", version, args.sdist.name)
         manifest = {
             "schema_version": 1,
             "version": version,

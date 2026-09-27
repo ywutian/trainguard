@@ -10,10 +10,12 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import re
 import sys
 import tarfile
 import tomllib
 from pathlib import Path, PurePosixPath
+from urllib.parse import unquote, urlsplit
 
 
 class DeliveryInvalid(ValueError):
@@ -32,18 +34,24 @@ SOURCE_MEMBERS = {
     "build-requirements.in": "build-requirements.in",
     "build-constraints.txt": "build-constraints.txt",
     "LICENSE": "LICENSE",
+    "README.md": "README.md",
     "SECURITY.md": "SECURITY.md",
-    "security-channel-2026-09-27.json": "docs/commercial/security-channel-2026-09-27.json",
-    "linux-license-evidence-0.3.6.md": "docs/commercial/linux-license-evidence-0.3.6.md",
-    "operations-runbook.md": "docs/commercial/operations-runbook.md",
-    "customer-pilot-template.md": "docs/commercial/customer-pilot-template.md",
-    "pilot-ledger-template.json": "docs/commercial/pilot-ledger-template.json",
-    "market-evidence-2026-09-26.md": "docs/commercial/market-evidence-2026-09-26.md",
+    "docs/commercial/security-channel-2026-09-27.json": "docs/commercial/security-channel-2026-09-27.json",
+    "docs/commercial/linux-license-evidence-0.3.6.md": "docs/commercial/linux-license-evidence-0.3.6.md",
+    "docs/commercial/operations-runbook.md": "docs/commercial/operations-runbook.md",
+    "docs/commercial/customer-pilot-template.md": "docs/commercial/customer-pilot-template.md",
+    "docs/commercial/pilot-ledger-template.json": "docs/commercial/pilot-ledger-template.json",
+    "docs/commercial/market-evidence-2026-09-26.md": "docs/commercial/market-evidence-2026-09-26.md",
     "scripts/calculate_pilot_value.py": "scripts/calculate_pilot_value.py",
     "scripts/verify_delivery_bundle.py": "scripts/verify_delivery_bundle.py",
     "scripts/supply_chain.py": "scripts/supply_chain.py",
     "scripts/supply-chain-tools.in": "scripts/supply-chain-tools.in",
     "scripts/supply-chain-tools.txt": "scripts/supply-chain-tools.txt",
+}
+DELIVERY_LINK_DOCUMENTS = {
+    "docs/commercial/operations-runbook.md",
+    "docs/commercial/customer-pilot-template.md",
+    "docs/commercial/market-evidence-2026-09-26.md",
 }
 
 SUPPLY_CHAIN_RAW_FILES = {
@@ -105,6 +113,26 @@ def _mapping(path: Path) -> dict:
     if not isinstance(value, dict):
         raise DeliveryInvalid(f"bundle record is not a mapping: {path.name}")
     return value
+
+
+def _verify_document_links(root: Path) -> None:
+    """Check local links in the customer-facing handoff documents."""
+    bundle_root = root.resolve()
+    for name in DELIVERY_LINK_DOCUMENTS:
+        document = root / name
+        try:
+            content = document.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise DeliveryInvalid(f"delivery document is unreadable: {name}") from exc
+        for link in re.findall(r"\]\(([^)]+)\)", content):
+            location = urlsplit(link)
+            if location.scheme in {"http", "https", "mailto"}:
+                continue
+            if location.scheme or location.netloc or location.query:
+                raise DeliveryInvalid(f"delivery document has an unsupported link: {name}")
+            target = (document.parent / unquote(location.path)).resolve()
+            if not target.is_relative_to(bundle_root) or not target.is_file():
+                raise DeliveryInvalid(f"delivery document link target is unavailable: {name}")
 
 
 def _is_sha256(value: object) -> bool:
@@ -277,7 +305,8 @@ def verify_bundle(root: Path, expected_manifest_sha256: str | None = None) -> di
     except (OSError, KeyError, tarfile.TarError) as exc:
         raise DeliveryInvalid("source distribution cannot verify loose delivery files") from exc
 
-    gate_manifest = _mapping(root / "release-gates.json")
+    _verify_document_links(root)
+    gate_manifest = _mapping(root / "docs/commercial/release-gates.json")
     if (
         gate_manifest.get("schema_version") != 1
         or gate_manifest.get("candidate_source_sha256") != manifest["source_sha256"]
@@ -367,7 +396,7 @@ def verify_bundle(root: Path, expected_manifest_sha256: str | None = None) -> di
             "security_policy_sha256": expected["SECURITY.md"],
             "first_party_license_sha256": expected["LICENSE"],
             "security_channel_record_sha256": expected[
-                "security-channel-2026-09-27.json"
+                "docs/commercial/security-channel-2026-09-27.json"
             ],
         })
         supply_result = _mapping(root / raw_dir / "supply-chain-receipt.json")
