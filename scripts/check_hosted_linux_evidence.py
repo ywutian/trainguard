@@ -32,6 +32,7 @@ from trainguard.evidence_lineage import require_evidence_only_descendant
 from trainguard.execution_inputs import execution_inputs_sha256 as input_digest
 
 PYTHON_LANES = ("3.11", "3.12")
+LINUX_CPU_TORCH_VERSION = "2.14.0+cpu"
 REQUIRED_GATES = {
     "static", "tests", "cpu-acceptance", "package", "wheel", "fresh-install",
     "upgrade-boundary", "supply-chain",
@@ -227,6 +228,8 @@ def verify_evidence(
             or environment.get("source_sha256") != source_sha256
             or environment.get("git_commit") != commit
             or environment.get("platform") != result["platform"]
+            or environment.get("torch") != LINUX_CPU_TORCH_VERSION
+            or result.get("torch") != LINUX_CPU_TORCH_VERSION
             or not isinstance(environment.get("python"), str)
             or not environment["python"].startswith(f"{lane}.")
         ):
@@ -255,6 +258,8 @@ def verify_evidence(
             or not supply_receipt["python_version"].startswith(f"{lane}.")
             or supply_receipt.get("platform") != "Linux"
             or supply_receipt.get("machine") != "x86_64"
+            or supply_receipt.get("torch_runtime_version") != LINUX_CPU_TORCH_VERSION
+            or supply_receipt.get("torch_cuda_version") is not None
             or supply_output.get("status") != "PASS"
             or supply_output.get("wheel_sha256") != artifact_sha256[wheel.name]
             or supply_output.get("component_count") != supply_analysis["component_count"]
@@ -273,6 +278,9 @@ def verify_evidence(
             or verified_wheel["sdist_members"] < 1
             or installed.get("version") != version
             or installed.get("wheel_sha256") != artifact_sha256[wheel.name]
+            or installed.get("torch_version") != LINUX_CPU_TORCH_VERSION
+            or installed.get("torch_cuda_version") is not None
+            or installed.get("linux_cpu_profile_checked") is not True
             or any(installed.get(field) is not True for field in (
                 "installed_outside_checkout", "completed_run", "recovered_run_matches_reference",
                 "support_export_checked", "run_data_preserved_after_uninstall",
@@ -284,6 +292,9 @@ def verify_evidence(
             or upgrade.get("current_version") != version
             or upgrade.get("current_wheel_sha256") != artifact_sha256[wheel.name]
             or upgrade.get("current_lock_sha256") != lock_sha256
+            or upgrade.get("new_torch_version") != LINUX_CPU_TORCH_VERSION
+            or upgrade.get("new_torch_cuda_version") is not None
+            or upgrade.get("new_linux_cpu_profile_checked") is not True
             or upgrade.get("previous_commit_sha") != previous_release["git_commit"]
             or upgrade.get("previous_version") != previous_release["version"]
             or upgrade.get("previous_wheel_sha256") != previous_release["wheel_sha256"]

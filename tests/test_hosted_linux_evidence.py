@@ -55,6 +55,7 @@ def _acceptance(source: str, python: str, commit: str, platform: str) -> dict:
         "status": "SUCCEEDED", "reference_status": "VALIDATED", "cases": cases,
         "config": {"run": {"device": "cpu", "backend": "gloo", "world_size": 2}},
         "environment": {"source_sha256": source, "python": python,
+                        "torch": "2.14.0+cpu",
                         "git_commit": commit, "platform": platform},
     }
 
@@ -147,6 +148,25 @@ def evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                         row["bom-ref"] = f"pkg:pypi/trainguard@{version}"
             if name == "supply-chain-sbom.json":
                 report["dependencies"][0]["ref"] = f"pkg:pypi/trainguard@{version}"
+                report["components"].append({
+                    "name": "torch", "version": "2.14.0+cpu",
+                    "bom-ref": "pkg:pypi/torch@2.14.0%2Bcpu",
+                    "licenses": [{"license": {"id": "BSD-3-Clause"}}],
+                })
+                report["dependencies"].append({
+                    "ref": "pkg:pypi/torch@2.14.0%2Bcpu", "dependsOn": [],
+                })
+            elif name == "supply-chain-installed.json":
+                report.append({"name": "torch", "version": "2.14.0+cpu"})
+            elif name == "supply-chain-licenses.json":
+                report["components"].append({
+                    "name": "torch", "version": "2.14.0+cpu",
+                    "licenses": [{"license": {"id": "BSD-3-Clause"}}],
+                })
+            else:
+                report["dependencies"].append({
+                    "name": "torch", "version": "2.14.0+cpu", "vulns": [],
+                })
             _write_json(path, report)
         supply_expected.update({
             "candidate_version": version,
@@ -170,7 +190,11 @@ def evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         supply_receipt_path = run / "supply-chain-receipt.json"
         supply_receipt = json.loads(supply_receipt_path.read_text())
         supply_receipt.update(supply_expected)
-        supply_receipt.update(python_version=py, platform="Linux", machine="x86_64")
+        supply_receipt.update(
+            python_version=py, platform="Linux", machine="x86_64",
+            audit_service="osv", torch_runtime_version="2.14.0+cpu",
+            torch_cuda_version=None, component_count=3, third_party_count=2,
+        )
         supply_receipt["files"] = {
             name: hashlib.sha256((run / name).read_bytes()).hexdigest()
             for name in supply_receipt["files"]
@@ -178,7 +202,7 @@ def evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         _write_json(supply_receipt_path, supply_receipt)
         _write_json(run / "supply-chain.txt", {
             "status": "PASS", "wheel_sha256": artifacts[wheel.name],
-            "component_count": 2, "known_vulnerability_count": 0,
+            "component_count": 3, "known_vulnerability_count": 0,
             "unscanned_third_party": [], "unlicensed_third_party": [],
         })
         (run / "wheel.txt").write_text(json.dumps({
@@ -187,6 +211,8 @@ def evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         }) + "\n", encoding="utf-8")
         (run / "fresh-install.txt").write_text(json.dumps({
             "version": version, "wheel_sha256": artifacts[wheel.name],
+            "torch_version": "2.14.0+cpu", "torch_cuda_version": None,
+            "linux_cpu_profile_checked": True,
             "installed_outside_checkout": True, "completed_run": True,
             "recovered_run_matches_reference": True, "support_export_checked": True,
             "run_data_preserved_after_uninstall": True, "attributed_faults": 1,
@@ -195,6 +221,8 @@ def evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         (run / "upgrade-boundary.txt").write_text(json.dumps({
             "current_version": version, "current_wheel_sha256": artifacts[wheel.name],
             "current_lock_sha256": lock_sha, "previous_commit_sha": previous["git_commit"],
+            "new_torch_version": "2.14.0+cpu", "new_torch_cuda_version": None,
+            "new_linux_cpu_profile_checked": True,
             "previous_version": previous["version"],
             "previous_wheel_sha256": previous["wheel_sha256"],
             "previous_lock_sha256": previous["lock_sha256"],
@@ -207,7 +235,7 @@ def evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             "execution_commit": commit, "execution_commit_after": commit,
             "execution_inputs_sha256": inputs, "execution_inputs_after_sha256": inputs,
             "lock_sha256": lock_sha, "artifact_sha256": artifacts,
-            "python": py, "platform": platform, "gates": gates,
+            "python": py, "torch": "2.14.0+cpu", "platform": platform, "gates": gates,
             "acceptance": _acceptance(source, py, commit, platform),
         })
         summary[lane] = run.parent
@@ -361,6 +389,31 @@ def test_hosted_linux_evidence_rejects_acceptance_platform_drift(evidence) -> No
     result["acceptance"]["environment"]["platform"] = "Linux-6.8.0-aarch64"
     _write_json(run / "result.json", result)
     with pytest.raises(ValueError, match="acceptance used another environment"):
+        _verify(evidence)
+
+
+def test_hosted_linux_evidence_rejects_non_cpu_acceptance_runtime(evidence) -> None:
+    run = evidence[2]["3.11"] / "simulation-run"
+    result = json.loads((run / "result.json").read_text())
+    result["acceptance"]["environment"]["torch"] = "2.14.0"
+    _write_json(run / "result.json", result)
+    with pytest.raises(ValueError, match="acceptance used another environment"):
+        _verify(evidence)
+
+
+@pytest.mark.parametrize("name, field", [
+    ("fresh-install.txt", "torch_version"),
+    ("upgrade-boundary.txt", "new_torch_version"),
+])
+def test_hosted_linux_evidence_rejects_non_cpu_installed_runtime(
+    evidence, name: str, field: str,
+) -> None:
+    run = evidence[2]["3.11"] / "simulation-run"
+    path = run / name
+    result = json.loads(path.read_text())
+    result[field] = "2.14.0"
+    _write_json(path, result)
+    with pytest.raises(ValueError, match="package or upgrade evidence is incomplete"):
         _verify(evidence)
 
 
