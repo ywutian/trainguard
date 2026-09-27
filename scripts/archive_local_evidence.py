@@ -44,10 +44,26 @@ EXPECTED_CASES = {
     "async-save_interrupt", "sync-corrupt", "async-corrupt", "sync-hang",
     "omit-rng", "omit-optimizer", "omit-cursor",
 }
+COMPONENT_TYPES = {
+    "application", "framework", "library", "container", "platform",
+    "operating-system", "device", "device-driver", "firmware", "file",
+    "machine-learning-model", "data", "cryptographic-asset",
+}
 
 
 def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _locked_requirements(root: Path) -> bytes:
+    command = [
+        "uv", "export", "--locked", "--no-dev", "--no-emit-project", "--format",
+        "requirements.txt",
+    ]
+    exported = subprocess.run(command, cwd=root, capture_output=True, check=False)
+    if exported.returncode:
+        raise ValueError("current locked dependency export failed")
+    return exported.stdout
 
 
 def _read_file(path: Path) -> bytes:
@@ -106,6 +122,10 @@ def _numeric_metrics(value: object) -> dict:
 
 
 def _safe_acceptance(acceptance: dict) -> dict:
+    from run_simulation_closure import _acceptance_complete
+
+    if not _acceptance_complete(acceptance):
+        raise ValueError("original CPU acceptance case contract is incomplete")
     if (
         acceptance.get("status") != "SUCCEEDED"
         or acceptance.get("reference_status") != "VALIDATED"
@@ -357,8 +377,12 @@ def _safe_supply_chain(source: Path, root: Path, source_digest: str,
     }
     safe_components = []
     for component in sbom["components"]:
+        component_type = component.get("type")
+        if component_type not in COMPONENT_TYPES:
+            raise ValueError("original SBOM component type is invalid")
         safe_components.append({
-            **package(component), "bom-ref": references[component["bom-ref"]],
+            **package(component), "type": component_type,
+            "bom-ref": references[component["bom-ref"]],
             "licenses": _safe_license_rows(component.get("licenses", [])),
         })
     safe_sbom = {
@@ -390,14 +414,18 @@ def _safe_supply_chain(source: Path, root: Path, source_digest: str,
                     for item in row["vulns"]
                 ],
             })
+    requirements = _read_file(source / "supply-chain-requirements.txt")
+    if hashlib.sha256(requirements).hexdigest() != original_hashes[
+        "supply-chain-requirements.txt"
+    ]:
+        raise ValueError("original locked requirements changed while archiving")
+    if requirements != _locked_requirements(root):
+        raise ValueError("original locked requirements differ from the current export")
     safe = {
         "supply-chain-sbom.json": _json_bytes(safe_sbom),
         "supply-chain-licenses.json": _json_bytes(safe_licenses),
         "supply-chain-audit.json": _json_bytes(safe_audit),
-        "supply-chain-requirements.txt": (
-            "Original locked requirements SHA-256: "
-            + original_hashes["supply-chain-requirements.txt"] + "\n"
-        ).encode(),
+        "supply-chain-requirements.txt": requirements,
     }
     # The scanner treats the installed inventory as a top-level array.
     safe["supply-chain-installed.json"] = (
@@ -419,12 +447,13 @@ def _safe_supply_chain(source: Path, root: Path, source_digest: str,
         name: hashlib.sha256(safe[name]).hexdigest() for name in RAW_FILES
     }
     safe[RECEIPT] = _json_bytes(safe_receipt)
-    safe["supply-chain.txt"] = _json_bytes(_selected(
+    safe_summary = _selected(
         _last_json(_read_file(source / "supply-chain.txt"), "supply-chain.txt"),
         ("status", "component_count", "third_party_count", "known_vulnerability_count",
          "unscanned_third_party", "unlicensed_third_party", "wheel_sha256"),
         "supply-chain gate",
-    ))
+    )
+    safe["supply-chain.txt"] = (json.dumps(safe_summary, sort_keys=True) + "\n").encode()
     return safe
 
 

@@ -22,15 +22,19 @@ def archive_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root = tmp_path / "checkout"
     evidence = root / "docs/commercial/evidence"
     evidence.mkdir(parents=True)
-    (root / "pyproject.toml").write_text('[project]\nversion = "0.3.6"\n')
-    (root / "uv.lock").write_bytes(b"fixed-lock")
+    project = Path(__file__).parents[1]
+    for name in ("pyproject.toml", "uv.lock"):
+        (root / name).write_bytes((project / name).read_bytes())
     for name in ("SECURITY.md", "LICENSE", "scripts/supply-chain-tools.txt",
                  "docs/commercial/security-channel-2026-09-27.json"):
         destination = root / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text("fixed-policy")
     (evidence.parent / "release-gates.json").write_text(
-        json.dumps({"previous_release": {"git_commit": "b" * 40}})
+        json.dumps({"previous_release": {
+            "git_commit": "b" * 40, "version": "0.3.5",
+            "wheel_sha256": "c" * 64, "lock_sha256": "d" * 64,
+        }})
     )
     subprocess.run(["git", "init", "-q", str(root)], check=True)
     subprocess.run(["git", "add", "pyproject.toml", "uv.lock"], cwd=root, check=True)
@@ -49,18 +53,26 @@ def archive_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     digest = lambda data: hashlib.sha256(data).hexdigest()
     artifacts = {wheel.name: digest(wheel.read_bytes()), sdist.name: digest(sdist.read_bytes())}
     names = sorted(archiver.EXPECTED_CASES)
+    def case_contract(name: str) -> tuple[str, str, str, bool]:
+        if name.startswith("omit-"):
+            return "sync", "worker_exit", name.removeprefix("omit-"), False
+        mode, fault = name.split("-", 1)
+        return mode, fault, "none", True
+
     acceptance = {
         "status": "SUCCEEDED", "reference_status": "VALIDATED",
         "environment": {"git_commit": commit, "host_path": "/Users/private/secret.key"},
         "cases": [
             {
-                "name": name, "mode": "sync", "fault": "worker_exit",
-                "omit_state": "none", "expected_exact": not name.startswith("omit-"),
+                "name": name, "mode": case_contract(name)[0],
+                "fault": case_contract(name)[1],
+                "omit_state": case_contract(name)[2],
+                "expected_exact": case_contract(name)[3],
                 "status": "PASSED", "recovery_count": 1, "fault_attributed": True,
                 "run_dir": "/Users/private/test-artifacts/customer-sample.key",
                 "reason": "TOPSECRET-KEY-MATERIAL",
                 "metrics": {"recovery_rto_seconds": 1.5, "host_path": "/Users/private"},
-                "validation": {"passed": not name.startswith("omit-"),
+                "validation": {"passed": case_contract(name)[3],
                                "differences": ["TOPSECRET-KEY-MATERIAL"]},
             }
             for name in names
@@ -90,16 +102,19 @@ def archive_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "acceptance_path": str(original_acceptance), "acceptance": acceptance,
     }
     (source / "result.json").write_text(json.dumps(result))
+    junit_cases = "".join(
+        f'<testcase classname="tests.test_sample" name="test_case_{number:03d}" time="0.01">'
+        '<system-out>TOPSECRET-KEY-MATERIAL /Users/private</system-out></testcase>'
+        for number in range(160)
+    )
     (source / "pytest.xml").write_text(
         '<testsuites><testsuite name="pytest" errors="0" failures="0" skipped="0" '
-        'tests="1" time="0.01" timestamp="2026-09-27" hostname="private-host">'
-        '<testcase classname="tests.test_sample" name="test_one" time="0.01">'
-        '<system-out>TOPSECRET-KEY-MATERIAL /Users/private</system-out>'
-        '</testcase></testsuite></testsuites>'
+        'tests="160" time="1.60" timestamp="2026-09-27" hostname="private-host">'
+        + junit_cases + '</testsuite></testsuites>'
     )
     (source / "tests.txt").write_text(
         "Trace at /Users/private/test-artifacts/customer-sample.key: "
-        "TOPSECRET-KEY-MATERIAL\n1 passed, 0 skipped in 0.01s\n"
+        "TOPSECRET-KEY-MATERIAL\n160 passed in 1.60s\n"
     )
     (source / "static.txt").write_text("All checks passed!\n")
     (source / "cpu-acceptance.txt").write_text("Acceptance report: /Users/private/secret\n")
@@ -134,7 +149,7 @@ def archive_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "supply-chain-installed.json": installed,
         "supply-chain-sbom.json": {
             "bomFormat": "CycloneDX", "specVersion": "1.6",
-            "components": [{**row, "bom-ref": refs[row["name"]],
+            "components": [{**row, "type": "library", "bom-ref": refs[row["name"]],
                             "licenses": component_licenses} for row in installed],
             "dependencies": [
                 {"ref": refs["trainguard"], "dependsOn": [refs["example"]]},
@@ -154,9 +169,12 @@ def archive_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     }
     for name, report in reports.items():
         (source / name).write_text(json.dumps(report))
-    (source / "supply-chain-requirements.txt").write_text(
-        "example==1.0 --hash=sha256:abc\n"
+    exported = subprocess.run(
+        ["uv", "export", "--locked", "--no-dev", "--no-emit-project", "--format",
+         "requirements.txt"],
+        cwd=root, check=True, capture_output=True, text=True,
     )
+    (source / "supply-chain-requirements.txt").write_text(exported.stdout)
     chain_expected = {
         "source_sha256": "1" * 64, "execution_inputs_sha256": "2" * 64,
         "wheel_sha256": artifacts[wheel.name], "lock_sha256": result["lock_sha256"],
@@ -200,6 +218,19 @@ def test_archive_keeps_original_hashes_and_removes_private_test_text(archive_fix
     output = archiver.archive(source, "0.3.6-r1", root)
     record = json.loads((output / "local-validation.json").read_text())
     assert record["unredacted_source_sha256"]["result.json"] == original_hash
+    requirements = (source / "supply-chain-requirements.txt").read_bytes()
+    assert (output / "raw/supply-chain-requirements.txt").read_bytes() == requirements
+    delivery_export = subprocess.run(
+        ["uv", "export", "--locked", "--no-dev", "--no-emit-project", "--format",
+         "requirements.txt"],
+        cwd=root, check=True, capture_output=True, text=True,
+    )
+    assert (output / "raw/supply-chain-requirements.txt").read_bytes() == (
+        delivery_export.stdout.encode()
+    )
+    assert record["unredacted_source_sha256"]["supply-chain-requirements.txt"] == (
+        hashlib.sha256(requirements).hexdigest()
+    )
     assert record["full_original_result_reference"] == "simulation:simulation-123456789abc"
     assert record["human_approval"] is False
     for name in ("local_package", "local_cpu"):
@@ -225,6 +256,72 @@ def test_archive_keeps_original_hashes_and_removes_private_test_text(archive_fix
             "security_channel_record_sha256",
         )
     })
+
+
+def test_archived_receipts_pass_the_release_evidence_verifier(
+    archive_fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archiver, root, source = archive_fixture
+    import check_release_readiness as checker
+    from supply_chain import verify_supply_chain
+
+    collected = {
+        ("tests.test_sample", f"test_case_{number:03d}") for number in range(160)
+    }
+    monkeypatch.setattr(checker, "__file__", str(root / "scripts/check_release_readiness.py"))
+    monkeypatch.setattr(checker, "execution_inputs_sha256", lambda current: "2" * 64)
+    monkeypatch.setattr(checker, "require_evidence_only_descendant", lambda *args: None)
+    monkeypatch.setattr(checker, "_collected_test_identities", lambda current: collected)
+    monkeypatch.setattr(checker, "_verify_supply_chain", verify_supply_chain)
+    monkeypatch.setattr(archiver, "_local_evidence", checker._local_evidence)
+    monkeypatch.setattr(archiver, "_receipt", checker._receipt)
+
+    output = archiver.archive(source, "0.3.6-r1", root)
+    source_digest = "1" * 64
+    record = json.loads((output / "local-validation.json").read_text())
+    assert record["tests"] == {"passed": 160, "skipped_no_gpu": 0}
+    artifacts = record["artifacts"]
+    previous = json.loads((root / "docs/commercial/release-gates.json").read_text())[
+        "previous_release"
+    ]
+    for gate_id in ("local_package", "local_cpu"):
+        receipt = checker._receipt(output / f"{gate_id}.json", gate_id, source_digest,
+                                   artifacts, previous)
+        assert receipt["decision"] == "PASS"
+
+
+@pytest.mark.parametrize("private_text", [
+    "example==1.0 --hash=sha256:abc /Users/private/customer.key\n",
+    "--extra-index-url https://user:secret@example.invalid/simple\n",
+])
+def test_archive_rejects_private_locked_requirements(
+    archive_fixture, private_text: str
+) -> None:
+    archiver, root, source = archive_fixture
+    requirements = source / "supply-chain-requirements.txt"
+    requirements.write_text(private_text)
+    receipt_path = source / "supply-chain-receipt.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["files"][requirements.name] = hashlib.sha256(requirements.read_bytes()).hexdigest()
+    receipt_path.write_text(json.dumps(receipt))
+    with pytest.raises(ValueError, match="local path|private URL"):
+        archiver.archive(source, "0.3.6-r1", root)
+    assert not (root / "docs/commercial/evidence/local-0.3.6-r1").exists()
+
+
+def test_archive_rejects_self_consistent_requirements_from_another_lock(
+    archive_fixture,
+) -> None:
+    archiver, root, source = archive_fixture
+    requirements = source / "supply-chain-requirements.txt"
+    requirements.write_text("example==1.0 --hash=sha256:abc\n")
+    receipt_path = source / "supply-chain-receipt.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["files"][requirements.name] = hashlib.sha256(requirements.read_bytes()).hexdigest()
+    receipt_path.write_text(json.dumps(receipt))
+    with pytest.raises(ValueError, match="current export"):
+        archiver.archive(source, "0.3.6-r1", root)
+    assert not (root / "docs/commercial/evidence/local-0.3.6-r1").exists()
 
 
 @pytest.mark.parametrize("damage", ["source", "inputs", "missing", "acceptance", "failed"])
@@ -270,6 +367,42 @@ def test_archive_rejects_source_mutation_during_verification(
     assert not (root / "docs/commercial/evidence/local-0.3.6-r1").exists()
 
 
+def test_archive_rejects_swapped_cpu_case_contract(archive_fixture) -> None:
+    archiver, root, source = archive_fixture
+    result_path = source / "result.json"
+    result = json.loads(result_path.read_text())
+    case = next(item for item in result["acceptance"]["cases"]
+                if item["name"] == "async-corrupt")
+    case["mode"] = "sync"
+    acceptance_path = Path(result["acceptance_path"])
+    acceptance_path.write_text(json.dumps(result["acceptance"]))
+    result_path.write_text(json.dumps(result))
+    with pytest.raises(ValueError, match="case contract"):
+        archiver.archive(source, "0.3.6-r1", root)
+    assert not (root / "docs/commercial/evidence/local-0.3.6-r1").exists()
+
+
+@pytest.mark.parametrize("component_type", [None, "not-a-component-type"])
+def test_archive_rejects_invalid_sbom_component_type(
+    archive_fixture, component_type: str | None
+) -> None:
+    archiver, root, source = archive_fixture
+    bom_path = source / "supply-chain-sbom.json"
+    bom = json.loads(bom_path.read_text())
+    if component_type is None:
+        bom["components"][0].pop("type")
+    else:
+        bom["components"][0]["type"] = component_type
+    bom_path.write_text(json.dumps(bom))
+    receipt_path = source / "supply-chain-receipt.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["files"][bom_path.name] = hashlib.sha256(bom_path.read_bytes()).hexdigest()
+    receipt_path.write_text(json.dumps(receipt))
+    with pytest.raises(ValueError, match="component type"):
+        archiver.archive(source, "0.3.6-r1", root)
+    assert not (root / "docs/commercial/evidence/local-0.3.6-r1").exists()
+
+
 def test_supply_chain_projection_preserves_graph_without_private_references(
     archive_fixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -281,7 +414,8 @@ def test_supply_chain_projection_preserves_graph_without_private_references(
         destination.write_text("fixed-policy")
     original_ref = "pkg:pypi/example@1.0"
     components = [{
-        "name": "example", "version": "1.0", "bom-ref": original_ref,
+        "name": "example", "version": "1.0", "type": "library",
+        "bom-ref": original_ref,
         "licenses": [{"license": {"id": "MIT", "url": "https://example.invalid/license"}}],
         "externalReferences": [{"url": "https://example.invalid/source"}],
     }]
@@ -320,7 +454,11 @@ def test_supply_chain_projection_preserves_graph_without_private_references(
     for name, value in reports.items():
         (source / name).write_text(json.dumps(value))
     (source / "supply-chain-requirements.txt").write_text(
-        "example==1.0 --hash=sha256:abc /Users/private/key\n"
+        "example==1.0 --hash=sha256:abc\n"
+    )
+    monkeypatch.setattr(
+        archiver, "_locked_requirements",
+        lambda current: (source / "supply-chain-requirements.txt").read_bytes(),
     )
     (source / "supply-chain.txt").write_text(json.dumps({
         "status": "PASS", "component_count": 1, "third_party_count": 1,
@@ -351,4 +489,5 @@ def test_supply_chain_projection_preserves_graph_without_private_references(
     assert b"externalReferences" not in all_bytes
     assert original_ref.encode() not in all_bytes
     projected = json.loads(output["supply-chain-sbom.json"])
+    assert projected["components"][0]["type"] == "library"
     assert projected["dependencies"][0]["ref"] == projected["components"][0]["bom-ref"]
