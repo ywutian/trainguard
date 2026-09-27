@@ -6,6 +6,8 @@ TrainGuard tests whether fixed-size distributed PyTorch training resumes from a 
 
 The CPU recovery path is implemented and tested with two Gloo workers. It supports synchronous and native asynchronous Distributed Checkpoint (DCP), application-level checkpoint commits, bounded full-group restarts, explicit resume, deterministic fault injection, correctness validation, and repeated local benchmarks. CUDA DDP and FSDP2 adapters are implemented but require real-device acceptance. Multi-node/object-storage recovery and host-power-loss durability remain open gates.
 
+For the proposed customer deployment, integration, operations, security and commercial acceptance scope, see the [product closure and release gates](docs/plans/product-closure-2026-09-26.md). The current release is an experiment package and has not passed those production gates.
+
 ## Quick start
 
 Requires Python 3.11 or 3.12 and [uv](https://docs.astral.sh/uv/).
@@ -94,7 +96,7 @@ Version 0.2.2 binds each recovery decision to every progressing rank's state-loa
 
 ```bash
 uv build --wheel --sdist --out-dir dist
-uv run python scripts/verify_wheel.py dist/trainguard-0.2.2-py3-none-any.whl
+uv run python scripts/verify_wheel.py dist/trainguard-0.3.0-py3-none-any.whl
 ```
 
 See the [full closure assessment](docs/analysis/closure-assessment-2026-09-26.md) for the supported boundary, infrastructure gates and next acceptance steps.
