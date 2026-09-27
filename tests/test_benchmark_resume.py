@@ -136,6 +136,7 @@ def test_completed_run_reuses_original_measurements(tmp_path, monkeypatch):
     }
     directory, calls = pending_slot(tmp_path, monkeypatch, measurement)
     monkeypatch.setattr(benchmark, "resume", lambda path: True)
+    monkeypatch.setattr(benchmark, "trusted_measurement", lambda path: measurement)
     benchmark.resume_benchmark(directory)
     result = json.loads((directory / "results.json").read_text())
     row = result["slots"][-1]["row"]
