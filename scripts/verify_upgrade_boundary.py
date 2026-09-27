@@ -30,6 +30,12 @@ def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _sha256_argument(value: str) -> str:
+    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise ValueError("expected prior artifact digest must be lowercase SHA-256")
+    return value
+
+
 def _directory_digest(root: Path) -> dict[str, str]:
     digests = {}
     for path in sorted(root.rglob("*")):
@@ -103,13 +109,27 @@ def _interrupted_run(executable: Path, config: Path, sandbox: Path, environ: dic
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--previous-ref", required=True)
+    parser.add_argument("--expected-previous-commit", required=True)
+    parser.add_argument("--expected-previous-wheel-sha256", type=_sha256_argument, required=True)
+    parser.add_argument("--expected-previous-lock-sha256", type=_sha256_argument, required=True)
     parser.add_argument("--current-wheel", type=Path, required=True)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    current_wheel = args.current_wheel.resolve(strict=True)
     environ = os.environ.copy()
     environ.pop("PYTHONPATH", None)
     environ.pop("VIRTUAL_ENV", None)
+    resolved_previous = _run(
+        ["git", "rev-parse", "--verify", f"{args.previous_ref}^{{commit}}"], root, environ
+    ).stdout.strip()
+    if resolved_previous != args.expected_previous_commit:
+        raise RuntimeError("previous ref differs from the approved release commit")
+    ancestor = _run(
+        ["git", "merge-base", "--is-ancestor", resolved_previous, "HEAD"],
+        root, environ, ok=False,
+    )
+    if ancestor.returncode:
+        raise RuntimeError("approved previous release is not in candidate history")
+    current_wheel = args.current_wheel.resolve(strict=True)
     with tempfile.TemporaryDirectory(prefix="trainguard-upgrade-") as temporary:
         sandbox = Path(temporary)
         source = sandbox / "previous-source"
@@ -137,6 +157,10 @@ def main() -> None:
         if len(previous_wheels) != 1:
             raise RuntimeError("previous ref did not produce one wheel")
         previous_wheel = previous_wheels[0]
+        if _digest(previous_wheel) != args.expected_previous_wheel_sha256:
+            raise RuntimeError("previous release wheel differs from approved artifact")
+        if _digest(source / "uv.lock") != args.expected_previous_lock_sha256:
+            raise RuntimeError("previous release lock differs from approved artifact")
         old_executable = _environment(sandbox, "old-environment", source, previous_wheel, environ)
         new_executable = _environment(sandbox, "new-environment", root, current_wheel, environ)
         config = sandbox / "workload.json"
@@ -172,6 +196,7 @@ def main() -> None:
         )
         print(json.dumps({
             "previous_ref": args.previous_ref,
+            "previous_commit_sha": resolved_previous,
             "previous_version": previous_version,
             "current_version": current_version,
             "previous_wheel_sha256": _digest(previous_wheel),

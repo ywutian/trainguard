@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
+import signal
 import subprocess
 import sys
 import uuid
@@ -17,16 +19,48 @@ from trainguard import __version__
 from trainguard.environment import source_sha256
 from trainguard.events import utc_now, write_json_atomic
 
+GATE_TIMEOUT_SECONDS = {
+    "static": 180,
+    "tests": 1800,
+    "cpu-acceptance": 1200,
+    "package": 300,
+    "wheel": 300,
+    "fresh-install": 1200,
+    "upgrade-boundary": 1200,
+}
+
 
 def _run(directory: Path, name: str, command: list[str]) -> dict:
     output = directory / f"{name}.txt"
     with output.open("w", encoding="utf-8") as stream:
-        completed = subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT, check=False)
+        process = subprocess.Popen(
+            command, stdout=stream, stderr=subprocess.STDOUT, start_new_session=True
+        )
+        timed_out = False
+        try:
+            exit_code = process.wait(timeout=GATE_TIMEOUT_SECONDS[name])
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
+            stream.write(f"\nGate timed out after {GATE_TIMEOUT_SECONDS[name]} seconds.\n")
+            exit_code = 124
     return {
         "name": name,
         "command": command,
-        "exit_code": completed.returncode,
+        "exit_code": exit_code,
         "output": str(output),
+        "timed_out": timed_out,
     }
 
 
@@ -110,6 +144,8 @@ def main() -> int:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--previous-ref", required=True)
     args = parser.parse_args()
+    release_manifest = json.loads(Path("docs/commercial/release-gates.json").read_text())
+    previous = release_manifest["previous_release"]
     directory = (args.output_root / f"simulation-{uuid.uuid4().hex[:12]}").resolve()
     directory.mkdir(parents=True)
     result = {
@@ -208,7 +244,11 @@ def main() -> int:
             directory,
             "upgrade-boundary",
             ["uv", "run", "python", "scripts/verify_upgrade_boundary.py",
-             "--previous-ref", args.previous_ref, "--current-wheel", str(wheels[0])],
+             "--previous-ref", args.previous_ref,
+             "--expected-previous-commit", previous["git_commit"],
+             "--expected-previous-wheel-sha256", previous["wheel_sha256"],
+             "--expected-previous-lock-sha256", previous["lock_sha256"],
+             "--current-wheel", str(wheels[0])],
         )
         result["gates"].append(gate)
         result["status"] = "SUCCEEDED" if gate["exit_code"] == 0 else "FAILED"

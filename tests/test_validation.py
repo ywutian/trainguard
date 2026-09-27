@@ -10,6 +10,14 @@ from trainguard.strategy import state_digest
 from trainguard.validation import validate_runs
 
 
+def test_state_digest_preserves_sequence_boundaries_and_types() -> None:
+    assert state_digest([1, 23]) != state_digest([12, 3])
+    assert state_digest(["ab", "c"]) != state_digest(["a", "bc"])
+    assert state_digest([1, 2]) != state_digest((1, 2))
+    assert state_digest([True]) != state_digest([1])
+    assert state_digest({1: "a", "1": "b"}) == state_digest({"1": "b", 1: "a"})
+
+
 def _run(root: Path, name: str) -> Path:
     directory = root / name
     directory.mkdir()

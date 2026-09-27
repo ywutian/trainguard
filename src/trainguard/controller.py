@@ -28,6 +28,7 @@ from trainguard.environment import environment_snapshot
 from trainguard.events import append_event, utc_now, write_json_atomic
 from trainguard.lifecycle import prune_checkpoints
 from trainguard.records import parse_event
+from trainguard.restore_failures import failed_restore_candidates
 from trainguard.run_store import RunStore
 from trainguard.strategy import preflight
 from trainguard.validation import completion_errors
@@ -113,7 +114,9 @@ def _stop_process_group(
 
 @contextmanager
 def _controller_lock(run_dir: Path) -> Iterator[None]:
-    with (run_dir / ".controller.lock").open("a+") as lock:
+    flags = os.O_RDWR | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+    with os.fdopen(os.open(run_dir / ".controller.lock", flags, 0o600), "a+") as lock:
+        os.fchmod(lock.fileno(), 0o600)
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
@@ -196,6 +199,9 @@ def _scan_checkpoints(
     root = run_dir / "checkpoints"
     if not root.is_dir():
         return None
+    failed_restores = failed_restore_candidates(
+        run_dir, run_id, config.run.world_size, store.attempts(run_id)
+    )
     records = []
     selected = None
     for path in ordered_candidates(run_dir):
@@ -206,13 +212,19 @@ def _scan_checkpoints(
         except (CheckpointInvalid, OSError) as exc:
             records.append((str(path), run_id, None, None, "INVALID", str(exc)))
         else:
-            records.append(
-                (str(path), run_id, record.attempt_id, record.global_step, "VALID", None)
-            )
-            if selected is None:
-                selected = record
-            if not audit:
-                break
+            if record.manifest_sha256 in failed_restores.get(path, set()):
+                records.append((
+                    str(path), run_id, record.attempt_id, record.global_step,
+                    "INVALID", "worker restore failed for this manifest",
+                ))
+            else:
+                records.append(
+                    (str(path), run_id, record.attempt_id, record.global_step, "VALID", None)
+                )
+                if selected is None:
+                    selected = record
+                if not audit:
+                    break
     store.record_checkpoints(records)
     return selected
 
@@ -292,7 +304,9 @@ def _launch_attempt(
         )
 
     milestone("launch_requested", resumed=resume_checkpoint is not None)
-    with (run_dir / "launcher.log").open("ab") as log:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+    with os.fdopen(os.open(run_dir / "launcher.log", flags, 0o600), "ab") as log:
+        os.fchmod(log.fileno(), 0o600)
         log.write(f"\n=== {attempt_id} ===\n".encode())
         log.flush()
         process = subprocess.Popen(
@@ -537,7 +551,7 @@ def run(
     workload_source = preflight(config)
     run_id = uuid.uuid4().hex[:12]
     run_dir = (output_root / run_id).resolve()
-    run_dir.mkdir(parents=True, exist_ok=False)
+    run_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
     if workload_source is not None:
         from trainguard.external_workload import freeze_source, read_verified_source
 
@@ -561,6 +575,7 @@ def run(
     write_json_atomic(run_dir / "run.json", status)
     store = RunStore(run_dir / "run.sqlite3")
     try:
+        (run_dir / "run.sqlite3").chmod(0o600)
         store.create_run(run_id, config.fingerprint(), started_at)
         with _controller_lock(run_dir):
             succeeded = _drive(run_dir, status, store, config)

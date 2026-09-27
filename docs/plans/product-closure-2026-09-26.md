@@ -27,13 +27,13 @@
 
 | 链路 | 当前证据 | 产品缺口 |
 | --- | --- | --- |
-| 本机实验 | 两个 Gloo rank 的实际训练、检查点、故障、回退、精确比较；固定 CPU 验收 10/10。0.3.3 增加选中检查点的 worker 加载前后校验、外部 CPU 作业参考/故障/漏状态演练及交付包完整性测试；0.3.4 加入源码包逐文件门禁。该版本原始结果见[本地验证记录](../commercial/evidence/local-validation-0.3.4.json)。 | 当前结论只覆盖本机 CPU 和所列示例。 |
+| 本机实验 | 两个 Gloo rank 的实际训练、检查点、故障、回退、精确比较；固定 CPU 验收 10/10。0.3.3 增加选中检查点的 worker 加载前后校验、外部 CPU 作业参考/故障/漏状态演练及交付包完整性测试；0.3.4 加入源码包逐文件门禁。0.3.5 候选补强 RNG、DCP 结构、实际加载失败与保留回退校验、运行文件权限、测试身份及上一版本证据绑定；只有[同版本地验证记录](../commercial/evidence/local-validation-0.3.5.json)实际通过才承接本机结论。 | 当前结论只覆盖本机 CPU 和所列示例。 |
 | 客户训练接入 | 0.3.3 可读取、摘要校验并固化受信任单文件 CPU DDP 适配器；包外回归模型示例复用固定 AdamW/Cosine、进度和样本验证。 | 无完整状态适配 SDK、导入/数据/副作用冻结或真实客户训练作业验收。示例通过不等于客户门槛通过。 |
 | 远端存储 | `remote_protocol.py` 是隔离协议模型；SQLite 参考后端验证同机多进程条件写和持久修订号；桥接测试手工搬运真实 DCP 字节。 | 生产 `checkpoint_io.py` 仍读写本地路径；同机 SQLite 不是实际对象服务，也未证明跨主机隔离或断电持久性。 |
 | 跨主机接管 | 本地控制器使用 `flock`、SQLite、本机进程身份和 `--nnodes=1`。 | 无多节点调度、持久 fencing epoch、独立隔离权威和两主机验收。 |
-| 交付运维 | 0.3.4 候选包沿用仓库外锁依赖安装/运行/卸载及相邻补丁版拒绝/旧版恢复演练；源码包限定已审查文件并逐项核对，交付脚本复核已审查字节，收件方可校验完整包及独立渠道收到的清单摘要。阻断式发布门槛与同版证据见[本地验证记录](../commercial/evidence/local-validation-0.3.4.json)。 | 无客户目标环境安装/升级/回滚、运行监控和值班实测、权限边界与付费试点记录。包内自洽性不证明发送者身份。 |
+| 交付运维 | 0.3.5 候选包保留仓库外锁依赖安装/运行/卸载及相邻补丁版拒绝/旧版恢复演练；源码包限定已审查文件并逐项核对，交付脚本复核已审查字节，收件方可校验完整包及独立渠道收到的清单摘要。上一版提交、wheel、锁摘要及本机完整测试身份进入阻断式门槛；同版证据见[本地验证记录](../commercial/evidence/local-validation-0.3.5.json)。 | 无客户目标环境安装/升级/回滚、运行监控和值班实测、权限边界与付费试点记录。包内自洽性不证明发送者身份。 |
 
-0.3.3 在本机通过，但 Linux 源码包误收录了运行时生成的测试目录；[失败记录](../commercial/evidence/linux-check-0.3.3.json)保留了两地包摘要、成员数量与处置。0.3.4 必须重新通过本机与 Linux 门禁，不能沿用旧版交付件。
+0.3.3 在本机通过，但 Linux 源码包误收录了运行时生成的测试目录；[失败记录](../commercial/evidence/linux-check-0.3.3.json)保留了两地包摘要、成员数量与处置。0.3.4 随后重新通过本机与 Linux 门禁。0.3.5 的源码、文档和构建工具已变化，必须取得自己的本机与 Linux 证据，不能沿用旧版交付件。
 
 目前没有可用的实卡、多主机、选定对象服务或受控断电环境。上表的开放项在这些环境中取得原始证据前，始终保持未通过。Git 提交、单元测试和内存模拟不能替代生产放行证据。
 
@@ -73,9 +73,9 @@ flowchart LR
 
 控制器必须是唯一重试决策者。调度器只负责资源与进程生命周期；**强一致提交权威**保存检查点有效性及单调 epoch，运行索引可以重建。每个 attempt 带 epoch；接管先证明旧工作组退出或由独立权威确认隔离，再激活新 epoch。发布和最终完成必须经**服务端条件写与权限**验证当前 epoch，不能只信任进程内 `authority.require`。旧 epoch 已在途载荷可以成为不可见孤儿，但旧 actor 不得发布有效检查点或完成声明；其外部副作用须另行约束。失联节点是否仍在运行不能仅由 Pod 删除状态推断。网络分区时若无法证明隔离，状态进入 `BLOCKED` 并告警，不启动可能并存的有效 attempt；恢复旧节点网络后实测拒写。
 
-对象存储使用不可变 generation、逐对象摘要及所有 rank 的完整清单；单区域强一致提交权威用单调版本与条件更新发布指针，禁止删除或复用活跃 HEAD。HEAD 至少包含 `revision`、`epoch`、`operation_id` 和 manifest 摘要；创建检查键不存在，更新同时检查预期 revision 与 epoch 并递增 revision。写入响应丢失时，对 HEAD 做强一致读回并核对 `operation_id`，不能仅凭超时重写。工作进程只获其 generation 载荷写权限，不得更新 HEAD。条件写冲突、限流、部分多段上传、凭据过期、对象损坏和保留删除中断都需要明确的幂等读回/重试/回退动作。S3 的单对象原子性与条件写入不等于多对象事务，也不自动给出永不复用的修订令牌；提交协议和实际服务故障注入共同定义产品保证。DynamoDB 全局表采用冲突调和，不能未经额外证明就用于这个单调 CAS 权威。
+对象存储使用不可变 generation、逐对象摘要及所有 rank 的完整清单；单区域强一致提交权威用单调版本与条件更新发布指针，禁止删除或复用活跃 HEAD。HEAD 至少包含 `revision`、`epoch`、`operation_id` 和 manifest 摘要；创建检查键不存在，更新同时检查预期 revision 与 epoch 并递增 revision。写入响应丢失时，对 HEAD 做强一致读回并核对 `operation_id`，不能仅凭超时重写。工作进程只获其 generation 载荷写权限，不得更新 HEAD。条件写冲突、限流、部分多段上传、凭据过期、对象损坏和保留删除中断都需要明确的幂等读回/重试/回退动作。S3 的单对象原子性与条件写入不等于多对象事务，也不自动给出永不复用的修订令牌；提交协议和实际服务故障注入共同定义产品保证。DynamoDB 多区域最终一致全局表（MREC）采用冲突调和，不适合作为未经额外证明的单调 CAS 权威；多区域强一致全局表（MRSC）支持跨区域强一致读和条件写，但仍须在选定部署区域、权限和故障模型中实测。首个试点继续以单区域强一致权威为候选，避免额外的多区域故障面。
 
-检查点与证据必须有明确的信任边界：只加载受信任作业身份在授权命名空间中发布的对象，服务端拒绝跨作业路径和越权发布；哈希检测损坏，不证明作者身份或防止有写权者同步伪造 manifest。若对客户承诺独立防篡改审计，须采用独立写入身份及签名或不可变证据存储。DCP 元数据可能触发反序列化，禁止加载不可信来源。
+检查点与证据必须有明确的信任边界：只加载受信任作业身份在授权命名空间中发布的对象，服务端拒绝跨作业路径和越权发布；哈希检测损坏，不证明作者身份或防止有写权者同步伪造 manifest。若对客户承诺独立防篡改审计，须采用独立写入身份及签名或不可变证据存储。当前本机实现读取 DCP 元数据时会调用反序列化，只能处理同一受信任身份控制的隔离运行目录；目录权限不能防御同一身份恶意写入。禁止加载不可信来源。
 
 外部副作用是单独的接入条件：若客户训练步骤会写外部数据库、消息队列或业务 API，适配器须声明幂等键或由客户提供事务/补偿措施；仅恢复模型参数不能保证这些副作用恰好发生一次。
 
@@ -135,4 +135,4 @@ flowchart LR
 - [NVIDIA Megatron Bridge resiliency](https://docs.nvidia.com/nemo/megatron-bridge/latest/training/resiliency.html)、[检查点与数据状态](https://docs.nvidia.com/nemo/megatron-bridge/latest/training/checkpointing.html)、[NVIDIA 故障注入流程](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/src/nvidia_resiliency_ext/skills/nvrx-attr/fault-injection-loop/SKILL.md)、[Determined Transformers 回调](https://docs.determined.ai/reference/training/api-transformers-reference.html)。
 - [Kubernetes Job 失败/重试语义](https://kubernetes.io/docs/concepts/workloads/controllers/job/)、[安全检查表](https://kubernetes.io/docs/concepts/security/security-checklist/)。
 - [NIST SSDF](https://csrc.nist.gov/pubs/sp/800/218/final)、[SLSA 构建来源](https://slsa.dev/spec/v1.2/provenance)、[OpenTelemetry 服务语义](https://opentelemetry.io/docs/specs/semconv/resource/service/)。
-- [PyTorch 不可信反序列化警告](https://docs.pytorch.org/docs/2.14/generated/torch.load.html)、[DynamoDB 全局表版本锁限制](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/DynamoDBMapper.OptimisticLocking.html)。
+- [PyTorch 不可信反序列化警告](https://docs.pytorch.org/docs/2.14/generated/torch.load.html)、[DynamoDB MREC/MRSC 一致性说明](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/V2globaltables_HowItWorks.html)、[DynamoDB 全局表版本锁限制](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/DynamoDBMapper.OptimisticLocking.html)。

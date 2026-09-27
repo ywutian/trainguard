@@ -1,4 +1,10 @@
+"""Bound local release gates and retain a machine-readable failure record."""
+
+from __future__ import annotations
+
 import importlib.util
+import sys
+import time
 from pathlib import Path
 
 
@@ -11,3 +17,18 @@ def test_success_status_without_complete_cpu_matrix_is_rejected() -> None:
     assert not module._acceptance_complete({
         "status": "SUCCEEDED", "reference_status": "VALIDATED", "cases": [],
     })
+
+
+def test_gate_timeout_is_recorded_and_process_stops(tmp_path: Path) -> None:
+    source = Path(__file__).parents[1] / "scripts" / "run_simulation_closure.py"
+    spec = importlib.util.spec_from_file_location("run_simulation_closure", source)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.GATE_TIMEOUT_SECONDS["static"] = 0.05
+    started = time.monotonic()
+    result = module._run(tmp_path, "static", [sys.executable, "-c", "import time; time.sleep(60)"])
+    assert result["exit_code"] == 124
+    assert result["timed_out"] is True
+    assert "Gate timed out" in (tmp_path / "static.txt").read_text()
+    assert time.monotonic() - started < 10

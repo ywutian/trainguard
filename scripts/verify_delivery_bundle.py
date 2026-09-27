@@ -116,6 +116,7 @@ def verify_bundle(root: Path) -> dict:
         or report.get("status") not in {"BLOCKED", "REVIEW_REQUIRED"}
         or report.get("candidate_source_sha256") != manifest["source_sha256"]
         or report.get("git_commit") != manifest.get("git_commit")
+        or not isinstance(report.get("previous_release"), dict)
     ):
         raise DeliveryInvalid("readiness report differs from the evaluation identity")
     try:
@@ -126,6 +127,25 @@ def verify_bundle(root: Path) -> dict:
         raise DeliveryInvalid("bundle project metadata is invalid") from exc
     if version != manifest.get("version"):
         raise DeliveryInvalid("bundle version differs from project metadata")
+    previous = report["previous_release"]
+    try:
+        previous_parts = tuple(int(part) for part in previous["version"].split("."))
+        current_parts = tuple(int(part) for part in version.split("."))
+    except (KeyError, AttributeError, ValueError) as exc:
+        raise DeliveryInvalid("previous release version is invalid") from exc
+    if (
+        set(previous) != {"git_commit", "version", "wheel_sha256", "lock_sha256"}
+        or not isinstance(previous["git_commit"], str)
+        or len(previous["git_commit"]) != 40
+        or any(character not in "0123456789abcdef" for character in previous["git_commit"])
+        or not _is_sha256(previous["wheel_sha256"])
+        or not _is_sha256(previous["lock_sha256"])
+        or len(previous_parts) != 3
+        or len(current_parts) != 3
+        or previous_parts[:2] != current_parts[:2]
+        or previous_parts[2] + 1 != current_parts[2]
+    ):
+        raise DeliveryInvalid("previous release identity is invalid")
     artifacts = report.get("artifacts")
     if (
         not isinstance(artifacts, dict)
@@ -159,8 +179,9 @@ def verify_bundle(root: Path) -> dict:
     if (
         gate_manifest.get("schema_version") != 1
         or gate_manifest.get("candidate_source_sha256") != manifest["source_sha256"]
+        or gate_manifest.get("previous_release") != report.get("previous_release")
     ):
-        raise DeliveryInvalid("gate manifest has a different source identity")
+        raise DeliveryInvalid("gate manifest has a different source or prior release identity")
     gates = report.get("gates")
     raw_gates = gate_manifest.get("gates")
     evidence_map = manifest.get("evidence_map")

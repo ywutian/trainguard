@@ -144,6 +144,55 @@ def restore_rng(state: dict[str, Any]) -> None:
         torch.cuda.set_rng_state(torch.tensor(rng["torch_cuda"], dtype=torch.uint8))
 
 
+def _check_rng_state(rng: dict[str, Any], *, cuda: bool) -> None:
+    """Check that saved RNG state can be restored without changing process RNGs."""
+    expected = {"python", "numpy", "torch_cpu"}
+    if cuda:
+        expected.add("torch_cuda")
+    if set(rng) != expected:
+        raise CheckpointInvalid("rank RNG state is incomplete")
+    python_state = rng["python"]
+    numpy_state = rng["numpy"]
+    cpu_state = rng["torch_cpu"]
+    if (
+        not isinstance(python_state, list)
+        or len(python_state) != 3
+        or not isinstance(python_state[1], list)
+        or len(python_state[1]) != 625
+        or not isinstance(numpy_state, list)
+        or len(numpy_state) != 5
+        or not isinstance(numpy_state[1], list)
+        or len(numpy_state[1]) != 624
+        or any(type(word) is not int or not 0 <= word < 2**32 for word in numpy_state[1])
+        or not isinstance(cpu_state, list)
+        or len(cpu_state) != torch.get_rng_state().numel()
+        or any(type(byte) is not int or not 0 <= byte <= 255 for byte in cpu_state)
+    ):
+        raise CheckpointInvalid("rank RNG state cannot be restored")
+    if cuda:
+        cuda_state = rng["torch_cuda"]
+        if (
+            not isinstance(cuda_state, list)
+            or not 1 <= len(cuda_state) <= 65536
+            or any(type(byte) is not int or not 0 <= byte <= 255 for byte in cuda_state)
+        ):
+            raise CheckpointInvalid("rank CUDA RNG state cannot be restored")
+    try:
+        random.Random().setstate(_as_tuple(python_state))
+        np.random.RandomState().set_state(
+            (
+                numpy_state[0],
+                np.array(numpy_state[1], dtype=np.uint32),
+                numpy_state[2],
+                numpy_state[3],
+                numpy_state[4],
+            )
+        )
+        torch.Generator(device="cpu").set_state(torch.tensor(cpu_state, dtype=torch.uint8))
+    except (IndexError, OverflowError, TypeError, ValueError, RuntimeError) as exc:
+        raise CheckpointInvalid("rank RNG state cannot be restored") from exc
+
+
 def _files(path: Path) -> list[Path]:
     if not path.is_dir() or path.is_symlink():
         raise CheckpointInvalid("checkpoint directory is missing or is a link")
@@ -243,18 +292,20 @@ def _check_rank_states(
         consumed.append(cursor)
         if config.training.precision == "fp16" and not isinstance(state.get("scaler"), dict):
             raise CheckpointInvalid(f"rank {rank} scaler state is missing")
-        expected_rng = {"python", "numpy", "torch_cpu"}
-        if config.run.device == "cuda":
-            expected_rng.add("torch_cuda")
-        if set(state["rng"]) != expected_rng:
-            raise CheckpointInvalid(f"rank {rank} RNG state is incomplete")
+        try:
+            _check_rng_state(state["rng"], cuda=config.run.device == "cuda")
+        except CheckpointInvalid as exc:
+            raise CheckpointInvalid(f"rank {rank} {exc}") from exc
     if len(set(consumed)) != 1:
         raise CheckpointInvalid("rank consumed batch boundaries differ at checkpoint")
     if any(scheduler != schedulers[0] for scheduler in schedulers[1:]):
         raise CheckpointInvalid("rank scheduler states differ at checkpoint")
 
 
-def _check_dcp_files(path: Path, config: ProjectConfig, *, decode_payload: bool = False) -> None:
+def _check_dcp_files(
+    path: Path, config: ProjectConfig, *, decode_payload: bool = False,
+    require_trainable_state: bool = False,
+) -> None:
     dcp_dir = path / "dcp"
     metadata_path = dcp_dir / ".metadata"
     if dcp_dir.is_symlink() or metadata_path.is_symlink():
@@ -279,6 +330,14 @@ def _check_dcp_files(path: Path, config: ProjectConfig, *, decode_payload: bool 
         or not metadata.storage_data
     ):
         raise CheckpointInvalid("DCP metadata has no valid state or storage map")
+    if require_trainable_state:
+        names = metadata.state_dict_metadata
+        if any(not isinstance(name, str) for name in names):
+            raise CheckpointInvalid("DCP state keys are invalid")
+        if not any(name.startswith("model.") for name in names) or not any(
+            name.startswith("optimizer.") for name in names
+        ):
+            raise CheckpointInvalid("DCP model or optimizer state is missing")
     for index, location in metadata.storage_data.items():
         relative_name = getattr(location, "relative_path", None)
         offset = getattr(location, "offset", None)
@@ -458,7 +517,10 @@ def validate_checkpoint(
         path, config, run_id, attempt_id, step,
         require_trainable_state=require_trainable_state,
     )
-    _check_dcp_files(path, config, decode_payload=decode_payload)
+    _check_dcp_files(
+        path, config, decode_payload=decode_payload,
+        require_trainable_state=require_trainable_state,
+    )
     return CheckpointRecord(path, step, attempt_id, manifest, manifest_sha256)
 
 

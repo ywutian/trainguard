@@ -15,6 +15,7 @@ from trainguard.checkpoint import (
 )
 from trainguard.config import ProjectConfig
 from trainguard.events import sync_directory, write_json_atomic
+from trainguard.restore_failures import failed_restore_candidates
 
 
 def prune_checkpoints(
@@ -25,13 +26,21 @@ def prune_checkpoints(
         return {"enabled": False}
     _check_checkpoint_root(run_dir)
     root = (run_dir / "checkpoints").resolve()
+    failed_restores = failed_restore_candidates(run_dir, run_id, config.run.world_size)
     protected_paths = {path.resolve() for path in (protected or set())}
     valid = []
+    failed = []
     for path in ordered_candidates(run_dir):
         try:
-            valid.append(validate_checkpoint(path, config, run_id, decode_payload=True))
+            record = validate_checkpoint(
+                path, config, run_id, decode_payload=True, require_trainable_state=True
+            )
         except (CheckpointInvalid, OSError):
             continue
+        if record.manifest_sha256 in failed_restores.get(path, set()):
+            failed.append(record)
+            continue
+        valid.append(record)
     retained = valid[:keep]
     budget = config.checkpoint.max_retained_bytes
 
@@ -60,6 +69,7 @@ def prune_checkpoints(
     }
     # Retry partially deleted directories from a persisted intent only after two fallbacks exist.
     if len(valid) >= 2:
+        targets.update(str(item.path.resolve()) for item in failed)
         targets.update(previous.get("pending", []))
     safe = []
     for target in sorted(targets):

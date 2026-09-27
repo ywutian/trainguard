@@ -13,6 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import torch
 import torch.multiprocessing as mp
 from torch.distributed.checkpoint import FileSystemReader
 
@@ -88,6 +89,93 @@ def _damage_dcp_reference(checkpoint: Path, damage: str) -> dict:
         "metadata_sha256_after": _digest(metadata_path),
         "commit_marker_after": (checkpoint / "COMMITTED").read_text().strip(),
     }
+
+
+def _damage_dcp_trainable_state(checkpoint: Path, damage: str) -> None:
+    metadata_path = checkpoint / "dcp/.metadata"
+    metadata = FileSystemReader(checkpoint / "dcp").read_metadata()
+    name = next(key for key in metadata.state_dict_metadata if key.startswith("model."))
+    if damage == "wrong_key":
+        changed = f"model.unsupported_{name.removeprefix('model.')}"
+        metadata.state_dict_metadata[changed] = metadata.state_dict_metadata.pop(name)
+        metadata.planner_data[changed] = metadata.planner_data.pop(name)
+        metadata.storage_data = {
+            replace(index, fqn=changed) if index.fqn == name else index: location
+            for index, location in metadata.storage_data.items()
+        }
+    elif damage == "wrong_shape":
+        original = metadata.state_dict_metadata[name]
+        metadata.state_dict_metadata[name] = replace(
+            original, size=torch.Size([original.size[0] + 1, *original.size[1:]])
+        )
+    else:
+        raise ValueError(damage)
+    metadata_path.write_bytes(pickle.dumps(metadata))
+    manifest_path = checkpoint / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    entry = next(item for item in manifest["files"] if item["path"] == "dcp/.metadata")
+    entry.update(size=metadata_path.stat().st_size, sha256=_digest(metadata_path))
+    write_json_atomic(manifest_path, manifest)
+    (checkpoint / "COMMITTED").write_text(_digest(manifest_path) + "\n")
+
+
+@pytest.mark.parametrize("damage", ["wrong_key", "wrong_shape"])
+def test_restore_load_failure_skips_self_consistent_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    reference, reference_ok = controller.run(
+        _configuration(tmp_path, recover=False), tmp_path / "reference-runs"
+    )
+    assert reference_ok, (reference / "launcher.log").read_text()
+    original_launch = controller._launch_attempt
+
+    class StopAfterFirstAttempt(BaseException):
+        pass
+
+    def stop_after_fault(*args, **kwargs):
+        result = original_launch(*args, **kwargs)
+        if args[3] == "attempt-001":
+            assert not result.succeeded
+            raise StopAfterFirstAttempt
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(controller, "_launch_attempt", stop_after_fault)
+        with pytest.raises(StopAfterFirstAttempt):
+            controller.run(
+                _configuration(tmp_path, recover=True), tmp_path / "recovery-runs",
+                allow_experiment=True,
+            )
+    recovered = next((tmp_path / "recovery-runs").iterdir())
+    config = load_config(recovered / "config.json")
+    run_id = json.loads((recovered / "run.json").read_text())["run_id"]
+    newest, older = ordered_candidates(recovered)[:2]
+    _damage_dcp_trainable_state(newest, damage)
+    assert validate_checkpoint(
+        newest, config, run_id, decode_payload=True, require_trainable_state=True
+    ).path == newest
+
+    succeeded = controller.resume(recovered)
+    assert succeeded, (recovered / "launcher.log").read_text()
+    with sqlite3.connect(recovered / "run.sqlite3") as database:
+        attempts = database.execute(
+            "SELECT attempt_id, status, resume_checkpoint, resume_step FROM attempts ORDER BY number"
+        ).fetchall()
+        checkpoint_status = database.execute(
+            "SELECT status, reason FROM checkpoints WHERE path=?", (str(newest),)
+        ).fetchone()
+    assert len(attempts) == 3
+    assert attempts[1][1] == "FAILED" and attempts[1][2:] == (str(newest), 2)
+    assert attempts[2][1] == "SUCCEEDED" and attempts[2][2:] == (str(older), 1)
+    assert checkpoint_status == ("INVALID", "worker restore failed for this manifest")
+    for rank in range(config.run.world_size):
+        marker = recovered / f"attempts/attempt-002/rank-{rank}-restore-failure.json"
+        assert marker.is_file()
+        record = json.loads(marker.read_text())
+        assert record["checkpoint_path"] == str(newest)
+        assert record["manifest_sha256"] == _digest(newest / "manifest.json")
+    comparison = validate_runs(reference, recovered)
+    assert comparison["passed"], comparison
 
 
 @pytest.mark.parametrize("damage", ["missing_shard", "short_shard"])

@@ -64,27 +64,36 @@ def wrap_model(model, config, device):
 def state_digest(value: object) -> str:
     digest = hashlib.sha256()
 
+    def frame(tag: bytes, payload: bytes) -> None:
+        digest.update(len(tag).to_bytes(4, "big"))
+        digest.update(tag)
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+
     def update(item):
         if isinstance(item, torch.Tensor):
             if hasattr(item, "to_local"):
                 item = item.to_local()
-            digest.update(b"tensor")
-            digest.update(str(item.dtype).encode())
-            digest.update(str(tuple(item.shape)).encode())
-            digest.update(
+            frame(b"tensor-dtype", str(item.dtype).encode())
+            frame(b"tensor-shape", str(tuple(item.shape)).encode())
+            frame(b"tensor-bytes",
                 item.detach().cpu().contiguous().reshape(-1).view(torch.uint8).numpy().tobytes()
             )
         elif isinstance(item, dict):
-            digest.update(b"dict")
-            for key in sorted(item, key=str):
+            frame(b"dict-count", str(len(item)).encode())
+            for key in sorted(
+                item,
+                key=lambda value: (type(value).__name__, json.dumps(value, sort_keys=True)),
+            ):
                 update(key)
                 update(item[key])
         elif isinstance(item, (list, tuple)):
-            digest.update(b"sequence")
+            frame(b"list-count" if isinstance(item, list) else b"tuple-count",
+                  str(len(item)).encode())
             for part in item:
                 update(part)
         else:
-            digest.update(json.dumps(item, sort_keys=True).encode())
+            frame(type(item).__name__.encode(), json.dumps(item, sort_keys=True).encode())
 
     update(value)
     return digest.hexdigest()

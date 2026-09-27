@@ -1,5 +1,11 @@
 {
   "candidate_source_sha256": "8269eb66991089125d2ce16324d6724ed66cae8130762acff1c82a9bfec15d1f",
+  "previous_release": {
+    "git_commit": "ad53d3e854419caf0bab6c3bff80ae2da6890ce9",
+    "version": "0.3.4",
+    "wheel_sha256": "334ffd59b2c6ed4e26622ce4213fd6d29523f6cc121aa01969d5c2cbb6d95b78",
+    "lock_sha256": "468ee5cf556f9a9c00702ed2b59a5f4a877449eeccb1f62f2d886803acff283e"
+  },
   "gates": [
     {
       "evidence": "docs/commercial/evidence/local_package-0.3.4.json",

@@ -16,6 +16,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from torch import nn
+from torch.distributed.checkpoint.api import CheckpointException
 from torch.nn.parallel import DistributedDataParallel
 
 from trainguard.checkpoint import validate_checkpoint
@@ -69,6 +70,10 @@ def train(
     expected_config_fingerprint: str | None = None,
     expected_checkpoint_sha256: str | None = None,
 ) -> None:
+    if resume_checkpoint is not None and expected_checkpoint_sha256 is None:
+        raise ValueError("resumed worker requires the selected checkpoint manifest digest")
+    if resume_checkpoint is None and expected_checkpoint_sha256 is not None:
+        raise ValueError("checkpoint manifest digest requires a resume checkpoint")
     config = load_config(config_path)
     if expected_config_fingerprint is not None and config.fingerprint() != expected_config_fingerprint:
         raise ValueError("worker configuration differs from controller-approved configuration")
@@ -147,16 +152,38 @@ def train(
         if resume_checkpoint is not None:
             verify_resume_checkpoint("before load")
             loaded = time.monotonic()
-            _, data_start = load_training_state(
-                resume_checkpoint,
-                rank,
-                wrapped,
-                optimizer,
-                scheduler,
-                checkpoint_group,
-                config.recovery.omit_state,
-                state,
-            )
+            try:
+                _, data_start = load_training_state(
+                    resume_checkpoint,
+                    rank,
+                    wrapped,
+                    optimizer,
+                    scheduler,
+                    checkpoint_group,
+                    config.recovery.omit_state,
+                    state,
+                )
+            except (Exception, CheckpointException) as exc:
+                write_json_atomic(
+                    run_dir / "attempts" / attempt_id / f"rank-{rank}-restore-failure.json",
+                    {
+                        "schema_version": 1,
+                        "run_id": run_id,
+                        "attempt_id": attempt_id,
+                        "rank": rank,
+                        "checkpoint_path": str(resume_checkpoint),
+                        "manifest_sha256": expected_checkpoint_sha256,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                event(
+                    "checkpoint_restore_failed",
+                    checkpoint_path=str(resume_checkpoint),
+                    manifest_sha256=expected_checkpoint_sha256,
+                    error_type=type(exc).__name__,
+                )
+                sync_event_file(event_path)
+                raise
             verify_resume_checkpoint("during load")
             event(
                 "state_loaded",

@@ -111,8 +111,8 @@ Version 0.2.2 binds each recovery decision to every progressing rank's state-loa
 
 ```bash
 uv build --wheel --sdist --out-dir dist
-uv run python scripts/verify_wheel.py dist/trainguard-0.3.4-py3-none-any.whl
-uv run python scripts/verify_install.py dist/trainguard-0.3.4-py3-none-any.whl
+uv run python scripts/verify_wheel.py dist/trainguard-0.3.5-py3-none-any.whl
+uv run python scripts/verify_install.py dist/trainguard-0.3.5-py3-none-any.whl
 ```
 
 See the [full closure assessment](docs/analysis/closure-assessment-2026-09-26.md) for the supported boundary, infrastructure gates and next acceptance steps.
@@ -124,7 +124,7 @@ Run the complete local gate from the repository root:
 
 ```bash
 uv sync --locked --group dev
-uv run python scripts/run_simulation_closure.py --output-root runs/simulation-closure --previous-ref 1975d26
+uv run python scripts/run_simulation_closure.py --output-root runs/simulation-closure --previous-ref ad53d3e854419caf0bab6c3bff80ae2da6890ce9
 ```
 
 The gate retains static checks, the full test suite, JUnit and raw test recovery directories, a fresh ten-case CPU acceptance campaign, a wheel and source distribution, and a wheel/source identity check in a uniquely named result directory. Its `result.json` and `report.md` record the outcome even if a gate fails. The CPU campaign requires the intended fault, exactly one recovery, the expected attempt statuses, and either exact agreement with the uninterrupted reference or the specified negative-control difference.
@@ -143,3 +143,5 @@ The [version 0.3.1 local validation record](docs/commercial/evidence/local-valid
 Version 0.3.2 closes the Linux process-start ownership race and makes the CLI option check independent of terminal width. Its [local validation record](docs/commercial/evidence/local-validation-0.3.2.json) identifies separate artifacts and evidence; the version 0.3.1 record remains historical.
 
 Version 0.3.3 verifies a selected checkpoint again on every worker before and after loading, rejects inconsistent rank scheduler and final DDP state, and strengthens local test and delivery-bundle integrity checks. Its [local validation record](docs/commercial/evidence/local-validation-0.3.3.json) binds the local artifacts and raw results. [Linux artifact inspection](docs/commercial/evidence/linux-check-0.3.3.json) later found generated test output in its source distribution, so those artifacts are superseded. Version 0.3.4 checks an explicit source archive file set and rejects generated members before delivery. A recipient can run `python scripts/verify_delivery_bundle.py <bundle-directory>` and compare the reported manifest SHA-256 with a digest received through an independent trusted channel. Bundle consistency alone does not authenticate the sender. The external workload example and same-host storage reference do not change the nine blocked customer and production gates.
+
+Version 0.3.5 strengthens checkpoint load checks, makes newly created run records private, guards atomic report writes against planted temporary links, and binds the local release gate to collected test identities and a fixed prior release. Each local gate has a timeout and records a timeout as failure. These controls require a new full validation record; earlier version results cannot be reused for this candidate.

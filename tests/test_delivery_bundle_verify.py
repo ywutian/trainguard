@@ -45,6 +45,12 @@ def _bundle(root: Path, module) -> Path:
     version = "0.3.2"
     source = "a" * 64
     commit = "b" * 40
+    previous = {
+        "git_commit": "c" * 40,
+        "version": "0.3.1",
+        "wheel_sha256": "d" * 64,
+        "lock_sha256": "e" * 64,
+    }
     wheel = f"trainguard-{version}-py3-none-any.whl"
     sdist = f"trainguard-{version}.tar.gz"
     (root / wheel).write_bytes(b"wheel bytes")
@@ -90,13 +96,14 @@ def _bundle(root: Path, module) -> Path:
         else:
             gates.append({"id": gate_id, "status": "BLOCKED", "reason": "pending"})
     _write(root / "release-gates.json", {
-        "schema_version": 1, "candidate_source_sha256": source, "gates": gates,
+        "schema_version": 1, "candidate_source_sha256": source,
+        "previous_release": previous, "gates": gates,
     })
     _write(root / "readiness-report.json", {
         "schema_version": 1, "status": "BLOCKED", "evaluation_allowed": True,
         "production_release_authorized": False, "git_dirty": False,
         "git_commit": commit, "candidate_source_sha256": source,
-        "artifacts": artifacts, "gates": gates,
+        "artifacts": artifacts, "previous_release": previous, "gates": gates,
     })
     _write(root / "delivery-manifest.json", {
         "schema_version": 1, "version": version, "status": "EVALUATION_ONLY",
@@ -152,6 +159,18 @@ def test_transferred_bundle_rejects_gate_manifest_drift(tmp_path: Path) -> None:
     _write(gate_path, gates)
     _seal(root)
     with pytest.raises(module.DeliveryInvalid, match="reason differs"):
+        module.verify_bundle(root)
+
+
+def test_transferred_bundle_rejects_prior_release_pin_drift(tmp_path: Path) -> None:
+    module = _module()
+    root = _bundle(tmp_path / "bundle", module)
+    gate_path = root / "release-gates.json"
+    gates = json.loads(gate_path.read_text(encoding="utf-8"))
+    gates["previous_release"]["lock_sha256"] = "0" * 64
+    _write(gate_path, gates)
+    _seal(root)
+    with pytest.raises(module.DeliveryInvalid, match="prior release identity"):
         module.verify_bundle(root)
 
 

@@ -7,7 +7,9 @@ import json
 import sqlite3
 from pathlib import Path
 
+from trainguard.config import load_config
 from trainguard.events import write_json_atomic
+from trainguard.records import summary_errors
 
 
 class SupportBundleError(ValueError):
@@ -57,12 +59,12 @@ def build_support_bundle(run_dir: Path) -> dict:
         with sqlite3.connect(database_path.resolve().as_uri() + "?mode=ro", uri=True) as db:
             db.execute("PRAGMA query_only=ON")
             identity = db.execute(
-                "SELECT config_fingerprint FROM runs WHERE run_id=?", (run_id,)
+                "SELECT status, config_fingerprint FROM runs WHERE run_id=?", (run_id,)
             ).fetchone()
-            if identity is None or identity[0] != fingerprint:
-                raise SupportBundleError("run index identity differs from metadata")
+            if identity is None or identity != (status["status"], fingerprint):
+                raise SupportBundleError("run index status or identity differs from metadata")
             attempts = db.execute(
-                "SELECT number, status, resume_step, exit_code FROM attempts "
+                "SELECT attempt_id, number, status, resume_step, exit_code FROM attempts "
                 "WHERE run_id=? ORDER BY number", (run_id,)
             ).fetchall()
             checkpoint_counts = db.execute(
@@ -77,9 +79,11 @@ def build_support_bundle(run_dir: Path) -> dict:
         raise SupportBundleError("run index is unreadable") from exc
 
     attempt_records = []
-    for number, attempt_status, resume_step, exit_code in attempts:
+    for attempt_id, number, attempt_status, resume_step, exit_code in attempts:
         if (
-            type(number) is not int
+            not isinstance(attempt_id, str)
+            or not attempt_id
+            or type(number) is not int
             or number < 1
             or attempt_status not in {"RUNNING", "SUCCEEDED", "FAILED", "INTERRUPTED"}
             or type(resume_step) is not int
@@ -101,8 +105,26 @@ def build_support_bundle(run_dir: Path) -> dict:
     if summary_path.exists():
         summary = _mapping(summary_path)
         completed_step = summary.get("global_step")
-        if type(completed_step) is not int or completed_step < 0:
-            raise SupportBundleError("completion summary is invalid")
+        if (
+            status["status"] != "SUCCEEDED"
+            or not attempts
+            or attempts[-1][2] != "SUCCEEDED"
+            or summary.get("run_id") != run_id
+            or summary.get("config_fingerprint") != fingerprint
+            or summary.get("attempt_id") != attempts[-1][0]
+            or status.get("attempt_id") != attempts[-1][0]
+            or type(completed_step) is not int
+            or completed_step < 0
+        ):
+            raise SupportBundleError("completion summary identity or status differs from run index")
+        try:
+            config = load_config(run_dir / "config.json")
+        except (OSError, TypeError, ValueError) as exc:
+            raise SupportBundleError("saved run configuration is unreadable") from exc
+        if config.fingerprint() != fingerprint or summary_errors(
+            summary, config, run_id, attempts[-1][0]
+        ):
+            raise SupportBundleError("completion summary differs from saved run configuration")
     elif status["status"] == "SUCCEEDED":
         raise SupportBundleError("successful run has no completion summary")
 

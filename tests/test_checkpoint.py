@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
+import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.metadata import BytesStorageMetadata, Metadata, MetadataIndex
 
 from trainguard.checkpoint import (
@@ -21,8 +22,10 @@ from trainguard.checkpoint import (
     restore_rng,
     validate_checkpoint,
 )
-from trainguard.config import load_config
+from trainguard.config import ProjectConfig, load_config
+from trainguard.controller import _scan_checkpoints
 from trainguard.events import write_json_atomic
+from trainguard.run_store import RunStore
 
 
 def _candidate(root: Path, step: int, config=None) -> tuple[Path, object]:
@@ -298,6 +301,75 @@ def _refresh_metadata_hash(path: Path) -> None:
             entry["sha256"] = hashlib.sha256(metadata.read_bytes()).hexdigest()
     write_json_atomic(manifest_path, manifest)
     (path / "COMMITTED").write_text(hashlib.sha256(manifest_path.read_bytes()).hexdigest() + "\n")
+
+
+def _refresh_rank_hash(path: Path, rank: int) -> None:
+    manifest_path = path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    sidecar = path / f"rank-{rank}.json"
+    entry = next(row for row in manifest["files"] if row["path"] == sidecar.name)
+    entry["size"] = sidecar.stat().st_size
+    entry["sha256"] = hashlib.sha256(sidecar.read_bytes()).hexdigest()
+    write_json_atomic(manifest_path, manifest)
+    (path / "COMMITTED").write_text(hashlib.sha256(manifest_path.read_bytes()).hexdigest() + "\n")
+
+
+def _real_single_rank_candidate(root: Path, step: int, *, optimizer: bool):
+    raw = load_config(Path(__file__).parents[1] / "configs" / "cpu_demo.yaml").model_dump()
+    raw["run"]["world_size"] = 1
+    config = ProjectConfig.model_validate(raw)
+    path = candidate_path(root, "attempt-001", step)
+    state = {"model": {"weight": torch.full((4,), float(step))}}
+    if optimizer:
+        state["optimizer"] = {"slot": torch.full((4,), float(step))}
+    dcp.save(state, checkpoint_id=path / "dcp")
+    scheduler = {
+        "T_max": config.training.total_steps,
+        "last_epoch": step,
+        "_step_count": step + 1,
+        "base_lrs": [0.001],
+        "eta_min": 0.0,
+        "_last_lr": [0.001 * (1 + math.cos(math.pi * step / config.training.total_steps)) / 2],
+    }
+    write_json_atomic(
+        path / "rank-0.json",
+        capture_rank_state(config, "run-one", "attempt-001", 0, step, scheduler),
+    )
+    commit_checkpoint(path, config, "run-one", "attempt-001", step)
+    return path, config
+
+
+def test_resealed_unrestorable_rng_falls_back(tmp_path: Path) -> None:
+    older, config = _candidate(tmp_path, 1)
+    commit_checkpoint(older, config, "run-one", "attempt-001", 1)
+    newer, _ = _candidate(tmp_path, 2)
+    commit_checkpoint(newer, config, "run-one", "attempt-001", 2)
+    sidecar = newer / "rank-0.json"
+    state = json.loads(sidecar.read_text())
+    state["rng"]["python"] = []
+    write_json_atomic(sidecar, state)
+    _refresh_rank_hash(newer, 0)
+    with pytest.raises(CheckpointInvalid, match="RNG state cannot be restored"):
+        validate_checkpoint(newer, config, "run-one", decode_payload=True)
+    assert latest_valid_checkpoint(tmp_path, config, "run-one").path == older
+
+
+def test_model_only_dcp_cannot_be_selected_for_training(tmp_path: Path) -> None:
+    older, config = _real_single_rank_candidate(tmp_path, 1, optimizer=True)
+    newer, _ = _real_single_rank_candidate(tmp_path, 2, optimizer=False)
+    assert validate_checkpoint(
+        older, config, "run-one", decode_payload=True, require_trainable_state=True
+    ).path == older
+    with pytest.raises(CheckpointInvalid, match="DCP model or optimizer state is missing"):
+        validate_checkpoint(
+            newer, config, "run-one", decode_payload=True, require_trainable_state=True
+        )
+    store = RunStore(tmp_path / "run.sqlite3")
+    try:
+        store.create_run("run-one", config.fingerprint(), "2026-09-27T00:00:00Z")
+        assert _scan_checkpoints(tmp_path, config, "run-one", store).path == older
+    finally:
+        store.close()
 
 
 @pytest.mark.parametrize("damage", ["unreadable", "missing_shard", "short_shard"])

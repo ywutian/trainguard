@@ -8,7 +8,9 @@ import csv
 import hashlib
 import io
 import json
+import os
 import subprocess
+import sys
 import tarfile
 import tempfile
 import tomllib
@@ -44,6 +46,64 @@ def package_source_sha256(root: Path) -> str:
     return digest.hexdigest()
 
 
+def _is_sha256(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(
+        character in "0123456789abcdef" for character in value
+    )
+
+
+def _previous_release(root: Path, pin: object, current_version: str) -> dict:
+    """Bind the upgrade rehearsal to one reviewed, ancestral release commit."""
+    if not isinstance(pin, dict) or set(pin) != {
+        "git_commit", "version", "wheel_sha256", "lock_sha256"
+    }:
+        raise ValueError("approved previous release identity is incomplete")
+    commit = pin["git_commit"]
+    if (
+        not isinstance(commit, str)
+        or len(commit) != 40
+        or any(character not in "0123456789abcdef" for character in commit)
+        or not isinstance(pin["version"], str)
+        or not _is_sha256(pin["wheel_sha256"])
+        or not _is_sha256(pin["lock_sha256"])
+    ):
+        raise ValueError("approved previous release identity is malformed")
+    try:
+        old_parts = tuple(int(part) for part in pin["version"].split("."))
+        new_parts = tuple(int(part) for part in current_version.split("."))
+    except ValueError as exc:
+        raise ValueError("approved previous release version is invalid") from exc
+    if len(old_parts) != 3 or len(new_parts) != 3 or (
+        old_parts[:2] != new_parts[:2] or old_parts[2] + 1 != new_parts[2]
+    ):
+        raise ValueError("approved previous release is not the preceding patch version")
+    ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", commit, "HEAD"],
+        cwd=root, capture_output=True, check=False,
+    )
+    if ancestor.returncode:
+        raise ValueError("approved previous release commit is not in candidate history")
+    metadata = subprocess.run(
+        ["git", "show", f"{commit}:pyproject.toml"],
+        cwd=root, capture_output=True, check=False,
+    )
+    locked = subprocess.run(
+        ["git", "show", f"{commit}:uv.lock"],
+        cwd=root, capture_output=True, check=False,
+    )
+    if metadata.returncode or locked.returncode:
+        raise ValueError("approved previous release files are unavailable")
+    try:
+        recorded_version = tomllib.loads(metadata.stdout.decode("utf-8"))["project"]["version"]
+    except (UnicodeError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError("approved previous release metadata is invalid") from exc
+    if recorded_version != pin["version"] or hashlib.sha256(locked.stdout).hexdigest() != pin[
+        "lock_sha256"
+    ]:
+        raise ValueError("approved previous release does not match its commit")
+    return pin
+
+
 def _archive_source_sha256(items: dict[str, bytes]) -> str:
     digest = hashlib.sha256()
     for name, content in sorted(items.items()):
@@ -63,6 +123,61 @@ DEVICE_PREFLIGHT_SKIP = (
     "test_cuda_configuration_is_accepted_but_missing_devices_fail_before_launch",
 )
 
+# These cases guard the behaviors most likely to produce a misleading green gate
+# if the test suite is narrowed or a critical test is replaced by a new one.
+REQUIRED_TEST_IDENTITIES = {
+    ("tests.test_campaign", "test_cpu_campaign_closes_recovery_matrix"),
+    ("tests.test_checkpoint_crash_matrix",
+     "test_process_exit_at_checkpoint_publication_boundary[after_commit_before_index]"),
+    ("tests.test_external_workload", "test_external_two_rank_recovery_and_omitted_state_controls"),
+    ("tests.test_external_workload", "test_preflight_freezes_the_verified_bytes_before_source_changes"),
+    ("tests.test_local_reference_store", "test_local_reference_two_processes_have_one_head_cas_winner"),
+    ("tests.test_local_topology_simulation",
+     "test_two_local_launch_agents_recover_exactly_after_worker_exit"),
+    ("tests.test_recovery_integration",
+     "test_selected_checkpoint_mutation_before_worker_load_fails_closed"),
+    ("tests.test_recovery_integration", "test_validator_detects_omitted_recovery_state"),
+    ("tests.test_remote_dcp_roundtrip",
+     "test_real_dcp_bytes_publish_fallback_and_restore_through_remote_model"),
+    ("tests.test_remote_protocol", "test_in_flight_old_head_write_loses_to_epoch_barrier"),
+    ("tests.test_remote_protocol", "test_in_flight_old_payload_is_rejected_and_remains_unpublished"),
+    ("tests.test_remote_training_restore",
+     "test_two_rank_training_recovers_from_remote_model_after_local_loss"),
+    ("tests.test_sdist_members",
+     "test_source_distribution_excludes_generated_output_and_rejects_injection"),
+    ("tests.test_delivery_bundle_verify",
+     "test_transferred_bundle_rejects_self_consistent_file_list_with_stale_artifact"),
+    ("tests.test_validation", "test_failed_restore_before_training_can_retry"),
+    ("tests.test_scaler_boundary", "test_nonfinite_gradient_does_not_advance_optimizer_or_scheduler"),
+}
+
+
+def _collected_test_identities(root: Path) -> set[tuple[str, str]]:
+    """Collect the complete checkout suite independently of the saved JUnit file."""
+    environment = os.environ.copy()
+    environment.pop("PYTEST_ADDOPTS", None)
+    completed = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "--disable-warnings",
+         "-o", "addopts=", "tests"],
+        cwd=root, env=environment, capture_output=True, text=True, check=False, timeout=90,
+    )
+    if completed.returncode:
+        raise ValueError("current test suite cannot be collected completely")
+    identities: list[tuple[str, str]] = []
+    for line in completed.stdout.splitlines():
+        if not line.startswith("tests/") or "::" not in line:
+            continue
+        parts = line.split("::")
+        path = Path(parts[0])
+        if path.suffix != ".py" or not parts[-1]:
+            raise ValueError("current test collection contains an invalid identity")
+        classname = ".".join((*path.with_suffix("").parts, *parts[1:-1]))
+        identities.append((classname, parts[-1]))
+    collected = set(identities)
+    if len(collected) != len(identities) or not REQUIRED_TEST_IDENTITIES <= collected:
+        raise ValueError("current test collection lacks required recovery controls")
+    return collected
+
 
 def _validate_pytest_result(raw_dir: Path, details: dict) -> None:
     root = ElementTree.parse(raw_dir / "pytest.xml").getroot()
@@ -71,6 +186,7 @@ def _validate_pytest_result(raw_dir: Path, details: dict) -> None:
         raise ValueError("local raw test suite is missing")
     cases = [case for suite in suites for case in suite.findall("testcase")]
     identities = [(case.get("classname"), case.get("name")) for case in cases]
+    collected = _collected_test_identities(Path(__file__).resolve().parents[1])
     declared = sum(int(suite.get("tests", -1)) for suite in suites)
     declared_failures = sum(int(suite.get("failures", -1)) for suite in suites)
     declared_errors = sum(int(suite.get("errors", -1)) for suite in suites)
@@ -93,6 +209,7 @@ def _validate_pytest_result(raw_dir: Path, details: dict) -> None:
         or any(not all(isinstance(part, str) and part for part in identity)
                for identity in identities)
         or len(set(identities)) != len(identities)
+        or set(identities) != collected
         or declared_failures != failures
         or declared_errors != errors
         or declared_skips != len(skipped)
@@ -203,7 +320,7 @@ def _verify_artifacts(root: Path, wheel: Path, sdist: Path, source_digest: str) 
 
 
 def _local_evidence(root: Path, details: dict, source_digest: str,
-                    artifacts: dict[str, str]) -> None:
+                    artifacts: dict[str, str], previous_release: dict) -> None:
     location = details.get("raw_evidence_dir")
     hashes = details.get("raw_files")
     if not isinstance(location, str) or not isinstance(hashes, dict) or set(hashes) != LOCAL_RAW_FILES:
@@ -292,6 +409,10 @@ def _local_evidence(root: Path, details: dict, source_digest: str,
         or upgrade.get("current_version") != version
         or upgrade.get("current_wheel_sha256") != artifacts[wheel_name]
         or upgrade.get("current_lock_sha256") != artifacts["uv.lock"]
+        or upgrade.get("previous_commit_sha") != previous_release["git_commit"]
+        or upgrade.get("previous_version") != previous_release["version"]
+        or upgrade.get("previous_wheel_sha256") != previous_release["wheel_sha256"]
+        or upgrade.get("previous_lock_sha256") != previous_release["lock_sha256"]
         or upgrade.get("new_version_rejected_interrupted_old_run") is not True
         or upgrade.get("old_locked_environment_resumed_exactly") is not True
         or upgrade.get("old_run_files_unchanged_after_rejection", 0) < 1
@@ -299,7 +420,8 @@ def _local_evidence(root: Path, details: dict, source_digest: str,
         raise ValueError("local install or upgrade raw evidence is incomplete")
 
 
-def _receipt(path: Path, gate_id: str, source_digest: str, artifacts: dict[str, str]) -> dict:
+def _receipt(path: Path, gate_id: str, source_digest: str, artifacts: dict[str, str],
+             previous_release: dict) -> dict:
     try:
         receipt = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError) as exc:
@@ -358,7 +480,7 @@ def _receipt(path: Path, gate_id: str, source_digest: str, artifacts: dict[str, 
             or details["checks"].get("upgrade_recovery") is not True
         ):
             raise ValueError(f"{gate_id}: local evidence record does not prove its checks")
-        _local_evidence(root, details, source_digest, artifacts)
+        _local_evidence(root, details, source_digest, artifacts, previous_release)
     return receipt
 
 
@@ -379,6 +501,8 @@ def evaluate(manifest: Path, wheel: Path, sdist: Path) -> dict:
     source_digest = package_source_sha256(root)
     if data.get("candidate_source_sha256") != source_digest:
         raise ValueError("release gate manifest does not match current package source")
+    current_version = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
+    previous_release = _previous_release(root, data.get("previous_release"), current_version)
     for path in (wheel, sdist, root / "uv.lock"):
         if not path.is_file():
             raise ValueError("required release artifact is missing")
@@ -403,7 +527,7 @@ def evaluate(manifest: Path, wheel: Path, sdist: Path) -> dict:
             digest = _digest(path)
             if digest != gate.get("sha256"):
                 raise ValueError(f"{gate['id']}: evidence digest differs")
-            _receipt(path, gate["id"], source_digest, artifacts)
+            _receipt(path, gate["id"], source_digest, artifacts, previous_release)
             record.update(evidence=location, sha256=digest)
         elif not isinstance(gate.get("reason"), str) or not gate["reason"]:
             raise ValueError(f"{gate['id']}: nonpassing gate lacks a reason")
@@ -432,6 +556,7 @@ def evaluate(manifest: Path, wheel: Path, sdist: Path) -> dict:
         "decision_scope": "evidence_manifest_integrity_only",
         "production_release_authorized": False,
         "candidate_source_sha256": source_digest,
+        "previous_release": previous_release,
         "git_commit": commit,
         "git_dirty": dirty,
         "artifacts": artifacts,

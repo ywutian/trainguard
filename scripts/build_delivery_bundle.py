@@ -51,6 +51,7 @@ def _check_stage(stage: Path, fresh: dict, gate_manifest_name: str,
     if (
         manifest.get("schema_version") != 1
         or manifest.get("candidate_source_sha256") != fresh["candidate_source_sha256"]
+        or manifest.get("previous_release") != fresh["previous_release"]
         or staged_gates != fresh["gates"]
     ):
         raise ValueError("staged release gates differ from reviewed gate evidence")
