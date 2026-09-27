@@ -817,25 +817,88 @@ def _drive(
         attempts = store.attempts(run_id)
 
 
-def _drive_with_event_budget_closure(
+def _settle_control_failure(
+    run_dir: Path, status: dict, store: RunStore, exc: BaseException,
+    *, interrupted: bool = False,
+) -> bool:
+    """Close a stopped run after a controller or index operation fails."""
+    run_id = status["run_id"]
+    attempts = store.attempts(run_id)
+    _assert_no_owned_workers(run_dir, run_id, attempts)
+    known_attempts = {attempt["attempt_id"] for attempt in attempts}
+    pending_attempt = status.get("attempt_id")
+    if pending_attempt is not None and not isinstance(pending_attempt, str):
+        raise ValueError("saved attempt identity is invalid")
+    unindexed_attempt = (
+        pending_attempt if pending_attempt not in known_attempts else None
+    )
+    if unindexed_attempt is None and not attempts:
+        unindexed_attempt = "attempt-001"
+    if unindexed_attempt is not None and _owned_group_members(
+        run_dir, run_id, unindexed_attempt
+    ):
+        raise RunActiveError(
+            f"attempt {unindexed_attempt} still owns a worker process"
+        )
+
+    reason = (
+        "controller interrupted before attempt completion" if interrupted
+        else f"controller {type(exc).__name__}: {exc}"
+    )
+    index_terminal_unverified = False
+    identity = store.run_identity(run_id)
+    if identity is None:
+        reason += "; run index row was not established"
+        index_terminal_unverified = True
+    elif (
+        identity["config_fingerprint"] != status["config_fingerprint"]
+        or identity["started_at"] != status["started_at"]
+    ):
+        reason += "; run index identity differs from run metadata"
+        index_terminal_unverified = True
+    else:
+        for write_attempt in range(2):
+            try:
+                if attempts and attempts[-1]["status"] == "RUNNING":
+                    store.finish_attempt(attempts[-1]["attempt_id"], "FAILED", None, reason)
+                store.set_run_status(run_id, "INTERRUPTED" if interrupted else "FAILED")
+                break
+            except (OSError, sqlite3.Error) as index_error:
+                if write_attempt:
+                    reason += (
+                        "; run index terminal update failed: "
+                        f"{type(index_error).__name__}: {index_error}"
+                    )
+                    index_terminal_unverified = True
+    if pending_attempt not in known_attempts:
+        status["attempt_id"] = attempts[-1]["attempt_id"] if attempts else None
+        if pending_attempt is not None:
+            reason += "; attempt row was not established"
+    if index_terminal_unverified:
+        status["run_index_terminal_unverified"] = True
+    _set_status(run_dir, status, "INTERRUPTED" if interrupted else "FAILED", reason)
+    return False
+
+
+def _drive_with_failure_closure(
     run_dir: Path, status: dict, store: RunStore, config: ProjectConfig,
     reference: LocalReferenceSession | None = None,
 ) -> bool:
-    """Persist a terminal verdict when a full event log stops a settled run."""
+    """Persist a terminal verdict when controller work fails before final audit."""
     try:
+        if reference is None:
+            return _drive(run_dir, status, store, config)
         return _drive(run_dir, status, store, config, reference)
-    except (OSError, RunActiveError) as exc:
-        if "event log byte budget is exhausted" not in str(exc):
+    except RunActiveError:
+        raise
+    except KeyboardInterrupt as exc:
+        if status.get("status") == "FINALIZING":
             raise
-        run_id = status["run_id"]
-        attempts = store.attempts(run_id)
-        _assert_no_owned_workers(run_dir, run_id, attempts)
-        reason = "controller event log byte budget is exhausted"
-        if attempts and attempts[-1]["status"] == "RUNNING":
-            store.finish_attempt(attempts[-1]["attempt_id"], "FAILED", None, reason)
-        store.set_run_status(run_id, "FAILED")
-        _set_status(run_dir, status, "FAILED", reason)
-        return False
+        return _settle_control_failure(run_dir, status, store, exc, interrupted=True)
+    except Exception as exc:
+        if status.get("status") == "FINALIZING":
+            raise
+        return _settle_control_failure(run_dir, status, store, exc)
 
 
 def run(
@@ -917,28 +980,29 @@ def run(
         return run_dir, False
     try:
         (run_dir / "run.sqlite3").chmod(0o600)
-        store.create_run(
-            run_id, config.fingerprint(), started_at, evidence_schema_version=3,
-            environment_sha256=runtime_identity_sha256(status["environment"]),
-        )
         with _controller_lock(run_dir):
             try:
-                reference = (
-                    LocalReferenceSession(run_dir, reference_path, config, run_id, resume=False)
-                    if reference_path is not None else None
+                store.create_run(
+                    run_id, config.fingerprint(), started_at, evidence_schema_version=3,
+                    environment_sha256=runtime_identity_sha256(status["environment"]),
                 )
             except (OSError, ValueError, sqlite3.Error, RuntimeError) as exc:
-                reason = f"reference database initialization failed: {type(exc).__name__}: {exc}"
-                store.set_run_status(run_id, "FAILED")
-                _set_status(run_dir, status, "FAILED", reason)
-                succeeded = False
+                succeeded = _settle_control_failure(run_dir, status, store, exc)
             else:
-                if reference is None:
-                    succeeded = _drive_with_event_budget_closure(
-                        run_dir, status, store, config
+                try:
+                    reference = (
+                        LocalReferenceSession(
+                            run_dir, reference_path, config, run_id, resume=False
+                        ) if reference_path is not None else None
                     )
+                except (OSError, ValueError, sqlite3.Error, RuntimeError) as exc:
+                    reason = RuntimeError(
+                        "reference database initialization failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                    succeeded = _settle_control_failure(run_dir, status, store, reason)
                 else:
-                    succeeded = _drive_with_event_budget_closure(
+                    succeeded = _drive_with_failure_closure(
                         run_dir, status, store, config, reference
                     )
     finally:
@@ -955,6 +1019,12 @@ def resume(run_dir: Path) -> bool:
         "RUNNING", "FINALIZING", "SUCCEEDED", "FAILED", "INTERRUPTED"
     ):
         return _invalidate_completed_run(run_dir, status, "saved run status is invalid")
+    if status.get("run_index_terminal_unverified") is True:
+        if status["status"] == "SUCCEEDED":
+            return _invalidate_completed_run(
+                run_dir, status, "run index terminal update is unverified"
+            )
+        return False
     try:
         config = load_config(run_dir / "config.json")
     except (OSError, TypeError, ValueError):
@@ -1031,11 +1101,14 @@ def resume(run_dir: Path) -> bool:
                 )
                 if not pristine:
                     raise ValueError("run index is missing after training may have started")
-                store.create_run(
-                    status["run_id"], status["config_fingerprint"], status["started_at"],
-                    evidence_schema_version=3,
-                    environment_sha256=runtime_identity_sha256(status["environment"]),
-                )
+                try:
+                    store.create_run(
+                        status["run_id"], status["config_fingerprint"],
+                        status["started_at"], evidence_schema_version=3,
+                        environment_sha256=runtime_identity_sha256(status["environment"]),
+                    )
+                except (OSError, ValueError, sqlite3.Error, RuntimeError) as exc:
+                    return _settle_control_failure(run_dir, status, store, exc)
             elif (
                 identity["config_fingerprint"] != status["config_fingerprint"]
                 or identity["started_at"] != status["started_at"]
@@ -1106,8 +1179,8 @@ def resume(run_dir: Path) -> bool:
                 status.pop("execution_load_before", None)
                 status.pop("measurement", None)
             if reference is None:
-                return _drive_with_event_budget_closure(run_dir, status, store, config)
-            return _drive_with_event_budget_closure(
+                return _drive_with_failure_closure(run_dir, status, store, config)
+            return _drive_with_failure_closure(
                 run_dir, status, store, config, reference
             )
     finally:

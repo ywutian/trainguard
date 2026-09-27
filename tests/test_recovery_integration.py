@@ -240,7 +240,7 @@ def test_explicit_resume_rejects_live_owner_then_recovers(tmp_path: Path, monkey
     assert reference_ok
     original = controller._launch_attempt
 
-    class SimulatedControllerExit(Exception):
+    class SimulatedControllerExit(BaseException):
         pass
 
     def exit_after_first(*args, **kwargs):
@@ -288,7 +288,7 @@ def test_explicit_resume_rejects_live_owner_then_recovers(tmp_path: Path, monkey
 def test_resume_reconciles_real_completion_before_controller_publication(
     tmp_path: Path, monkeypatch, exit_at: str
 ) -> None:
-    class SimulatedControllerExit(Exception):
+    class SimulatedControllerExit(BaseException):
         pass
 
     raw = load_config(Path(__file__).parents[1] / "configs" / "cpu_demo.yaml").model_dump()
@@ -352,7 +352,7 @@ def test_resume_reconciles_completed_attempt_at_retry_limit(tmp_path: Path) -> N
 def test_resume_reuses_unrecorded_attempt_directory(tmp_path: Path, monkeypatch) -> None:
     original = controller._drive
 
-    class SimulatedControllerExit(Exception):
+    class SimulatedControllerExit(BaseException):
         pass
 
     def exit_after_directory(run_dir, status, store, config):
@@ -372,7 +372,7 @@ def test_resume_reuses_unrecorded_attempt_directory(tmp_path: Path, monkeypatch)
 def test_resume_reuses_recorded_attempt_before_workers_launch(tmp_path: Path, monkeypatch) -> None:
     original = controller._launch_attempt
 
-    class SimulatedControllerExit(Exception):
+    class SimulatedControllerExit(BaseException):
         pass
 
     def exit_before_launch(*args, **kwargs):
@@ -395,7 +395,7 @@ def test_resume_rejects_unrecorded_live_owner(
     original = controller._launch_attempt
     launcher = None
 
-    class SimulatedControllerExit(Exception):
+    class SimulatedControllerExit(BaseException):
         pass
 
     def exit_after_spawn(run_dir, config, run_id, attempt_id, selected, store):
@@ -446,7 +446,7 @@ def test_detached_worker_from_older_attempt_blocks_resume_but_not_other_run(
     launcher_pid = None
     run_dir = None
 
-    class SimulatedControllerExit(Exception):
+    class SimulatedControllerExit(BaseException):
         pass
 
     def exit_after_detached_worker(run_dir, config, run_id, attempt_id, selected, store):
