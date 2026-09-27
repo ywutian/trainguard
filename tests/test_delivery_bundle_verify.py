@@ -214,6 +214,20 @@ def test_transferred_bundle_checks_files_and_evidence_bindings(tmp_path: Path) -
         module.verify_bundle(root)
 
 
+def test_trusted_manifest_digest_is_checked_before_bundle_data_or_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    root = _bundle(tmp_path / "bundle", module)
+    with monkeypatch.context() as patch:
+        patch.setattr(module, "_mapping", lambda path: pytest.fail("bundle data was read"))
+        with pytest.raises(module.DeliveryInvalid, match="trusted digest"):
+            module.verify_bundle(root, "0" * 64)
+    assert module.verify_bundle(root, _sha(root / "delivery-manifest.json"))[
+        "status"
+    ] == "INTEGRITY_CHECKED_EVALUATION_BUNDLE"
+
+
 def test_transferred_bundle_rejects_self_consistent_file_list_with_stale_artifact(
     tmp_path: Path,
 ) -> None:

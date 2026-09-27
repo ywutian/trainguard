@@ -15,7 +15,7 @@ import zipfile
 from datetime import UTC, datetime
 from email.parser import Parser
 from pathlib import Path
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import urlsplit
 
 RAW_FILES = {
     "supply-chain-sbom.json",
@@ -31,17 +31,9 @@ SBOM_TOOL_VERSION = "7.4.0"
 AUDIT_TOOL_VERSION = "2.10.1"
 URL_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+")
 ABSOLUTE_POSIX_PATH = re.compile(
-    r"(?<![A-Za-z0-9:/\\])/(?!/)[A-Za-z0-9_.~%-]+"
-    r"(?:/[A-Za-z0-9_.~%-]+)*(?=$|[\s\"',;)}\]])"
+    r"(?<![\w:./\\])/(?!/)[^\s\"'<>?,;)}\]]+"
 )
 ABSOLUTE_WINDOWS_PATH = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s\"'<>]+")
-SECRET_URL_KEYS = {
-    "token", "access_token", "api_key", "apikey", "key", "password",
-    "passwd", "secret", "credential", "authorization", "signature", "sig",
-    "auth", "auth_token", "access_key", "secret_key", "client_secret",
-    "awsaccesskeyid", "googleaccessid",
-}
-SECRET_URL_KEY_PREFIXES = ("x-amz-", "x-goog-")
 
 
 class SupplyChainInvalid(ValueError):
@@ -100,7 +92,7 @@ def _load(path: Path) -> object:
 
 
 def _private_url(url: str) -> bool:
-    """Classify links that can disclose local locations or access credentials."""
+    """Allow only public HTTP links without query or fragment data."""
     try:
         parsed = urlsplit(url)
     except ValueError:
@@ -111,23 +103,37 @@ def _private_url(url: str) -> bool:
         or parsed.password is not None
     ):
         return True
-    return any(
-        key.lower() in SECRET_URL_KEYS
-        or key.lower().startswith(SECRET_URL_KEY_PREFIXES)
-        for part in (parsed.query, parsed.fragment)
-        for key, _ in parse_qsl(part, keep_blank_values=True)
-    )
+    return bool(parsed.query or parsed.fragment)
 
 
 def _verify_output_privacy(directory: Path) -> None:
     """Reject local paths or credential-bearing links in every shipped scanner file."""
+    def strings(value: object):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                yield from strings(key)
+                yield from strings(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from strings(item)
+
     for name in sorted(RAW_FILES | {RECEIPT}):
         payload = (directory / name).read_text(encoding="utf-8")
-        if ABSOLUTE_POSIX_PATH.search(payload) or ABSOLUTE_WINDOWS_PATH.search(payload):
-            raise SupplyChainInvalid(f"supply-chain output contains a local path: {name}")
-        for match in URL_PATTERN.finditer(payload):
-            if _private_url(match.group().rstrip(".,;)]}")):
-                raise SupplyChainInvalid(f"supply-chain output contains a private URL: {name}")
+        try:
+            values = (payload,) if name.endswith(".txt") else tuple(strings(json.loads(payload)))
+        except ValueError as exc:
+            raise SupplyChainInvalid(f"supply-chain output is invalid JSON: {name}") from exc
+        for value in values:
+            for match in URL_PATTERN.finditer(value):
+                if _private_url(match.group().rstrip(".,;)]}")):
+                    raise SupplyChainInvalid(f"supply-chain output contains a private URL: {name}")
+            without_urls = URL_PATTERN.sub("", value)
+            if ABSOLUTE_POSIX_PATH.search(without_urls) or ABSOLUTE_WINDOWS_PATH.search(
+                without_urls
+            ):
+                raise SupplyChainInvalid(f"supply-chain output contains a local path: {name}")
 
 
 def _packages(rows: object, *, kind: str) -> dict[str, str]:
@@ -487,12 +493,17 @@ def _publish_scan_output(stage: Path, output: Path) -> None:
            for name in names | {PRIVACY_MARKER}):
         raise FileExistsError("supply-chain output already exists")
     published = []
+    marker = output / PRIVACY_MARKER
+    temporary_marker = output / f".{PRIVACY_MARKER}.tmp"
     try:
         for name in sorted(names):
             os.replace(stage / name, output / name)
             published.append(name)
-        (output / PRIVACY_MARKER).write_text("privacy-checked\n", encoding="utf-8")
+        temporary_marker.write_text("privacy-checked\n", encoding="utf-8")
+        os.replace(temporary_marker, marker)
     except BaseException:
+        marker.unlink(missing_ok=True)
+        temporary_marker.unlink(missing_ok=True)
         for name in published:
             (output / name).unlink(missing_ok=True)
         raise

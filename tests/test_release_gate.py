@@ -11,6 +11,8 @@ from xml.etree import ElementTree
 
 import pytest
 
+from trainguard import environment
+
 
 def _module():
     path = Path(__file__).parents[1] / "scripts" / "check_release_readiness.py"
@@ -19,6 +21,29 @@ def _module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_source_identity_frames_names_and_contents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    left = {"a.py": b"# c.py\npass\n"}
+    right = {"a.py": b"# ", "c.py": b"\npass\n"}
+    assert b"".join(name.encode() + content for name, content in left.items()) == (
+        b"".join(name.encode() + content for name, content in right.items())
+    )
+    assert module._archive_source_sha256(left) != module._archive_source_sha256(right)
+    for directory, items in (("left", left), ("right", right)):
+        root = tmp_path / directory
+        source = root / "src" / "trainguard"
+        source.mkdir(parents=True)
+        for name, content in items.items():
+            (source / name).write_bytes(content)
+        expected = module._archive_source_sha256(items)
+        assert module.package_source_sha256(root) == expected
+        with monkeypatch.context() as patch:
+            patch.setattr(environment, "__file__", str(source / "environment.py"))
+            assert environment.source_sha256() == expected
 
 
 def _collected_suite(module, *, gpu_host: bool = False):

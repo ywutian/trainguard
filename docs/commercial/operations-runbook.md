@@ -70,7 +70,37 @@ Sev1 包含疑似错误恢复、重复有效写入、无有效候选或数据泄
 
 `scripts/verify_upgrade_boundary.py --previous-ref <旧提交> --current-wheel <当前 wheel>` 使用相邻补丁版本各自的依赖锁和环境，演练新版本拒绝旧版中断运行且不改旧运行任何文件、旧版从有效检查点恢复并与独立参考一致。取得上述在线托管 Linux 检查通过的阻断报告后，可用 `scripts/build_delivery_bundle.py --wheel <wheel> --sdist <sdist> --readiness-report <报告> --output-dir <目录>` 生成带 SHA-256 清单、门槛收据和本机合成测试摘要的 `EVALUATION_ONLY` 候选包。只有 `linux_customer_evaluation_allowed=true` 才能构建和接收这一受限评价包；本机实验通过不足以生成客户评价包。该命令不生成生产发布标签；正式发布由上一段的独立人工批准流程控制。
 
-收件方先运行 `python scripts/verify_delivery_bundle.py <交付包目录>`，确认清单中每个文件、候选 wheel/sdist/锁以及本机证据引用仍一致，并将输出的 `manifest_sha256` 与通过独立可信渠道收到的摘要比对。包内脚本和清单的自洽性检查只能检测传输或误操作引起的变化，不能单独证明发送者身份或原始审查结论真实。校验失败时隔离该包并要求重新交付，不安装其中的候选件。
+收件方须先把交付包放在其他用户不能修改的隔离目录，并通过独立可信渠道取得 `delivery-manifest.json` 的 SHA-256。**运行包内任何代码之前**，使用本机可信 Python 标准库核对清单及包内校验脚本字节；以下片段不导入交付包模块，`BUNDLE` 与 `EXPECTED` 分别由收件方设置为包目录和独立收到的 64 位小写摘要：
+
+```sh
+python3 -I -S - "$BUNDLE" "$EXPECTED" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+expected = sys.argv[2]
+manifest = root / "delivery-manifest.json"
+script = root / "scripts/verify_delivery_bundle.py"
+if len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected):
+    raise SystemExit("trusted manifest digest is invalid")
+if any(path.is_symlink() for path in (root, manifest, script.parent, script)):
+    raise SystemExit("bundle verification path is linked")
+if hashlib.sha256(manifest.read_bytes()).hexdigest() != expected:
+    raise SystemExit("delivery manifest differs from trusted digest")
+files = json.loads(manifest.read_text(encoding="utf-8")).get("files")
+if not isinstance(files, dict) or hashlib.sha256(script.read_bytes()).hexdigest() != files.get(
+    "scripts/verify_delivery_bundle.py"
+):
+    raise SystemExit("bundled verifier differs from trusted manifest")
+print("manifest and verifier authenticated")
+PY
+python3 -I -S "$BUNDLE/scripts/verify_delivery_bundle.py" "$BUNDLE" \
+  --expected-manifest-sha256 "$EXPECTED"
+```
+
+第二步确认清单中每个文件、候选 wheel/sdist/锁以及本机证据引用仍一致，并在执行包内供应链校验模块前校验其字节。任何校验失败时隔离该包并要求重新交付，不安装其中的候选件。包内证据的自洽性不能单独证明原始审查结论真实。
 
 生产发布前还须在客户隔离环境完成：最低权限身份和凭据轮换、出站流量与数据脱敏、容量/保留与备份、跨主机 fencing、对象服务条件提交与失败重试、GPU/NCCL、告警与值班、升级回滚、客户技术及商业签收。未具备这些证据时仅能提供明确范围的本机实验或受限评估。
 

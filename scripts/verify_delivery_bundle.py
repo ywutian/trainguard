@@ -113,13 +113,18 @@ def _is_sha256(value: object) -> bool:
     )
 
 
-def verify_bundle(root: Path) -> dict:
+def verify_bundle(root: Path, expected_manifest_sha256: str | None = None) -> dict:
     """Check transferred bytes and the already reviewed evidence references."""
     if root.is_symlink() or not root.is_dir():
         raise DeliveryInvalid("bundle directory is missing or linked")
     manifest_path = root / "delivery-manifest.json"
     if manifest_path.is_symlink() or not manifest_path.is_file():
         raise DeliveryInvalid("delivery manifest is missing or linked")
+    if expected_manifest_sha256 is not None and (
+        not _is_sha256(expected_manifest_sha256)
+        or _sha256(manifest_path) != expected_manifest_sha256
+    ):
+        raise DeliveryInvalid("delivery manifest differs from the trusted digest")
     manifest = _mapping(manifest_path)
     files = manifest.get("files")
     if (
@@ -388,9 +393,10 @@ def verify_bundle(root: Path) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("bundle", type=Path)
+    parser.add_argument("--expected-manifest-sha256", required=True)
     args = parser.parse_args()
     try:
-        result = verify_bundle(args.bundle)
+        result = verify_bundle(args.bundle, args.expected_manifest_sha256)
     except DeliveryInvalid as exc:
         print(json.dumps({"status": "INVALID", "reason": str(exc)}, sort_keys=True))
         return 1

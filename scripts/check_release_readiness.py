@@ -89,8 +89,12 @@ def package_source_sha256(root: Path) -> str:
     source = root / "src" / "trainguard"
     digest = hashlib.sha256()
     for path in sorted(source.rglob("*.py")):
-        digest.update(path.relative_to(source).as_posix().encode())
-        digest.update(path.read_bytes())
+        name = path.relative_to(source).as_posix().encode("utf-8")
+        content = path.read_bytes()
+        digest.update(len(name).to_bytes(8, "big"))
+        digest.update(name)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
     return digest.hexdigest()
 
 
@@ -155,7 +159,10 @@ def _previous_release(root: Path, pin: object, current_version: str) -> dict:
 def _archive_source_sha256(items: dict[str, bytes]) -> str:
     digest = hashlib.sha256()
     for name, content in sorted(items.items()):
-        digest.update(name.encode())
+        encoded_name = name.encode("utf-8")
+        digest.update(len(encoded_name).to_bytes(8, "big"))
+        digest.update(encoded_name)
+        digest.update(len(content).to_bytes(8, "big"))
         digest.update(content)
     return digest.hexdigest()
 

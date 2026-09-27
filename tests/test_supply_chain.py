@@ -162,11 +162,19 @@ def test_supply_chain_rejects_candidate_identity_change(tmp_path: Path) -> None:
     ("supply-chain-sbom.json", "https://repo.example/?X-Goog-Credential=test"),
     ("supply-chain-sbom.json", "https://repo.example/?sv=1&sp=r&sr=b&sig=test"),
     ("supply-chain-sbom.json", "https://repo.example/?signature=test"),
+    ("supply-chain-sbom.json", "https://repo.example/?accessToken=test"),
+    ("supply-chain-sbom.json", "https://repo.example/?clientSecret=test"),
+    ("supply-chain-sbom.json", "https://repo.example/?unclassified=test"),
+    ("supply-chain-sbom.json", "/用户/秘密文件"),
+    ("supply-chain-sbom.json", "/équipe/private"),
+    ("supply-chain-requirements.txt", "--find-links /用户/秘密文件"),
     ("supply-chain-receipt.json", "file:///private/customer/evidence"),
 ], ids=[
     "requirements-url", "audit-posix-path", "installed-windows-path",
     "sbom-secret-url", "sbom-aws-signature", "sbom-google-credential",
-    "sbom-azure-signature", "sbom-generic-signature", "receipt-local-url",
+    "sbom-azure-signature", "sbom-generic-signature", "sbom-camel-access-token",
+    "sbom-camel-client-secret", "sbom-unknown-query", "sbom-unicode-path",
+    "sbom-accented-path", "requirements-unicode-path", "receipt-local-url",
 ])
 def test_supply_chain_rejects_private_output_after_rehash(
     tmp_path: Path, name: str, secret: str,
@@ -197,14 +205,20 @@ def test_sbom_reference_redaction_and_public_urls(tmp_path: Path) -> None:
     path = root / "supply-chain-sbom.json"
     report = json.loads(path.read_text(encoding="utf-8"))
     public = [
-        "https://pypi.org/project/dependency/?source=docs",
-        "https://storage.example/blob?sv=1&sp=r&sr=b",
+        "https://pypi.org/project/dependency/",
+        "https://storage.example/blob",
     ]
     private = [
+        "https://pypi.org/project/dependency/?source=docs",
+        "https://storage.example/blob?sv=1&sp=r&sr=b",
+        "https://pypi.org/project/dependency/#files",
         "https://download.example/blob?X-Amz-Signature=test&X-Amz-Credential=test",
         "https://download.example/blob?X-Goog-Signature=test",
         "https://download.example/blob?sv=1&sp=r&sr=b&sig=test",
         "https://download.example/blob?signature=test",
+        "https://download.example/blob?accessToken=test",
+        "https://download.example/blob?clientSecret=test",
+        "https://download.example/blob?unclassified=test",
         "https://user:password@download.example/blob",
         "file:///private/customer/blob",
     ]
@@ -305,6 +319,28 @@ def test_publish_error_leaves_no_privacy_marker(
 
     monkeypatch.setattr(module.os, "replace", interrupted)
     with pytest.raises(OSError, match="publication stopped"):
+        module._publish_scan_output(stage, output)
+    assert not list(output.iterdir())
+
+
+def test_marker_write_error_cannot_expose_raw_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    stage = tmp_path / "stage"
+    supply_fixture(stage)
+    output = tmp_path / "simulation"
+    output.mkdir()
+    original_write = Path.write_text
+
+    def interrupted(path: Path, data: str, *args, **kwargs):
+        result = original_write(path, data, *args, **kwargs)
+        if path.name == f".{module.PRIVACY_MARKER}.tmp":
+            raise OSError("marker publication stopped")
+        return result
+
+    monkeypatch.setattr(Path, "write_text", interrupted)
+    with pytest.raises(OSError, match="marker publication stopped"):
         module._publish_scan_output(stage, output)
     assert not list(output.iterdir())
 

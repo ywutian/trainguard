@@ -64,8 +64,12 @@ def source_sha256() -> str:
     # Package bytes have the same identity in a checkout and an installed wheel.
     # Installed package metadata and Python are checked separately at resume.
     for path in sorted(source.rglob("*.py")):
-        digest.update(path.relative_to(source).as_posix().encode())
-        digest.update(path.read_bytes())
+        name = path.relative_to(source).as_posix().encode("utf-8")
+        content = path.read_bytes()
+        digest.update(len(name).to_bytes(8, "big"))
+        digest.update(name)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
 
     return digest.hexdigest()
 
