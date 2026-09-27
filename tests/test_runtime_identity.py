@@ -158,6 +158,46 @@ def test_startup_identity_detects_explicit_import_tree_and_zip_changes(
     assert environment.startup_identity_sha256() != first
 
 
+def test_startup_identity_detects_added_import_root_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "added-imports"
+    root.mkdir()
+    module = root / "external_module.py"
+    module.write_text("value = 'one'\n")
+    with monkeypatch.context() as patch:
+        patch.syspath_prepend(str(root))
+        first = environment.startup_identity_sha256()
+        module.write_text("value = 'two'\n")
+        assert environment.startup_identity_sha256() != first
+
+
+def test_added_import_root_cannot_shadow_application(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "trainguard.pyc").write_bytes(b"shadow")
+    with monkeypatch.context() as patch:
+        patch.syspath_prepend(str(tmp_path))
+        with pytest.raises(ValueError, match="may shadow"):
+            environment.startup_identity_sha256()
+
+
+def test_worker_ignores_implicit_working_directory_package_shadow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shadow = tmp_path / "trainguard"
+    shadow.mkdir()
+    (shadow / "__init__.py").write_text("__version__ = '0.3.6'\n")
+    (shadow / "trainer.py").write_text(
+        "from pathlib import Path\nPath('shadow-ran').write_text('unsafe')\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    source = Path(__file__).parents[1] / "configs" / "cpu_demo.yaml"
+    run_dir, succeeded = run(source, tmp_path / "runs")
+    assert succeeded, (run_dir / "launcher.log").read_text()
+    assert not (tmp_path / "shadow-ran").exists()
+
+
 def test_explicit_import_root_cannot_shadow_application(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -195,7 +235,7 @@ def test_run_output_inside_explicit_import_root_is_rejected_before_creation(
     monkeypatch.setenv("PYTHONPATH", str(imports))
     output = imports / "runs"
     source = Path(__file__).parents[1] / "configs" / "cpu_demo.yaml"
-    with pytest.raises(ValueError, match="outside PYTHONPATH"):
+    with pytest.raises(ValueError, match="outside active Python import roots"):
         run(source, output)
     assert not output.exists()
 

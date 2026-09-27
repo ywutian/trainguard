@@ -14,6 +14,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import sysconfig
 import zipfile
 from io import StringIO
 from pathlib import Path
@@ -172,23 +173,69 @@ def _zip_import_container(path: Path) -> tuple[Path, str] | None:
     return None
 
 
+def _shadows_application(path: Path, source_root: Path) -> bool:
+    if path == source_root:
+        return False
+    if path.is_dir() and any(
+        child.name == "trainguard" or child.name.startswith("trainguard.")
+        for child in path.iterdir()
+    ):
+        return True
+    zip_root = _zip_import_container(path)
+    if zip_root is None:
+        return False
+    archive_path, prefix = zip_root
+    with zipfile.ZipFile(archive_path) as archive:
+        return any(
+            name.startswith(prefix) and (
+                name[len(prefix):] == "trainguard"
+                or name[len(prefix):].startswith("trainguard.")
+                or name[len(prefix):].startswith("trainguard/")
+            )
+            for name in archive.namelist()
+        )
+
+
+def _inherited_import_paths() -> list[Path]:
+    """Exclude only the interpreter's implicit script/cwd entry, removed in workers."""
+    paths = []
+    script = sys.argv[0] if sys.argv else ""
+    script_directory = (
+        Path(script).resolve().parent if script and script not in {"-c", "-m", "-"} else None
+    )
+    cwd = Path.cwd().resolve()
+    implicit_removed = False
+    for entry in sys.path:
+        resolved = Path(entry or cwd).resolve()
+        if (
+            not implicit_removed and not sys.flags.safe_path
+            and (not entry or resolved == cwd or resolved == script_directory)
+        ):
+            implicit_removed = True
+            continue
+        paths.append(resolved)
+    return paths
+
+
 def require_output_outside_import_roots(output: Path) -> None:
     """Avoid self-changing import identity as a run creates its own artifacts."""
-    pythonpath = os.environ.get("PYTHONPATH")
-    if pythonpath is None:
-        return
     destination = output.resolve()
-    for entry in pythonpath.split(os.pathsep):
-        if not entry:
-            raise ValueError("PYTHONPATH contains an empty import root")
-        root = Path(entry).resolve()
+    roots = _inherited_import_paths()
+    pythonpath = os.environ.get("PYTHONPATH")
+    if pythonpath is not None:
+        for entry in pythonpath.split(os.pathsep):
+            if not entry:
+                raise ValueError("PYTHONPATH contains an empty import root")
+            roots.append(Path(entry).resolve())
+    for root in roots:
         if not root.is_file() and destination.is_relative_to(root):
-            raise ValueError("run output must be outside PYTHONPATH import roots")
+            raise ValueError("run output must be outside active Python import roots")
 
 
 def startup_identity_sha256() -> str:
     """Bind import lookup paths, startup hooks, and Python path controls without exposing paths."""
     paths = [Path(entry or os.getcwd()).resolve() for entry in sys.path]
+    inherited_paths = _inherited_import_paths()
     pythonpath = os.environ.get("PYTHONPATH")
     import_entries = []
     if pythonpath is not None:
@@ -201,24 +248,9 @@ def startup_identity_sha256() -> str:
             if original.is_symlink():
                 raise ValueError("PYTHONPATH contains a linked import root")
             root = original.resolve()
-            if root != source_root and root.is_dir() and any(
-                child.name == "trainguard" or child.name.startswith("trainguard.")
-                for child in root.iterdir()
-            ):
+            if _shadows_application(root, source_root):
                 raise ValueError("PYTHONPATH may shadow the application package")
             zip_root = _zip_import_container(root)
-            if zip_root is not None:
-                archive_path, prefix = zip_root
-                with zipfile.ZipFile(archive_path) as archive:
-                    if any(
-                        name.startswith(prefix) and (
-                            name[len(prefix):] == "trainguard"
-                            or name[len(prefix):].startswith("trainguard.")
-                            or name[len(prefix):].startswith("trainguard/")
-                        )
-                        for name in archive.namelist()
-                    ):
-                        raise ValueError("PYTHONPATH may shadow the application package")
             import_entries.append((
                 str(root), _import_entry_sha256(zip_root[0] if zip_root is not None else root)
             ))
@@ -245,6 +277,26 @@ def startup_identity_sha256() -> str:
             if candidate.is_symlink() or not candidate.is_file():
                 raise ValueError("Python startup file is linked or not a regular file")
             startup_files.append((str(candidate), hashlib.sha256(candidate.read_bytes()).hexdigest()))
+    source_root = Path(__file__).resolve().parents[1]
+    base_prefix = Path(sys.base_prefix).resolve()
+    package_paths = sysconfig.get_paths()
+    installed_roots = {
+        Path(package_paths[name]).resolve()
+        for name in ("purelib", "platlib") if package_paths.get(name)
+    }
+    explicit_roots = {
+        Path(entry).resolve() for entry in pythonpath.split(os.pathsep)
+    } if pythonpath is not None else set()
+    extra_import_paths = []
+    for root in sorted(set(inherited_paths) - explicit_roots):
+        if root == source_root or root in installed_roots or root.is_relative_to(base_prefix):
+            continue
+        if _shadows_application(root, source_root):
+            raise ValueError("Python import path may shadow the application package")
+        archive = _zip_import_container(root)
+        extra_import_paths.append((
+            str(root), _import_entry_sha256(archive[0] if archive is not None else root)
+        ))
     hooks = {}
     for name in ("sitecustomize", "usercustomize"):
         module = sys.modules.get(name)
@@ -258,6 +310,7 @@ def startup_identity_sha256() -> str:
     payload = {
         "sys_path": [str(path) for path in paths],
         "pythonpath_entries": import_entries,
+        "extra_import_paths": extra_import_paths,
         "startup_files": startup_files,
         "hooks": hooks,
         "environment": {
@@ -265,7 +318,7 @@ def startup_identity_sha256() -> str:
             for key in (
                 "PYTHONPATH", "PYTHONHOME", "PYTHONNOUSERSITE", "PYTHONDONTWRITEBYTECODE",
                 "PYTHONHASHSEED", "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER",
-                "NVIDIA_VISIBLE_DEVICES",
+                "NVIDIA_VISIBLE_DEVICES", "PYTHONSAFEPATH",
             )
         },
     }
