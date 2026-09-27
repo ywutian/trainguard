@@ -56,20 +56,41 @@ jobs:
                   target = candidate.resolve(strict=False)
                   within_venv = target.is_relative_to(roots["venv"])
                   within_interpreter = target.is_relative_to(roots["interpreter"])
+                  expected_system_target = Path(
+                      f"/etc/python{sys.version_info.major}.{sys.version_info.minor}/sitecustomize.py"
+                  )
+                  link_info = candidate.lstat()
+                  link_parent_info = candidate.parent.stat()
+                  target_parent_info = target.parent.stat()
                   try:
                       info = target.stat()
                       regular = stat.S_ISREG(info.st_mode)
                       digest = hashlib.sha256(target.read_bytes()).hexdigest() if regular else None
                       size = info.st_size
                       mode = oct(stat.S_IMODE(info.st_mode))
+                      target_uid = info.st_uid
+                      target_gid = info.st_gid
                   except OSError:
                       regular, digest, size, mode = False, None, None, None
+                      target_uid, target_gid = None, None
                   print({
                       "location": label(candidate),
                       "basename": candidate.name,
+                      "target_is_etc_python_sitecustomize": target == expected_system_target,
                       "target_in_venv": within_venv,
                       "target_in_interpreter": within_interpreter,
+                      "link_uid": link_info.st_uid,
+                      "link_gid": link_info.st_gid,
+                      "link_mode": oct(stat.S_IMODE(link_info.st_mode)),
+                      "link_parent_uid": link_parent_info.st_uid,
+                      "link_parent_gid": link_parent_info.st_gid,
+                      "link_parent_mode": oct(stat.S_IMODE(link_parent_info.st_mode)),
+                      "target_parent_uid": target_parent_info.st_uid,
+                      "target_parent_gid": target_parent_info.st_gid,
+                      "target_parent_mode": oct(stat.S_IMODE(target_parent_info.st_mode)),
                       "target_regular": regular,
+                      "target_uid": target_uid,
+                      "target_gid": target_gid,
                       "target_size": size,
                       "target_mode": mode,
                       "target_sha256": digest,
