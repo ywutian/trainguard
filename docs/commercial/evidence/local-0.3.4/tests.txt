@@ -1,0 +1,28 @@
+........................................................................ [ 38%]
+..........................ssss.......................................... [ 77%]
+..........................................                               [100%]
+=============================== warnings summary ===============================
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[during_payload_fsync]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_rank_sidecar]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[during_payload_scan]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_manifest]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_marker_replace]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_marker_durable]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_commit_before_index]
+tests/test_remote_dcp_roundtrip.py::test_real_dcp_bytes_publish_fallback_and_restore_through_remote_model
+  /workspace/.venv/lib/python3.12/site-packages/torch/distributed/checkpoint/utils.py:488: UserWarning: torch.distributed is disabled, unavailable or uninitialized, assuming the intent is to save in a single process.
+    return func(*args, **kwargs)
+
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[during_payload_fsync]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_rank_sidecar]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[during_payload_scan]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_manifest]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_marker_replace]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_marker_durable]
+tests/test_checkpoint_crash_matrix.py::test_process_exit_at_checkpoint_publication_boundary[after_commit_before_index]
+tests/test_remote_dcp_roundtrip.py::test_real_dcp_bytes_publish_fallback_and_restore_through_remote_model
+  /workspace/.venv/lib/python3.12/site-packages/torch/distributed/checkpoint/utils.py:488: UserWarning: torch.distributed is disabled, unavailable or uninitialized, assuming the intent is to load in a single process.
+    return func(*args, **kwargs)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+182 passed, 4 skipped, 16 warnings in 548.61s (0:09:08)
