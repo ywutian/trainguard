@@ -6,7 +6,7 @@
 
 - macOS 26.5.1 / arm64；Python 3.12.12；PyTorch 2.14.0；双 rank CPU/Gloo。此机器没有可用于验收的 CUDA 设备或独立多主机环境。
 - 入口：`uv sync --locked --group dev`，随后 `uv run python scripts/run_simulation_closure.py --output-root runs/simulation-closure`。
-- 本次完整原始目录：`/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/simulation-closure/simulation-03dd217fc632`（约 293 MB）。其中 `test-artifacts/` 保存每项测试的原始故障与恢复目录，`acceptance/` 保存十案例运行、SQLite、检查点和逐 rank 日志。
+- 本次完整原始目录已复制保存在主项目：`/Users/yitianwu/Documents/TrainGuard/runs/simulation-closure/simulation-03dd217fc632`（约 293 MB）。其中 `test-artifacts/` 保存每项测试的原始故障与恢复目录，`acceptance/` 保存十案例运行、SQLite、检查点和逐 rank 日志。原始 `result.json` 中的绝对路径仍记录执行时的工作目录；主项目副本保留了相同的相对目录结构。
 - 可提交的轻量证据在[本报告附带目录](evidence/simulation-closure-2026-09-26/)；[证据哈希清单](evidence/simulation-closure-2026-09-26/evidence-manifest.json)记录每个文件的大小与 SHA-256。
 
 ## 门槛结果
@@ -25,7 +25,7 @@
 
 远程协议桥接先用真实 DCP 字节验证损坏最新版后的旧版下载与加载；更完整的双 rank 测试在本地检查点目录丢失后，从对象协议模型下载第 1 步候选，交给正式控制器续跑至第 4 步。[桥接结果](evidence/simulation-closure-2026-09-26/remote-training-restore.json)显示模型、优化器、调度器摘要与参考一致，逐 rank 有效样本比较通过。它运行了训练器和恢复控制器，但对象服务、条件写、隔离权威仍是本机模型。
 
-第一次全套运行因测试配置把冷启动进度超时设为 5 秒，在整套 CPU 负载下过早终止两个运行，留下[失败结果](evidence/simulation-closure-2026-09-26/initial-failure-result.json)和[失败堆栈](evidence/simulation-closure-2026-09-26/initial-failure-tests.txt)；提交版堆栈只去掉了行尾空格，原始文件仍在首次运行目录。将该测试阈值改为 20 秒后，两项针对性复测通过，并完整重跑了总门槛；最终结果来自上方独立的新目录，没有拼接旧运行的成功记录。
+第一次全套运行因测试配置把冷启动进度超时设为 5 秒，在整套 CPU 负载下过早终止两个运行，留下[失败结果](evidence/simulation-closure-2026-09-26/initial-failure-result.json)和[失败堆栈](evidence/simulation-closure-2026-09-26/initial-failure-tests.txt)；提交版堆栈只去掉了行尾空格，原始文件保存在主项目 `runs/simulation-closure/simulation-9e324115d6e1/`。将该测试阈值改为 20 秒后，两项针对性复测通过，并完整重跑了总门槛；最终结果来自上方独立的新目录，没有拼接旧运行的成功记录。
 
 ## 结论与未验证边界
 

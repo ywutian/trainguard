@@ -1,5 +1,5 @@
 {
-  "recovered_run_dir": "/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/simulation-closure/simulation-03dd217fc632/test-artifacts/test_two_rank_training_recover0/recovery-runs/7017f7df3d05",
+  "recovered_run_dir": "/Users/yitianwu/Documents/TrainGuard/runs/simulation-closure/simulation-03dd217fc632/test-artifacts/test_two_rank_training_recover0/recovery-runs/7017f7df3d05",
   "recovered_summary": {
     "accumulation_phase": 0,
     "attempt_id": "attempt-002",
@@ -45,7 +45,7 @@
     "workload_fingerprint": "1f0ef57641e054c906d7614163dbcf2b4cf17d262c0e73a31ded66fd1f67a0fa",
     "world_size": 2
   },
-  "reference_run_dir": "/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/simulation-closure/simulation-03dd217fc632/test-artifacts/test_two_rank_training_recover0/reference-runs/2403450e1cee",
+  "reference_run_dir": "/Users/yitianwu/Documents/TrainGuard/runs/simulation-closure/simulation-03dd217fc632/test-artifacts/test_two_rank_training_recover0/reference-runs/2403450e1cee",
   "reference_summary": {
     "accumulation_phase": 0,
     "attempt_id": "attempt-001",
@@ -92,7 +92,7 @@
     "world_size": 2
   },
   "resume_step": 1,
-  "selected_checkpoint": "/Users/yitianwu/Documents/TrainGuard-recovery-validation/runs/simulation-closure/simulation-03dd217fc632/test-artifacts/test_two_rank_training_recover0/recovery-runs/7017f7df3d05/checkpoints/step-000001-attempt-001",
+  "selected_checkpoint": "/Users/yitianwu/Documents/TrainGuard/runs/simulation-closure/simulation-03dd217fc632/test-artifacts/test_two_rank_training_recover0/recovery-runs/7017f7df3d05/checkpoints/step-000001-attempt-001",
   "validation": {
     "comparison": {
       "method": "exact SHA-256 of rank states and effective sample/batch IDs",
