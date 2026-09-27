@@ -1,4 +1,8 @@
 import json
+import os
+import signal
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -73,6 +77,54 @@ def test_exception_after_spawn_cleans_actual_process(tmp_path, monkeypatch, fail
     finally:
         for child in spawned:
             controller._stop_process_group(child, tmp_path, "run", "attempt-001")
+        store.close()
+
+
+def test_detached_worker_prevents_group_ended_evidence(tmp_path, monkeypatch):
+    settings = config()
+    (tmp_path / "attempts/attempt-001").mkdir(parents=True)
+    (tmp_path / "config.json").write_text(json.dumps(settings.model_dump()))
+    store = RunStore(tmp_path / "run.sqlite3")
+    store.create_run("run", settings.fingerprint(), "now")
+    store.start_attempt("run", "attempt-001", 1, None, 0)
+    worker_pid_path = tmp_path / "detached-worker.pid"
+    launcher_pid = None
+    real_popen = subprocess.Popen
+    script = (
+        "import subprocess,sys; from pathlib import Path; "
+        "worker=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)',"
+        "'trainguard.trainer','--run-dir',sys.argv[1],"
+        "'--run-id',sys.argv[2],'--attempt-id',sys.argv[3]],"
+        "start_new_session=True); "
+        "Path(sys.argv[4]).write_text(str(worker.pid))"
+    )
+
+    def detached_launcher(command, *args, **kwargs):
+        nonlocal launcher_pid
+        if "torch.distributed.run" in command:
+            command = [
+                sys.executable, "-c", script, str(tmp_path), "run", "attempt-001",
+                str(worker_pid_path),
+            ]
+        process = real_popen(command, *args, **kwargs)
+        launcher_pid = process.pid
+        return process
+
+    monkeypatch.setattr(controller.subprocess, "Popen", detached_launcher)
+    try:
+        with pytest.raises(controller.RunActiveError, match="worker cleanup failed"):
+            controller._launch_attempt(tmp_path, settings, "run", "attempt-001", None, store)
+        worker_pid = int(worker_pid_path.read_text())
+        assert launcher_pid is not None
+        assert os.getpgid(worker_pid) != launcher_pid
+        assert not controller._owned_group_members(tmp_path, "run", "attempt-001", launcher_pid)
+        assert controller._owned_group_members(tmp_path, "run", "attempt-001") == [worker_pid]
+        assert not (tmp_path / "attempts/attempt-001/worker-group-ended.json").exists()
+    finally:
+        if worker_pid_path.exists():
+            worker_pid = int(worker_pid_path.read_text())
+            if worker_pid in controller._owned_group_members(tmp_path, "run", "attempt-001"):
+                os.kill(worker_pid, signal.SIGTERM)
         store.close()
 
 

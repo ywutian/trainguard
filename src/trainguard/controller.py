@@ -39,7 +39,7 @@ from trainguard.validation import completion_errors
 
 
 class RunActiveError(RuntimeError):
-    """A controller or an owned worker group still runs for this directory."""
+    """A controller or owned worker process still runs for this directory."""
 
 
 class ExperimentNotAuthorizedError(ValueError):
@@ -152,7 +152,17 @@ def _owned_process_alive(
         # The launcher may still be between fork and exec. A matching process
         # identity is enough to block a second owner until its exit is known.
         return True
-    return bool(_owned_group_members(run_dir, run_id, attempt_id, pid))
+    return bool(_owned_group_members(run_dir, run_id, attempt_id))
+
+
+def _assert_no_owned_workers(run_dir: Path, run_id: str, attempts: list) -> None:
+    for attempt in attempts:
+        if _owned_process_alive(
+            attempt["pid"], attempt["pid_identity"], run_id, attempt["attempt_id"], run_dir
+        ):
+            raise RunActiveError(
+                f"attempt {attempt['attempt_id']} still owns a worker group or process"
+            )
 
 
 def _read_events(
@@ -378,7 +388,7 @@ def _launch_attempt(
                     exit_code = process.poll()
                     break
                 time.sleep(0.2)
-            orphaned_workers = bool(_owned_group_members(run_dir, run_id, attempt_id, process.pid))
+            orphaned_workers = bool(_owned_group_members(run_dir, run_id, attempt_id))
             if orphaned_workers:
                 reason = "launcher exited while owned workers remained"
             _read_events(
@@ -405,6 +415,10 @@ def _launch_attempt(
         finally:
             try:
                 _stop_process_group(process, run_dir, run_id, attempt_id)
+                if process.poll() is None or _owned_group_members(run_dir, run_id, attempt_id):
+                    raise RunActiveError(
+                        f"attempt {attempt_id} still owns a worker process"
+                    )
                 record_group_ended(
                     run_dir, run_id, attempt_id, reason, "controller_cleanup"
                 )
@@ -436,16 +450,9 @@ def _set_status(run_dir: Path, status: dict, value: str, reason: str) -> None:
 def _drive(run_dir: Path, status: dict, store: RunStore, config: ProjectConfig) -> bool:
     run_id = status["run_id"]
     attempts = store.attempts(run_id)
+    _assert_no_owned_workers(run_dir, run_id, attempts)
     if attempts:
         last = attempts[-1]
-        if _owned_process_alive(
-            last["pid"],
-            last["pid_identity"],
-            run_id,
-            last["attempt_id"],
-            run_dir,
-        ):
-            raise RunActiveError(f"attempt {last['attempt_id']} still owns a worker group")
         summary = (
             _valid_attempt_summary(run_dir, last["attempt_id"], config, run_id)
             if last["status"] in {"RUNNING", "SUCCEEDED"}
@@ -478,6 +485,7 @@ def _drive(run_dir: Path, status: dict, store: RunStore, config: ProjectConfig) 
             attempts = store.attempts(run_id)
 
     while True:
+        _assert_no_owned_workers(run_dir, run_id, attempts)
         number = len(attempts) + 1
         selected = None
         if attempts:
@@ -660,6 +668,7 @@ def resume(run_dir: Path) -> bool:
                 or identity["started_at"] != status["started_at"]
             ):
                 raise ValueError("run index identity differs from run metadata")
+            _assert_no_owned_workers(run_dir, status["run_id"], store.attempts(status["run_id"]))
             if status["status"] != "SUCCEEDED":
                 # A different controller cannot reconstruct the original wall-time window.
                 status.pop("execution_started_monotonic", None)

@@ -404,3 +404,72 @@ def test_resume_rejects_unrecorded_live_owner(
             )
 
     assert resume(run_dir)
+
+
+def test_detached_worker_from_older_attempt_blocks_resume_but_not_other_run(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = _config(tmp_path, checkpoint="none")
+    original_launch = controller._launch_attempt
+    worker_pid_path = tmp_path / "detached-worker.pid"
+    launcher_pid = None
+    run_dir = None
+
+    class SimulatedControllerExit(Exception):
+        pass
+
+    def exit_after_detached_worker(run_dir, config, run_id, attempt_id, selected, store):
+        nonlocal launcher_pid
+        script = (
+            "import subprocess,sys; from pathlib import Path; "
+            "worker=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)',"
+            "'trainguard.trainer','--run-dir',sys.argv[1],"
+            "'--run-id',sys.argv[2],'--attempt-id',sys.argv[3]],"
+            "start_new_session=True); "
+            "Path(sys.argv[4]).write_text(str(worker.pid))"
+        )
+        launcher = subprocess.Popen(
+            [
+                sys.executable, "-c", script, str(run_dir), run_id, attempt_id,
+                str(worker_pid_path),
+            ],
+            start_new_session=True,
+        )
+        launcher_pid = launcher.pid
+        assert launcher.wait(timeout=5) == 0
+        raise SimulatedControllerExit
+
+    monkeypatch.setattr(controller, "_launch_attempt", exit_after_detached_worker)
+    try:
+        with pytest.raises(SimulatedControllerExit):
+            run(source, tmp_path / "interrupted-runs")
+        monkeypatch.setattr(controller, "_launch_attempt", original_launch)
+        run_dir = next((tmp_path / "interrupted-runs").iterdir())
+        run_id = json.loads((run_dir / "run.json").read_text())["run_id"]
+        worker_pid = int(worker_pid_path.read_text())
+        assert launcher_pid is not None
+        assert os.getpgid(worker_pid) != launcher_pid
+        assert not controller._owned_group_members(run_dir, run_id, "attempt-001", launcher_pid)
+
+        # An older attempt must remain fenced even after a newer attempt was recorded.
+        store = RunStore(run_dir / "run.sqlite3")
+        try:
+            store.finish_attempt("attempt-001", "FAILED", 74, "controller exited")
+            store.start_attempt(run_id, "attempt-002", 2, None, 0)
+            store.finish_attempt("attempt-002", "FAILED", 74, "controller exited")
+        finally:
+            store.close()
+        with pytest.raises(RunActiveError, match="attempt attempt-001 still owns"):
+            resume(run_dir)
+        assert not (run_dir / "attempts/attempt-001/worker-group-ended.json").exists()
+
+        other_run, other_ok = run(source, tmp_path / "independent-runs")
+        assert other_ok, (other_run / "launcher.log").read_text()
+        assert worker_pid in controller._owned_group_members(run_dir, run_id, "attempt-001")
+        assert not controller._owned_group_members(other_run, other_run.name, "attempt-001")
+    finally:
+        monkeypatch.setattr(controller, "_launch_attempt", original_launch)
+        if worker_pid_path.exists() and run_dir is not None:
+            worker_pid = int(worker_pid_path.read_text())
+            if worker_pid in controller._owned_group_members(run_dir, run_dir.name, "attempt-001"):
+                os.kill(worker_pid, signal.SIGTERM)
