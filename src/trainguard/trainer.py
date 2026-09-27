@@ -20,7 +20,7 @@ from torch import nn
 from torch.distributed.checkpoint.api import CheckpointException
 from torch.nn.parallel import DistributedDataParallel
 
-from trainguard.checkpoint import validate_checkpoint
+from trainguard.checkpoint import restore_rng, validate_checkpoint
 from trainguard.checkpoint_io import finish_save, load_training_state, save_ready, start_save
 from trainguard.config import load_config
 from trainguard.data import BatchStream
@@ -194,6 +194,7 @@ def train(
         scaler = torch.amp.GradScaler("cuda") if config.training.precision == "fp16" else None
         state = TrainingState(scaler=scaler)
         loaded_external_state = None
+        deferred_rng = None
         event("group_initialized", global_step=0, device=str(device), strategy=config.run.strategy)
         if resume_checkpoint is not None:
             verify_resume_checkpoint("before load")
@@ -214,7 +215,7 @@ def train(
 
                 optimizer.step = reject_restore_step
             try:
-                _, data_start, loaded_external_state = load_training_state(
+                _, data_start, loaded_external_state, deferred_rng = load_training_state(
                     resume_checkpoint,
                     rank,
                     wrapped,
@@ -282,6 +283,10 @@ def train(
                     stream.load_state_dict(loaded_external_state["stream"])
                 if config.recovery.omit_state != "extra":
                     extra.load_state_dict(loaded_external_state["extra"])
+        if deferred_rng is not None:
+            # External constructors and load hooks may consume process RNGs.
+            # The checkpoint RNG must be the final state before the next batch.
+            restore_rng(deferred_rng)
         if resume_checkpoint is not None:
             record_restore_progress(
                 run_dir, run_id, attempt_id, rank, resume_checkpoint,

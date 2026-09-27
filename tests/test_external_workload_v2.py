@@ -66,6 +66,63 @@ def test_v2_rejects_undeclared_direct_import(tmp_path: Path) -> None:
         run(config, tmp_path / "runs")
 
 
+def test_v2_restores_rng_after_external_constructors_and_load_hooks(tmp_path: Path) -> None:
+    config, _, _ = _configured_workload(tmp_path)
+    raw = json.loads(config.read_text())
+    source = Path(raw["external_workload"]["path"])
+    content = source.read_text()
+    content = content.replace(
+        "WORKLOAD_API_VERSION = 2\n",
+        "WORKLOAD_API_VERSION = 2\n\n"
+        "def consume_process_rng():\n"
+        "    import random\n"
+        "    import numpy as np\n"
+        "    random.random()\n"
+        "    np.random.random()\n"
+        "    torch.rand(())\n",
+    )
+    for before, after in (
+        ("        self.config = config\n", "        consume_process_rng()\n        self.config = config\n"),
+        (
+            '        self.rng_state = value["rng_state"]\n',
+            '        consume_process_rng()\n        self.rng_state = value["rng_state"]\n',
+        ),
+        ("        self.calls = 0\n", "        consume_process_rng()\n        self.calls = 0\n"),
+        (
+            '        self.calls = value["calls"]\n',
+            '        consume_process_rng()\n        self.calls = value["calls"]\n',
+        ),
+    ):
+        assert before in content
+        content = content.replace(before, after, 1)
+    source.write_text(content)
+    raw["external_workload"]["sha256"] = hashlib.sha256(source.read_bytes()).hexdigest()
+    config.write_text(json.dumps(raw))
+
+    reference, passed = run(config, tmp_path / "runs")
+    assert passed, (reference / "launcher.log").read_text()
+    raw["checkpoint"] = {"mode": "sync", "interval_steps": 1}
+    raw["fault"] = {"kind": "worker_exit", "step": 3, "rank": 0}
+    config.write_text(json.dumps(raw))
+    recovered, passed = run(config, tmp_path / "runs", allow_experiment=True)
+    assert passed, (recovered / "launcher.log").read_text()
+    assert validate_runs(reference, recovered)["passed"]
+    events = [
+        json.loads(line)
+        for line in (recovered / "attempts/attempt-002/rank-0.jsonl").read_text().splitlines()
+    ]
+    types = [event["event_type"] for event in events]
+    assert types.index("state_loaded") < types.index("batch_consumed")
+
+    raw["recovery"] = {"omit_state": "rng"}
+    config.write_text(json.dumps(raw))
+    negative, passed = run(config, tmp_path / "runs", allow_experiment=True)
+    assert passed, (negative / "launcher.log").read_text()
+    comparison = validate_runs(reference, negative)
+    assert not comparison["passed"]
+    assert "final model_sha256 differs" in comparison["differences"]
+
+
 def test_v2_two_rank_exact_recovery_and_missing_state_controls(tmp_path: Path) -> None:
     config, helper, data = _configured_workload(tmp_path)
     reference, passed = run(config, tmp_path / "runs")

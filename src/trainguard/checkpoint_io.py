@@ -231,7 +231,7 @@ def load_training_state(
     training_state: TrainingState | None = None,
     *,
     external_v2: bool = False,
-) -> tuple[int, int, dict | None]:
+) -> tuple[int, int, dict | None, dict | None]:
     if external_v2:
         if type(optimizer) is not torch.optim.SGD or any(
             group["momentum"] <= 0 for group in optimizer.param_groups
@@ -265,9 +265,14 @@ def load_training_state(
         optimizer.load_state_dict(initial_optimizer)
     local = json.loads((path / f"rank-{rank}.json").read_text(encoding="utf-8"))
     scheduler.load_state_dict(local["scheduler"])
-    if omit_state != "rng":
+    if omit_state != "rng" and not external_v2:
         restore_rng(local)
     if training_state is not None:
         training_state.restore(local)
     cursor = local["next_data_step"] if omit_state != "cursor" else 0
-    return local["global_step"], cursor, local.get("external_state") if external_v2 else None
+    deferred_rng = {"rng": local["rng"]} if external_v2 and omit_state != "rng" else None
+    return (
+        local["global_step"], cursor,
+        local.get("external_state") if external_v2 else None,
+        deferred_rng,
+    )
