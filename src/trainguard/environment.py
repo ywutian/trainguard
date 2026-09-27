@@ -317,6 +317,10 @@ def startup_identity_sha256() -> str:
         "extra_import_paths": extra_import_paths,
         "startup_files": startup_files,
         "hooks": hooks,
+        "interpreter_flags": list(sys.flags),
+        "python_environment": sorted(
+            (key, value) for key, value in os.environ.items() if key.startswith("PYTHON")
+        ),
         "environment": {
             key: os.environ.get(key)
             for key in (

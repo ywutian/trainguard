@@ -3,6 +3,8 @@ import hashlib
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -187,6 +189,35 @@ def test_startup_identity_detects_custom_root_under_interpreter_prefix(
         first = environment.startup_identity_sha256()
         module.write_text("value = 'two'\n")
         assert environment.startup_identity_sha256() != first
+
+
+def test_startup_identity_binds_interpreter_controls(tmp_path: Path) -> None:
+    script = (
+        "import json, sys; "
+        "from trainguard.environment import startup_identity_sha256; "
+        "print(json.dumps({'optimize': sys.flags.optimize, "
+        "'debug': __debug__, 'identity': startup_identity_sha256()}))"
+    )
+
+    def snapshot(level: str, cache: Path) -> dict:
+        settings = os.environ.copy()
+        settings.update({
+            "PYTHONOPTIMIZE": level,
+            "PYTHONPYCACHEPREFIX": str(cache),
+            "PYTHONSAFEPATH": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        })
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            env=settings, capture_output=True, text=True, check=True,
+        )
+        return json.loads(result.stdout)
+
+    snapshots = [snapshot(str(level), tmp_path / "cache-a") for level in range(3)]
+    assert [item["optimize"] for item in snapshots] == [0, 1, 2]
+    assert [item["debug"] for item in snapshots] == [True, False, False]
+    assert len({item["identity"] for item in snapshots}) == 3
+    assert snapshot("0", tmp_path / "cache-b")["identity"] != snapshots[0]["identity"]
 
 
 def test_added_import_root_cannot_shadow_application(
