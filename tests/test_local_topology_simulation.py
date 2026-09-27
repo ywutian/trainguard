@@ -23,7 +23,8 @@ def _free_port() -> int:
 
 
 def _launch_agents(
-    root: Path, config: Path, run_id: str, attempt_id: str, checkpoint: Path | None
+    root: Path, config: Path, run_id: str, attempt_id: str, checkpoint: Path | None,
+    checkpoint_sha256: str | None = None,
 ) -> list[int]:
     (root / "attempts" / attempt_id).mkdir(parents=True)
     port = _free_port()
@@ -40,7 +41,11 @@ def _launch_agents(
                 "--run-dir", str(root), "--run-id", run_id, "--attempt-id", attempt_id,
             ]
             if checkpoint is not None:
-                command.extend(["--resume-checkpoint", str(checkpoint)])
+                assert checkpoint_sha256 is not None
+                command.extend([
+                    "--resume-checkpoint", str(checkpoint),
+                    "--expected-checkpoint-sha256", checkpoint_sha256,
+                ])
             stream = (root / f"{attempt_id}-node-{node_rank}.log").open("w")
             streams.append(stream)
             processes.append(
@@ -109,7 +114,10 @@ def test_two_local_launch_agents_recover_exactly_after_worker_exit(tmp_path: Pat
     assert any(code != 0 for code in first), first
     selected = latest_valid_checkpoint(run_dir, config, run_id)
     assert selected is not None and selected.global_step == 2
-    second = _launch_agents(run_dir, config_path, run_id, "attempt-002", selected.path)
+    second = _launch_agents(
+        run_dir, config_path, run_id, "attempt-002", selected.path,
+        selected.manifest_sha256,
+    )
     assert second == [0, 0], [
         (run_dir / f"attempt-002-node-{rank}.log").read_text() for rank in range(2)
     ]
