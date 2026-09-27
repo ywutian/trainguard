@@ -147,8 +147,10 @@ Run the complete local gate from the repository root:
 
 ```bash
 uv sync --locked --group dev
-uv run python scripts/run_simulation_closure.py --output-root runs/simulation-closure --previous-ref ad53d3e854419caf0bab6c3bff80ae2da6890ce9
+uv run python scripts/run_simulation_closure.py --output-root runs/simulation-closure
 ```
+
+The upgrade rehearsal reads the reviewed previous release commit from `docs/commercial/release-gates.json`; pass `--previous-ref` only when deliberately verifying that same pinned commit.
 
 The gate retains static checks, the full test suite, JUnit and raw test recovery directories, a fresh ten-case CPU acceptance campaign, a wheel and source distribution, and a wheel/source identity check in a uniquely named result directory. Its `result.json` and `report.md` record the outcome even if a gate fails. The CPU campaign requires the intended fault, exactly one recovery, the expected attempt statuses, and either exact agreement with the uninterrupted reference or the specified negative-control difference.
 
