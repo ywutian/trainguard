@@ -938,3 +938,93 @@ def test_self_consistent_bad_head_candidate_falls_back_to_older_dcp(
     assert attempts[1][1:] == ("FAILED", 2)
     assert attempts[2][1:] == ("SUCCEEDED", 1)
     assert validate_runs(reference, recovered)["passed"]
+
+
+AWS_LOCATION = "aws://trainguard-test/ci/ckpt?region=us-east-1&table=trainguard-heads"
+
+
+def _fake_aws(monkeypatch: pytest.MonkeyPatch):
+    from aws_fakes import FakeDynamoDB, FakeS3, FakeTransportError
+
+    from trainguard import aws_store
+
+    s3, dynamodb = FakeS3(page_size=3), FakeDynamoDB()
+
+    def connect(value: str, *, read_only: bool = False) -> aws_store.AwsObjectStore:
+        return aws_store.AwsObjectStore(
+            s3, dynamodb, aws_store.parse_location(value), read_only=read_only,
+            transport_errors=(FakeTransportError,),
+        )
+
+    monkeypatch.setattr(aws_store, "connect", connect)
+    return s3, dynamodb
+
+
+def test_aws_head_restores_real_two_rank_training_after_local_checkpoints_are_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    s3, dynamodb = _fake_aws(monkeypatch)
+    reference, ok = controller.run(_config(tmp_path, recover=False), tmp_path / "reference")
+    assert ok, (reference / "launcher.log").read_text()
+    with monkeypatch.context() as patch:
+        stopped = _stop_after_first_attempt(patch)
+        with pytest.raises(stopped):
+            controller.run(
+                _config(tmp_path, recover=True), tmp_path / "recovered",
+                allow_experiment=True, reference_store_path=AWS_LOCATION,
+            )
+    recovered = next((tmp_path / "recovered").iterdir())
+    run_id = json.loads((recovered / "run.json").read_text())["run_id"]
+    assert set(dynamodb.items) == {
+        f"ci/ckpt/runs/{run_id}/AUTHORITY", f"ci/ckpt/runs/{run_id}/HEAD",
+    }
+    assert s3.objects and all(key.startswith(f"ci/ckpt/runs/{run_id}/generations/")
+                              for key in s3.objects)
+    shutil.rmtree(recovered / "checkpoints")
+    assert controller.resume(recovered), (recovered / "launcher.log").read_text()
+    comparison = validate_runs(reference, recovered)
+    assert comparison["passed"], comparison
+    saved = json.loads((recovered / "run.json").read_text())
+    assert saved["config"]["checkpoint"]["reference_store_path"] == AWS_LOCATION
+    assert saved["local_reference_store"] == AWS_LOCATION
+    assert saved["post_run_audit"]["checkpoint_backend"] == "aws_reference_experiment"
+    with sqlite3.connect(recovered / "run.sqlite3") as connection:
+        selected = connection.execute(
+            "SELECT checkpoint_path, resume_step FROM recoveries WHERE to_attempt='attempt-002'"
+        ).fetchone()
+    assert selected is not None and "reference-cache" in selected[0] and selected[1] == 2
+    head = json.loads(dynamodb.items[f"ci/ckpt/runs/{run_id}/HEAD"]["data"]["B"])
+    final = head["commits"][0]["generation_id"]
+    s3.objects[f"ci/ckpt/runs/{run_id}/generations/{final}/payload/rank-0.json"] = b"damaged"
+    assert not controller.resume(recovered)
+    assert json.loads((recovered / "run.json").read_text())["status"] == "FAILED"
+
+
+def test_aws_denied_credentials_settle_as_failed_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from aws_fakes import FakeClientError
+
+    _, dynamodb = _fake_aws(monkeypatch)
+
+    def denied(**kwargs):
+        raise FakeClientError("AccessDeniedException", 400)
+
+    dynamodb.get_item = denied
+    run_dir, ok = controller.run(
+        _sync_without_fault(tmp_path), tmp_path / "runs",
+        allow_experiment=True, reference_store_path=AWS_LOCATION,
+    )
+    assert not ok
+    saved = json.loads((run_dir / "run.json").read_text())
+    assert saved["status"] == "FAILED"
+    assert "AccessDeniedException" in saved["reason"]
+
+
+def test_aws_reference_location_must_be_canonical(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="canonical"):
+        controller.run(
+            _sync_without_fault(tmp_path), tmp_path / "runs", allow_experiment=True,
+            reference_store_path=AWS_LOCATION.replace("region=us-east-1&table=trainguard-heads",
+                                                      "table=trainguard-heads&region=us-east-1"),
+        )

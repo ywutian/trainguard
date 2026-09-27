@@ -11,6 +11,8 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from trainguard.aws_store import is_aws_location, parse_location
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -158,7 +160,10 @@ class ProjectConfig(StrictModel):
     @model_validator(mode="after")
     def validate_fault(self) -> ProjectConfig:
         if self.checkpoint.reference_store_path is not None:
-            if not Path(self.checkpoint.reference_store_path).is_absolute():
+            location = self.checkpoint.reference_store_path
+            if is_aws_location(location):
+                parse_location(location)
+            elif not Path(location).is_absolute():
                 raise ValueError("local reference database path must be absolute")
             if (
                 self.run.profile != "experiment"

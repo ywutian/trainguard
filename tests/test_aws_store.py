@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 
 import pytest
-from aws_fakes import FakeDynamoDB, FakeS3, FakeTransportError
+from aws_fakes import FakeClientError, FakeDynamoDB, FakeS3, FakeTransportError
 
 from trainguard.aws_store import AwsObjectStore, parse_location
 from trainguard.remote_protocol import (
@@ -203,3 +203,20 @@ def test_concurrent_head_writers_have_exactly_one_winner() -> None:
         thread.join(timeout=10)
     assert sorted(outcomes) == ["committed"] + ["conflict"] * 7
     assert store.get("runs/run-one/HEAD").etag == "revision-2"
+
+
+def test_denied_or_unexpected_service_errors_fail_closed_as_protocol_errors() -> None:
+    store, s3, dynamodb = _store()
+
+    def denied(**kwargs):
+        raise FakeClientError("AccessDenied", 403)
+
+    s3.get_object = denied
+    s3.put_object = denied
+    dynamodb.get_item = denied
+    with pytest.raises(RemoteProtocolError, match="read failed: AccessDenied"):
+        store.get("runs/run-one/generations/g/payload/a")
+    with pytest.raises(RemoteProtocolError, match="write failed: AccessDenied"):
+        store.put("runs/run-one/generations/g/payload/a", b"a", if_none_match=True)
+    with pytest.raises(RemoteProtocolError, match="read failed: AccessDenied"):
+        store.get("runs/run-one/HEAD")

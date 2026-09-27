@@ -1,7 +1,8 @@
-"""Same-host SQLite checkpoint experiment using a published selection head.
+"""Checkpoint experiment that publishes local DCP commits through a selection head.
 
-This is a bounded CPU experiment. It does not model a remote service, cross-host
-isolation, or power-loss durability. Only the controller handles store tokens;
+The store is either the same-host SQLite reference or the S3/DynamoDB adapter.
+This is a bounded CPU experiment: neither backend here proves cross-host
+isolation or power-loss durability. Only the controller handles store tokens;
 training workers write the ordinary local DCP transaction.
 """
 
@@ -18,6 +19,8 @@ import stat
 import tempfile
 from pathlib import Path
 
+from trainguard import aws_store
+from trainguard.aws_store import is_aws_location, parse_location
 from trainguard.checkpoint import CheckpointInvalid, CheckpointRecord, validate_checkpoint
 from trainguard.config import ProjectConfig
 from trainguard.events import sync_directory
@@ -40,8 +43,30 @@ MAX_HEAD_BYTES = 64 * 1024
 _ATTEMPT = re.compile(r"attempt-[0-9]{3,}\Z")
 
 
-def check_reference_mode(config: ProjectConfig, run_dir: Path, database_path: Path) -> Path:
-    """Reject configurations outside the deliberately narrow local experiment."""
+def backend_label(location: str) -> str:
+    return (
+        "aws_reference_experiment" if is_aws_location(location)
+        else "same_host_reference_experiment"
+    )
+
+
+def canonical_reference(location: str | Path) -> str:
+    """Resolve a local path; keep an AWS location exactly as configured."""
+    if is_aws_location(location):
+        return str(location)
+    return str(Path(location).resolve())
+
+
+def open_reference_store(location: str | Path, *, read_only: bool = False):
+    if is_aws_location(location):
+        return aws_store.connect(location, read_only=read_only)
+    return LocalReferenceObjectStore(Path(location), read_only=read_only)
+
+
+def check_reference_mode(
+    config: ProjectConfig, run_dir: Path, database_path: str | Path,
+) -> str | Path:
+    """Reject configurations outside the deliberately narrow reference experiment."""
     if (
         config.run.profile != "experiment"
         or config.run.world_size != 2
@@ -55,6 +80,8 @@ def check_reference_mode(config: ProjectConfig, run_dir: Path, database_path: Pa
             "local reference checkpoints require experiment, two CPU/Gloo DDP ranks, "
             "synchronous saves and no local retention policy"
         )
+    if is_aws_location(database_path):
+        return parse_location(database_path).uri
     path = Path(database_path).absolute()
     if path.is_symlink() or path.resolve().is_relative_to(run_dir.resolve()):
         raise ValueError("reference database must be a regular path outside the run directory")
@@ -71,14 +98,14 @@ def check_reference_mode(config: ProjectConfig, run_dir: Path, database_path: Pa
     return path.resolve()
 
 
-def _check_head_size(store: LocalReferenceObjectStore, protocol: RemoteCheckpointProtocol) -> None:
+def _check_head_size(store, protocol: RemoteCheckpointProtocol) -> None:
     size = store.object_size(protocol.head_key)
     if size is not None and size > MAX_HEAD_BYTES:
         raise InvalidRemoteCheckpoint("reference HEAD exceeds experiment limit")
 
 
 def _read_bounded_payloads(
-    store: LocalReferenceObjectStore,
+    store,
     protocol: RemoteCheckpointProtocol,
     candidate: PublishedCheckpoint,
 ) -> dict[str, bytes]:
@@ -141,16 +168,13 @@ class LocalReferenceAuthority:
     claims; the run lock supplies local process isolation.
     """
 
-    def __init__(
-        self, store: LocalReferenceObjectStore, run_id: str, identity: str,
-        run_dir: Path,
-    ) -> None:
+    def __init__(self, store, run_id: str, identity: str, run_dir: Path) -> None:
         self.store = store
         self.run_id = run_id
         self.identity = identity
         self.key = f"runs/{run_id}/AUTHORITY"
         self.location = hashlib.sha256(
-            (str(run_dir.resolve()) + "\x00" + str(store.database_path)).encode()
+            (str(run_dir.resolve()) + "\x00" + store.location).encode()
         ).hexdigest()
 
     def _read(self) -> tuple[dict, str] | None:
@@ -242,14 +266,14 @@ class LocalReferenceSession:
     """Controller-only adapter between committed local DCP trees and HEAD."""
 
     def __init__(
-        self, run_dir: Path, database_path: Path, config: ProjectConfig, run_id: str,
+        self, run_dir: Path, location: str | Path, config: ProjectConfig, run_id: str,
         *, resume: bool,
     ) -> None:
         self.run_dir = run_dir
-        self.database_path = check_reference_mode(config, run_dir, database_path)
+        self.location = check_reference_mode(config, run_dir, location)
         self.config = config
         self.run_id = run_id
-        self.store = LocalReferenceObjectStore(self.database_path)
+        self.store = open_reference_store(self.location)
         self.authority = LocalReferenceAuthority(
             self.store, run_id, config.fingerprint(), run_dir
         )
@@ -386,8 +410,8 @@ def reference_final_errors(run_dir: Path, status: dict, config: ProjectConfig) -
         run_id = status["run_id"]
         if not isinstance(run_id, str):
             raise InvalidRemoteCheckpoint("run identity is invalid")
-        database_path = check_reference_mode(config, run_dir, Path(configured))
-        store = LocalReferenceObjectStore(database_path, read_only=True)
+        location = check_reference_mode(config, run_dir, configured)
+        store = open_reference_store(location, read_only=True)
         authority = LocalReferenceAuthority(store, run_id, config.fingerprint(), run_dir)
         protocol = RemoteCheckpointProtocol(
             store, authority, run_id, config.fingerprint(), history_limit=8
@@ -404,7 +428,7 @@ def reference_final_errors(run_dir: Path, status: dict, config: ProjectConfig) -
         if (
             not isinstance(audit, dict)
             or audit.get("status") != "PASSED"
-            or audit.get("checkpoint_backend") != "same_host_reference_experiment"
+            or audit.get("checkpoint_backend") != backend_label(configured)
             or not isinstance(final, dict)
             or set(final) != {
                 "attempt_id", "global_step", "manifest_sha256", "generation_id",

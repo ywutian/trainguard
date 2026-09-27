@@ -97,13 +97,14 @@ def _error(exc: BaseException) -> tuple[str | None, int | None]:
     return error.get("Code"), metadata.get("HTTPStatusCode")
 
 
-def _default_transport_errors() -> tuple[type[BaseException], ...]:
+def _default_errors() -> tuple[tuple[type[BaseException], ...], tuple[type[BaseException], ...]]:
+    """Return (transport errors with unknown outcome, other client-library errors)."""
     try:
+        from botocore.exceptions import BotoCoreError, HTTPClientError
         from botocore.exceptions import ConnectionError as BotoConnectionError
-        from botocore.exceptions import HTTPClientError
     except ImportError:
-        return (ConnectionError, TimeoutError)
-    return (BotoConnectionError, HTTPClientError, ConnectionError, TimeoutError)
+        return (ConnectionError, TimeoutError), ()
+    return (BotoConnectionError, HTTPClientError, ConnectionError, TimeoutError), (BotoCoreError,)
 
 
 class AwsObjectStore:
@@ -112,15 +113,36 @@ class AwsObjectStore:
     def __init__(
         self, s3, dynamodb, location: AwsLocation, *, read_only: bool = False,
         transport_errors: tuple[type[BaseException], ...] | None = None,
+        client_errors: tuple[type[BaseException], ...] | None = None,
     ) -> None:
         self.s3 = s3
         self.dynamodb = dynamodb
         self.aws = location
         self.location = location.uri
         self.read_only = read_only
+        default_transport, default_client = _default_errors()
         self._transport_errors = (
-            transport_errors if transport_errors is not None else _default_transport_errors()
+            transport_errors if transport_errors is not None else default_transport
         )
+        self._client_errors = client_errors if client_errors is not None else default_client
+
+    def _is_client_error(self, exc: BaseException) -> bool:
+        return (
+            _error(exc) != (None, None)
+            or isinstance(exc, self._transport_errors + self._client_errors)
+        )
+
+    def _read(self, operation, *, missing: set[str] = frozenset()):
+        """Return None for a missing object; fail closed on any other client error."""
+        try:
+            return operation()
+        except Exception as exc:
+            code, status = _error(exc)
+            if code in missing or (missing and status == 404):
+                return None
+            if self._is_client_error(exc):
+                raise RemoteProtocolError(f"AWS read failed: {code or type(exc).__name__}") from exc
+            raise
 
     def _full(self, key: str) -> str:
         if not isinstance(key, str) or not key or key.startswith("/") or "\x00" in key:
@@ -147,13 +169,15 @@ class AwsObjectStore:
                     or isinstance(exc, self._transport_errors)
                 ):
                     raise ResponseLost(f"write outcome is unknown: {code or type(exc).__name__}") from exc
+                if self._is_client_error(exc):
+                    raise RemoteProtocolError(f"AWS write failed: {code or type(exc).__name__}") from exc
                 raise
         raise AssertionError("unreachable")
 
     def _item(self, key: str) -> dict | None:
-        response = self.dynamodb.get_item(
+        response = self._read(lambda: self.dynamodb.get_item(
             TableName=self.aws.table, Key={"pk": {"S": self._full(key)}}, ConsistentRead=True,
-        )
+        ))
         return response.get("Item")
 
     def get(self, key: str) -> StoredObject | None:
@@ -162,27 +186,23 @@ class AwsObjectStore:
             if item is None:
                 return None
             return StoredObject(bytes(item["data"]["B"]), f"revision-{int(item['revision']['N'])}")
-        try:
-            response = self.s3.get_object(Bucket=self.aws.bucket, Key=self._full(key))
-        except Exception as exc:
-            code, status = _error(exc)
-            if code in {"NoSuchKey", "404"} or status == 404:
-                return None
-            raise
-        return StoredObject(response["Body"].read(), response["ETag"])
+        response = self._read(
+            lambda: self.s3.get_object(Bucket=self.aws.bucket, Key=self._full(key)),
+            missing={"NoSuchKey", "404"},
+        )
+        if response is None:
+            return None
+        return StoredObject(self._read(response["Body"].read), response["ETag"])
 
     def object_size(self, key: str) -> int | None:
         if _MUTABLE_KEY.fullmatch(key):
             item = self._item(key)
             return None if item is None else len(item["data"]["B"])
-        try:
-            response = self.s3.head_object(Bucket=self.aws.bucket, Key=self._full(key))
-        except Exception as exc:
-            code, status = _error(exc)
-            if code in {"NoSuchKey", "NotFound", "404"} or status == 404:
-                return None
-            raise
-        return int(response["ContentLength"])
+        response = self._read(
+            lambda: self.s3.head_object(Bucket=self.aws.bucket, Key=self._full(key)),
+            missing={"NoSuchKey", "NotFound", "404"},
+        )
+        return None if response is None else int(response["ContentLength"])
 
     def list(self, prefix: str) -> tuple[str, ...]:
         # ponytail: only generation prefixes are listable; mutable records are not in S3.
@@ -192,7 +212,7 @@ class AwsObjectStore:
         keys: list[str] = []
         request = {"Bucket": self.aws.bucket, "Prefix": full_prefix}
         while True:
-            response = self.s3.list_objects_v2(**request)
+            response = self._read(lambda: self.s3.list_objects_v2(**request))
             keys.extend(item["Key"] for item in response.get("Contents", ()))
             if not response.get("IsTruncated"):
                 break
@@ -249,7 +269,7 @@ class AwsObjectStore:
             raise ValueError("conditional S3 deletes are not supported")
         # ponytail: existence check races a concurrent delete; nothing relies on the result.
         existed = self.object_size(key) is not None
-        self.s3.delete_object(Bucket=self.aws.bucket, Key=self._full(key))
+        self._write(lambda: self.s3.delete_object(Bucket=self.aws.bucket, Key=self._full(key)))
         return existed
 
 

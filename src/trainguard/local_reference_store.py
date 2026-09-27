@@ -24,6 +24,7 @@ class LocalReferenceObjectStore:
         if supplied.is_symlink():
             raise ValueError("local reference database path contains a symbolic link")
         self.database_path = supplied.resolve()
+        self.location = str(self.database_path)
         self.read_only = read_only
         if not read_only:
             self.database_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

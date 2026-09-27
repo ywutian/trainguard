@@ -60,7 +60,7 @@ def run(
     config: Annotated[Path, typer.Option("--config", exists=True, file_okay=True, dir_okay=False)],
     output_root: Annotated[Path, typer.Option("--output-root")] = DEFAULT_OUTPUT_ROOT,
     allow_experiment: Annotated[bool, typer.Option("--allow-experiment")] = False,
-    reference_store: Annotated[Path | None, typer.Option("--reference-store")] = None,
+    reference_store: Annotated[str | None, typer.Option("--reference-store")] = None,
 ) -> None:
     """Run a fixed-size training workload with bounded recovery."""
     try:

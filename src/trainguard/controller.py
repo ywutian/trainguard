@@ -32,7 +32,12 @@ from trainguard.events import append_event, utc_now, write_json_atomic
 from trainguard.lifecycle import prune_checkpoints
 from trainguard.privacy import key_for_run, load_sample_key, sample_key_id
 from trainguard.records import parse_event
-from trainguard.reference_backend import LocalReferenceSession, check_reference_mode
+from trainguard.reference_backend import (
+    LocalReferenceSession,
+    backend_label,
+    canonical_reference,
+    check_reference_mode,
+)
 from trainguard.remote_protocol import InvalidRemoteCheckpoint
 from trainguard.restore_failures import (
     failed_restore_candidates,
@@ -645,7 +650,9 @@ def _finalize_completed_attempt(
                     generation_id=head_candidates[0].generation_id,
                     protocol_manifest_sha256=head_candidates[0].manifest_sha256,
                 )
-                audit["checkpoint_backend"] = "same_host_reference_experiment"
+                audit["checkpoint_backend"] = backend_label(
+                    config.checkpoint.reference_store_path
+                )
             retention = prune_checkpoints(run_dir, config, run_id)
             audit["retention_enabled"] = retention.get("enabled")
             audit["budget_satisfied"] = retention.get("budget_satisfied")
@@ -936,7 +943,7 @@ def _drive_with_failure_closure(
 
 def run(
     config_path: Path, output_root: Path, *, allow_experiment: bool = False,
-    reference_store_path: Path | None = None,
+    reference_store_path: str | Path | None = None,
 ) -> tuple[Path, bool]:
     execution_started = time.monotonic()
     execution_load_before = list(os.getloadavg())
@@ -950,16 +957,16 @@ def run(
     require_output_outside_import_roots(run_dir)
     configured_reference = config.checkpoint.reference_store_path
     if reference_store_path is not None:
-        resolved_reference = str(Path(reference_store_path).resolve())
-        if configured_reference is not None and str(Path(configured_reference).resolve()) != resolved_reference:
+        resolved_reference = canonical_reference(reference_store_path)
+        if configured_reference is not None and canonical_reference(configured_reference) != resolved_reference:
             raise ValueError("reference database path differs from configuration")
         settings = config.model_dump()
         settings["checkpoint"]["reference_store_path"] = resolved_reference
         config = ProjectConfig.model_validate(settings)
     elif configured_reference is not None:
         settings = config.model_dump()
-        settings["checkpoint"]["reference_store_path"] = str(
-            Path(configured_reference).resolve()
+        settings["checkpoint"]["reference_store_path"] = canonical_reference(
+            configured_reference
         )
         config = ProjectConfig.model_validate(settings)
     if config.checkpoint.reference_store_path is not None and not allow_experiment:
@@ -967,7 +974,7 @@ def run(
             "local reference checkpoint experiment requires explicit authorization"
         )
     reference_path = (
-        check_reference_mode(config, run_dir, Path(config.checkpoint.reference_store_path))
+        check_reference_mode(config, run_dir, config.checkpoint.reference_store_path)
         if config.checkpoint.reference_store_path is not None else None
     )
     sample_key = load_sample_key(run_dir) if config.run.profile == "guarded" else None
