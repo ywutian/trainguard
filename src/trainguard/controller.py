@@ -969,7 +969,6 @@ def run(
         status["local_reference_store"] = str(reference_path)
     if sample_key is not None:
         status["sample_key_id"] = sample_key_id(sample_key)
-    write_json_atomic(run_dir / "run.json", status)
     try:
         store = RunStore(run_dir / "run.sqlite3")
     except (OSError, ValueError, sqlite3.Error) as exc:
@@ -979,9 +978,10 @@ def run(
         )
         return run_dir, False
     try:
-        (run_dir / "run.sqlite3").chmod(0o600)
         with _controller_lock(run_dir):
             try:
+                (run_dir / "run.sqlite3").chmod(0o600)
+                write_json_atomic(run_dir / "run.json", status)
                 store.create_run(
                     run_id, config.fingerprint(), started_at, evidence_schema_version=3,
                     environment_sha256=runtime_identity_sha256(status["environment"]),

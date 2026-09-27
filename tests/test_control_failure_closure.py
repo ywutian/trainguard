@@ -45,6 +45,46 @@ def _no_owned_workers(run_dir: Path) -> bool:
     )
 
 
+def test_index_mode_failure_after_lock_converges_before_worker_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = Path.chmod
+
+    def deny_index_mode(path, mode, *args, **kwargs):
+        if path.name == "run.sqlite3":
+            raise PermissionError("injected index mode failure")
+        return original(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "chmod", deny_index_mode)
+    run_dir, succeeded = controller.run(CPU_DEMO, tmp_path / "runs")
+    assert not succeeded
+    status = _status(run_dir)
+    assert status["status"] == "FAILED"
+    assert status["run_index_terminal_unverified"] is True
+    assert "injected index mode failure" in status["reason"]
+    assert _index(run_dir) == ([], [])
+    assert _no_owned_workers(run_dir)
+    assert not controller.resume(run_dir)
+
+
+@pytest.mark.parametrize(
+    "error", [PermissionError("injected lock denial"), RunActiveError("lock held")]
+)
+def test_lock_acquisition_failure_cannot_publish_running_or_terminal_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception,
+) -> None:
+    def deny_lock(_run_dir):
+        raise error
+
+    monkeypatch.setattr(controller, "_controller_lock", deny_lock)
+    with pytest.raises(type(error), match=str(error)):
+        controller.run(CPU_DEMO, tmp_path / "runs")
+    run_dir = next((tmp_path / "runs").iterdir())
+    assert not (run_dir / "run.json").exists()
+    assert _index(run_dir) == ([], [])
+    assert not (run_dir / "attempts").exists()
+
+
 @pytest.mark.parametrize("after_commit", [False, True])
 def test_run_index_creation_failure_records_actual_row_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, after_commit: bool
