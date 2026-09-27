@@ -30,6 +30,7 @@ jobs:
           import os
           import stat
           import sys
+          import sysconfig
           from pathlib import Path
 
           roots = {
@@ -59,6 +60,16 @@ jobs:
                   expected_system_target = Path(
                       f"/etc/python{sys.version_info.major}.{sys.version_info.minor}/sitecustomize.py"
                   )
+                  expected_system_link = Path(
+                      f"/usr/lib/python{sys.version_info.major}.{sys.version_info.minor}/sitecustomize.py"
+                  )
+                  hook = sys.modules.get("sitecustomize")
+                  hook_file = getattr(hook, "__file__", None)
+                  hook_kind = (
+                      "unloaded" if hook_file is None else
+                      "link" if hook_file == str(candidate) else
+                      "target" if hook_file == str(target) else "other"
+                  )
                   link_info = candidate.lstat()
                   link_parent_info = candidate.parent.stat()
                   target_parent_info = target.parent.stat()
@@ -76,6 +87,11 @@ jobs:
                   print({
                       "location": label(candidate),
                       "basename": candidate.name,
+                      "link_is_expected_system_path": candidate == expected_system_link,
+                      "raw_link_text": os.readlink(candidate),
+                      "sysconfig_stdlib": sysconfig.get_paths()["stdlib"],
+                      "stdlib_is_link_parent": Path(sysconfig.get_paths()["stdlib"]) == candidate.parent,
+                      "sitecustomize_loaded_as": hook_kind,
                       "target_is_etc_python_sitecustomize": target == expected_system_target,
                       "target_in_venv": within_venv,
                       "target_in_interpreter": within_interpreter,
