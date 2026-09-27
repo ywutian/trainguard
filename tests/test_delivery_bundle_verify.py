@@ -226,10 +226,14 @@ def test_customer_handoff_document_links_resolve_inside_bundle(tmp_path: Path) -
     with pytest.raises(module.DeliveryInvalid, match="link target is unavailable"):
         module._verify_document_links(root)
     document.write_bytes(original)
-    (root / "README.md").unlink()
-    with pytest.raises(module.DeliveryInvalid, match="link target is unavailable"):
+    readme = root / "README.md"
+    readme.write_text("[roadmap](docs/roadmap.md)\n", encoding="utf-8")
+    with pytest.raises(module.DeliveryInvalid, match="link target is unavailable: README.md"):
         module._verify_document_links(root)
-    (root / "README.md").write_bytes((Path(__file__).parents[1] / "README.md").read_bytes())
+    readme.unlink()
+    with pytest.raises(module.DeliveryInvalid, match="unreadable: README.md"):
+        module._verify_document_links(root)
+    readme.write_bytes((Path(__file__).parents[1] / "README.md").read_bytes())
     (root / "SECURITY.md").unlink()
     with pytest.raises(module.DeliveryInvalid, match="link target is unavailable"):
         module._verify_document_links(root)

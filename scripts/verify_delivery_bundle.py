@@ -49,6 +49,7 @@ SOURCE_MEMBERS = {
     "scripts/supply-chain-tools.txt": "scripts/supply-chain-tools.txt",
 }
 DELIVERY_LINK_DOCUMENTS = {
+    "README.md",
     "docs/commercial/operations-runbook.md",
     "docs/commercial/customer-pilot-template.md",
     "docs/commercial/market-evidence-2026-09-26.md",
@@ -118,7 +119,7 @@ def _mapping(path: Path) -> dict:
 def _verify_document_links(root: Path) -> None:
     """Check local links in the customer-facing handoff documents."""
     bundle_root = root.resolve()
-    for name in DELIVERY_LINK_DOCUMENTS:
+    for name in sorted(DELIVERY_LINK_DOCUMENTS):
         document = root / name
         try:
             content = document.read_text(encoding="utf-8")
