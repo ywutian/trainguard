@@ -469,10 +469,18 @@ def _launch_attempt(
                 reason = f"launcher exit code {exit_code}; completion evidence missing or invalid"
         except KeyboardInterrupt:
             reason = "interrupted by user"
-            milestone("fault_observed", reason=reason)
+            try:
+                milestone("fault_observed", reason=reason)
+            except OSError:
+                # An exhausted diagnostic log must not bypass worker cleanup.
+                pass
         except Exception as exc:  # noqa: BLE001 - cleanup covers every controller failure
             reason = f"controller {type(exc).__name__}: {exc}"
-            milestone("fault_observed", reason=reason)
+            try:
+                milestone("fault_observed", reason=reason)
+            except OSError:
+                # Preserve the original failure when diagnostic logging is exhausted.
+                pass
             write_json_atomic(
                 run_dir / "attempts" / attempt_id / "controller-error.json",
                 {"reason": reason, "time": utc_now()},
@@ -487,9 +495,9 @@ def _launch_attempt(
                 record_group_ended(
                     run_dir, run_id, attempt_id, reason, "controller_cleanup"
                 )
-                milestone("group_stopped")
             except BaseException as cleanup:
                 raise RunActiveError(f"{reason}; worker cleanup failed: {cleanup}") from cleanup
+            milestone("group_stopped")
     return AttemptResult(False, reason, process.poll(), max(steps.values(), default=0))
 
 
@@ -809,6 +817,27 @@ def _drive(
         attempts = store.attempts(run_id)
 
 
+def _drive_with_event_budget_closure(
+    run_dir: Path, status: dict, store: RunStore, config: ProjectConfig,
+    reference: LocalReferenceSession | None = None,
+) -> bool:
+    """Persist a terminal verdict when a full event log stops a settled run."""
+    try:
+        return _drive(run_dir, status, store, config, reference)
+    except (OSError, RunActiveError) as exc:
+        if "event log byte budget is exhausted" not in str(exc):
+            raise
+        run_id = status["run_id"]
+        attempts = store.attempts(run_id)
+        _assert_no_owned_workers(run_dir, run_id, attempts)
+        reason = "controller event log byte budget is exhausted"
+        if attempts and attempts[-1]["status"] == "RUNNING":
+            store.finish_attempt(attempts[-1]["attempt_id"], "FAILED", None, reason)
+        store.set_run_status(run_id, "FAILED")
+        _set_status(run_dir, status, "FAILED", reason)
+        return False
+
+
 def run(
     config_path: Path, output_root: Path, *, allow_experiment: bool = False,
     reference_store_path: Path | None = None,
@@ -905,9 +934,13 @@ def run(
                 succeeded = False
             else:
                 if reference is None:
-                    succeeded = _drive(run_dir, status, store, config)
+                    succeeded = _drive_with_event_budget_closure(
+                        run_dir, status, store, config
+                    )
                 else:
-                    succeeded = _drive(run_dir, status, store, config, reference)
+                    succeeded = _drive_with_event_budget_closure(
+                        run_dir, status, store, config, reference
+                    )
     finally:
         store.close()
     return run_dir, succeeded
@@ -1073,7 +1106,9 @@ def resume(run_dir: Path) -> bool:
                 status.pop("execution_load_before", None)
                 status.pop("measurement", None)
             if reference is None:
-                return _drive(run_dir, status, store, config)
-            return _drive(run_dir, status, store, config, reference)
+                return _drive_with_event_budget_closure(run_dir, status, store, config)
+            return _drive_with_event_budget_closure(
+                run_dir, status, store, config, reference
+            )
     finally:
         store.close()

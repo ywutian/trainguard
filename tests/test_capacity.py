@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -11,7 +15,9 @@ import pytest
 from trainguard import controller
 from trainguard.checkpoint import candidate_path, validate_checkpoint
 from trainguard.config import load_config
+from trainguard.controller import RunActiveError
 from trainguard.events import append_event
+from trainguard.run_store import RunStore
 
 
 def _guarded_config(
@@ -43,6 +49,184 @@ def test_event_log_refuses_bytes_above_its_bound(tmp_path: Path) -> None:
     with pytest.raises(OSError, match="event log byte budget"):
         append_event(path, max_bytes=len(original), run_id="run", event_type="second")
     assert path.read_bytes() == original
+
+
+def _indexed_statuses(run_dir: Path) -> tuple[str, list[tuple[str, str]]]:
+    with sqlite3.connect(run_dir / "run.sqlite3") as database:
+        run_status = database.execute("SELECT status FROM runs").fetchone()[0]
+        attempts = database.execute(
+            "SELECT attempt_id, status FROM attempts ORDER BY number"
+        ).fetchall()
+    return run_status, attempts
+
+
+def _assert_no_workers(run_dir: Path) -> None:
+    status = json.loads((run_dir / "run.json").read_text())
+    store = RunStore(run_dir / "run.sqlite3", existing_only=True)
+    try:
+        controller._assert_no_owned_workers(
+            run_dir, status["run_id"], store.attempts(status["run_id"])
+        )
+    finally:
+        store.close()
+
+
+def test_guarded_launch_log_exhaustion_closes_unlaunched_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _guarded_config(tmp_path, monkeypatch, max_event_log_bytes=1)
+    run_dir, succeeded = controller.run(source, tmp_path / "runs")
+    assert not succeeded
+    status = json.loads((run_dir / "run.json").read_text())
+    assert status["status"] == "FAILED"
+    assert "event log byte budget is exhausted" in status["reason"]
+    assert _indexed_statuses(run_dir) == ("FAILED", [("attempt-001", "FAILED")])
+    assert not (run_dir / "launcher.log").exists()
+
+
+def test_guarded_cleanup_log_exhaustion_does_not_claim_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _guarded_config(tmp_path, monkeypatch)
+    original = controller.append_event
+    saw_group_stopped = False
+
+    def exhaust_on_group_stopped(path, *, max_bytes=None, **fields):
+        nonlocal saw_group_stopped
+        if fields.get("event_type") == "group_stopped":
+            saw_group_stopped = True
+            max_bytes = path.stat().st_size
+        return original(path, max_bytes=max_bytes, **fields)
+
+    monkeypatch.setattr(controller, "append_event", exhaust_on_group_stopped)
+    run_dir, succeeded = controller.run(source, tmp_path / "runs")
+    assert saw_group_stopped
+    assert not succeeded
+    status = json.loads((run_dir / "run.json").read_text())
+    assert status["status"] == "FAILED"
+    assert "event log byte budget is exhausted" in status["reason"]
+    assert _indexed_statuses(run_dir) == ("FAILED", [("attempt-001", "FAILED")])
+    _assert_no_workers(run_dir)
+
+
+def test_guarded_running_log_exhaustion_stops_workers_and_records_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _guarded_config(tmp_path, monkeypatch)
+    original_read = controller._read_events
+    injected = False
+
+    def exhaust_during_poll(run_dir, attempt_id, run_id, world_size, offsets, steps, completed):
+        nonlocal injected
+        if not injected:
+            injected = True
+            path = run_dir / "controller.jsonl"
+            controller.append_event(
+                path, max_bytes=path.stat().st_size, run_id=run_id,
+                attempt_id=attempt_id, event_type="progress_observed",
+            )
+        return original_read(
+            run_dir, attempt_id, run_id, world_size, offsets, steps, completed
+        )
+
+    monkeypatch.setattr(controller, "_read_events", exhaust_during_poll)
+    run_dir, succeeded = controller.run(source, tmp_path / "runs")
+    assert injected
+    assert not succeeded
+    status = json.loads((run_dir / "run.json").read_text())
+    assert status["status"] == "FAILED"
+    assert "event log byte budget is exhausted" in status["reason"]
+    assert _indexed_statuses(run_dir) == ("FAILED", [("attempt-001", "FAILED")])
+    assert (run_dir / "attempts/attempt-001/worker-group-ended.json").is_file()
+    _assert_no_workers(run_dir)
+
+
+def test_resume_checkpoint_selection_log_exhaustion_closes_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _guarded_config(tmp_path, monkeypatch)
+    raw = json.loads(source.read_text())
+    raw["training"]["total_steps"] = 5
+    raw["recovery"]["max_restarts"] = 1
+    source.write_text(json.dumps(raw))
+    original_read = controller._read_events
+    interrupted = False
+
+    def interrupt_after_checkpoint(run_dir, attempt_id, run_id, world_size, offsets, steps, completed):
+        nonlocal interrupted
+        if not interrupted and list((run_dir / "checkpoints").glob("*/COMMITTED")):
+            interrupted = True
+            raise KeyboardInterrupt
+        return original_read(
+            run_dir, attempt_id, run_id, world_size, offsets, steps, completed
+        )
+
+    with monkeypatch.context() as patch:
+        patch.setattr(controller, "_read_events", interrupt_after_checkpoint)
+        run_dir, succeeded = controller.run(source, tmp_path / "runs")
+    assert interrupted
+    assert not succeeded
+    assert json.loads((run_dir / "run.json").read_text())["status"] == "INTERRUPTED"
+    assert list((run_dir / "checkpoints").glob("*/COMMITTED"))
+    original_limit = controller.event_log_limit
+
+    def exhausted_limit(config):
+        assert original_limit(config) is not None
+        return (run_dir / "controller.jsonl").stat().st_size
+
+    monkeypatch.setattr(controller, "event_log_limit", exhausted_limit)
+    assert not controller.resume(run_dir)
+    status = json.loads((run_dir / "run.json").read_text())
+    assert status["status"] == "FAILED"
+    assert "event log byte budget is exhausted" in status["reason"]
+    assert _indexed_statuses(run_dir) == ("FAILED", [("attempt-001", "FAILED")])
+    _assert_no_workers(run_dir)
+
+
+def test_event_budget_does_not_close_run_with_live_owned_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _guarded_config(tmp_path, monkeypatch, max_event_log_bytes=1)
+    original = controller.append_event
+    live_worker = None
+
+    def leave_owned_worker(path, *, max_bytes=None, **fields):
+        nonlocal live_worker
+        if fields.get("event_type") == "launch_requested" and live_worker is None:
+            run_dir = path.parent
+            live_worker = subprocess.Popen(
+                [
+                    sys.executable, "-c", "import time; time.sleep(30)",
+                    "trainguard.trainer", "--run-dir", str(run_dir),
+                    "--run-id", fields["run_id"], "--attempt-id", fields["attempt_id"],
+                ],
+                start_new_session=True,
+            )
+            for _ in range(20):
+                if controller._owned_group_members(
+                    run_dir, fields["run_id"], fields["attempt_id"]
+                ):
+                    break
+                time.sleep(0.01)
+            else:
+                raise AssertionError("owned test worker did not appear")
+        return original(path, max_bytes=max_bytes, **fields)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(controller, "append_event", leave_owned_worker)
+        try:
+            with pytest.raises(RunActiveError, match="still owns a worker"):
+                controller.run(source, tmp_path / "runs")
+            run_dir = next((tmp_path / "runs").iterdir())
+            assert json.loads((run_dir / "run.json").read_text())["status"] == "RUNNING"
+            assert _indexed_statuses(run_dir) == ("RUNNING", [("attempt-001", "RUNNING")])
+        finally:
+            if live_worker is not None:
+                live_worker.terminate()
+                live_worker.wait(timeout=5)
+    assert not controller.resume(run_dir)
+    assert json.loads((run_dir / "run.json").read_text())["status"] == "FAILED"
+    assert _indexed_statuses(run_dir) == ("FAILED", [("attempt-001", "FAILED")])
 
 
 def test_guarded_run_keeps_two_valid_backups_within_declared_budget(
