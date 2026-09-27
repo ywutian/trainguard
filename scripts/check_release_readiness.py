@@ -26,7 +26,8 @@ from trainguard.evidence_lineage import require_evidence_only_descendant
 from trainguard.execution_inputs import execution_inputs_sha256
 
 REQUIRED_GATES = {
-    "local_package", "local_cpu", "customer_workload", "persistent_checkpoint",
+    "local_package", "local_cpu", "representative_workload", "customer_workload",
+    "persistent_checkpoint",
     "cross_host_fencing", "real_gpu_matrix", "security_operations",
     "commercial_contract", "paid_pilot", "supported_matrix", "sustained_operations",
 }

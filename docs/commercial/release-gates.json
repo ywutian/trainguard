@@ -15,8 +15,13 @@
       "status": "PASS"
     },
     {
+      "id": "representative_workload",
+      "reason": "尚未选定代表性真实任务（公开模型与不可变语料），也无该作业的恢复矩阵及目标 GPU 吞吐与内存实测",
+      "status": "BLOCKED"
+    },
+    {
       "id": "customer_workload",
-      "reason": "已有包外 CPU 示例，尚无真实客户作业、状态清单及完整适配验收",
+      "reason": "尚无真实客户作业、客户状态清单及客户环境内的完整适配验收",
       "status": "BLOCKED"
     },
     {
