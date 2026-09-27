@@ -1,22 +1,16 @@
 {
   "candidate_source_sha256": "48e7bb77ba360fb7885c8ea2c5e25553efce38c3e79cc9d38db4c5770ea4a1ca",
-  "previous_release": {
-    "git_commit": "ad53d3e854419caf0bab6c3bff80ae2da6890ce9",
-    "version": "0.3.4",
-    "wheel_sha256": "334ffd59b2c6ed4e26622ce4213fd6d29523f6cc121aa01969d5c2cbb6d95b78",
-    "lock_sha256": "468ee5cf556f9a9c00702ed2b59a5f4a877449eeccb1f62f2d886803acff283e"
-  },
   "gates": [
     {
-      "evidence": "docs/commercial/evidence/local_package-0.3.5.json",
+      "evidence": "docs/commercial/evidence/local_package-0.3.5-r2.json",
       "id": "local_package",
-      "sha256": "7f28417ef6e1e7b5556b51e893338530013d64cead1706741fade107e829ca0e",
+      "sha256": "fd84c76797c5a31627466df963b6bd78d76fd4af948c3e366a2d044e0a44f4dc",
       "status": "PASS"
     },
     {
-      "evidence": "docs/commercial/evidence/local_cpu-0.3.5.json",
+      "evidence": "docs/commercial/evidence/local_cpu-0.3.5-r2.json",
       "id": "local_cpu",
-      "sha256": "3cb8e68c533e561c79d53a9de7a8b6e6be99d612cc2b2ee6bc0c74adc61bf134",
+      "sha256": "fc0fa8a77e423dc401d18f9270042d3b4bd66a3011bbb0e2a863e797ca4f641f",
       "status": "PASS"
     },
     {
@@ -65,5 +59,11 @@
       "status": "BLOCKED"
     }
   ],
+  "previous_release": {
+    "git_commit": "ad53d3e854419caf0bab6c3bff80ae2da6890ce9",
+    "lock_sha256": "468ee5cf556f9a9c00702ed2b59a5f4a877449eeccb1f62f2d886803acff283e",
+    "version": "0.3.4",
+    "wheel_sha256": "334ffd59b2c6ed4e26622ce4213fd6d29523f6cc121aa01969d5c2cbb6d95b78"
+  },
   "schema_version": 1
 }
