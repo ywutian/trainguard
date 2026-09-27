@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import csv
 import hashlib
 import importlib.metadata
 import json
@@ -9,11 +11,52 @@ import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import sys
+from io import StringIO
 from pathlib import Path
 
 import torch
+
+
+def _verify_record_files(distribution: importlib.metadata.Distribution, record: str,
+                         name: str) -> None:
+    """Check installed bytes against the wheel's saved file hashes at a run boundary."""
+    prefix = Path(sys.prefix).resolve()
+    seen = set()
+    rows = list(csv.reader(StringIO(record)))
+    if not rows:
+        raise ValueError(f"installed package file record is empty: {name}")
+    for row in rows:
+        if len(row) != 3 or not row[0] or row[0] in seen:
+            raise ValueError(f"installed package file record is invalid: {name}")
+        seen.add(row[0])
+        filename, digest_field, size_field = row
+        if not digest_field and not size_field and filename.endswith(".dist-info/RECORD"):
+            continue
+        algorithm, separator, expected = digest_field.partition("=")
+        if separator != "=" or algorithm not in {"sha256", "sha384", "sha512"} or not expected:
+            raise ValueError(f"installed package file hash is missing or invalid: {name}")
+        try:
+            size = int(size_field)
+            path = Path(distribution.locate_file(filename))
+            resolved = path.resolve(strict=True)
+            metadata = path.lstat()
+            if (
+                size < 0 or not resolved.is_relative_to(prefix)
+                or not stat.S_ISREG(metadata.st_mode) or metadata.st_size != size
+            ):
+                raise ValueError(f"installed package file differs from record: {name}")
+            digest = hashlib.new(algorithm)
+            with path.open("rb") as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(block)
+            actual = base64.urlsafe_b64encode(digest.digest()).rstrip(b"=").decode("ascii")
+            if actual != expected:
+                raise ValueError(f"installed package file differs from record: {name}")
+        except (OSError, TypeError) as exc:
+            raise ValueError(f"installed package file cannot be verified: {name}") from exc
 
 
 def installed_distributions() -> list[dict[str, str | None]]:
@@ -43,6 +86,7 @@ def installed_distributions() -> list[dict[str, str | None]]:
                 raise ValueError(f"installed package origin is invalid: {name}")
             if directory_info.get("editable") and name != "trainguard":
                 raise ValueError(f"editable dependency has no frozen source identity: {name}")
+        _verify_record_files(distribution, record, name)
         packages.append(
             {
                 "name": name,

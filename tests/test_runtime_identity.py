@@ -1,3 +1,5 @@
+import base64
+import hashlib
 import json
 import os
 import sqlite3
@@ -41,8 +43,11 @@ class ChangedDistribution:
     def read_text(self, filename: str):
         value = self.original.read_text(filename)
         if filename == "RECORD" and self.change == "record":
-            return value + "different-installed-wheel,,\n"
+            return value.replace("\n", "\r\n")
         return value
+
+    def locate_file(self, filename: str):
+        return self.original.locate_file(filename)
 
 
 def test_installed_inventory_is_complete_and_does_not_expose_origin() -> None:
@@ -72,12 +77,33 @@ def test_direct_url_credentials_are_only_recorded_as_digest(monkeypatch) -> None
     monkeypatch.setattr(
         environment.importlib.metadata, "distributions", lambda: [PrivateDistribution()]
     )
+    monkeypatch.setattr(environment, "_verify_record_files", lambda *_: None)
     inventory = environment.installed_distributions()
     serialized = json.dumps(inventory)
     assert inventory[0]["direct_url_sha256"] is not None
     assert "secret-user" not in serialized
     assert "secret-token" not in serialized
     assert "private.example" not in serialized
+
+
+def test_installed_file_bytes_must_match_record_at_runtime_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class LocalDistribution:
+        def locate_file(self, filename: str):
+            return tmp_path / filename
+
+    monkeypatch.setattr(environment.sys, "prefix", str(tmp_path))
+    path = tmp_path / "dependency.py"
+    path.write_bytes(b"pass\n")
+    digest = base64.urlsafe_b64encode(hashlib.sha256(path.read_bytes()).digest()).rstrip(b"=")
+    record = f"dependency.py,sha256={digest.decode()},{path.stat().st_size}\n"
+    environment._verify_record_files(LocalDistribution(), record, "dependency")
+    path.write_bytes(b"fail\n")
+    with pytest.raises(ValueError, match="file differs from record"):
+        environment._verify_record_files(LocalDistribution(), record, "dependency")
+    with pytest.raises(ValueError, match="hash is missing"):
+        environment._verify_record_files(LocalDistribution(), "dependency.py,,5\n", "dependency")
 
 
 def test_third_party_editable_dependency_is_rejected_without_path_leak(monkeypatch) -> None:
