@@ -158,6 +158,10 @@ def test_supply_chain_rejects_candidate_identity_change(tmp_path: Path) -> None:
     ("supply-chain-audit.json", "/private/customer/checkpoints"),
     ("supply-chain-installed.json", "C:\\Users\\customer\\secret"),
     ("supply-chain-sbom.json", "https://repo.example/?access_token=secret"),
+    ("supply-chain-sbom.json", "https://repo.example/?X-Amz-Signature=test"),
+    ("supply-chain-sbom.json", "https://repo.example/?X-Goog-Credential=test"),
+    ("supply-chain-sbom.json", "https://repo.example/?sv=1&sp=r&sr=b&sig=test"),
+    ("supply-chain-sbom.json", "https://repo.example/?signature=test"),
     ("supply-chain-receipt.json", "file:///private/customer/evidence"),
 ], ids=[
     "requirements-url", "audit-posix-path", "installed-windows-path",
@@ -183,6 +187,34 @@ def test_supply_chain_rejects_private_output_after_rehash(
         _reseal(root)
     with pytest.raises(module.SupplyChainInvalid, match="local path|private URL"):
         module.verify_supply_chain(root, expected)
+
+
+def test_sbom_reference_redaction_and_public_urls(tmp_path: Path) -> None:
+    module = _module()
+    expected = supply_fixture(tmp_path / "evidence")
+    root = tmp_path / "evidence"
+    path = root / "supply-chain-sbom.json"
+    report = json.loads(path.read_text(encoding="utf-8"))
+    public = [
+        "https://pypi.org/project/dependency/?source=docs",
+        "https://storage.example/blob?sv=1&sp=r&sr=b",
+    ]
+    private = [
+        "https://download.example/blob?X-Amz-Signature=test&X-Amz-Credential=test",
+        "https://download.example/blob?X-Goog-Signature=test",
+        "https://download.example/blob?sv=1&sp=r&sr=b&sig=test",
+        "https://download.example/blob?signature=test",
+        "https://user:password@download.example/blob",
+        "file:///private/customer/blob",
+    ]
+    report["components"][1]["externalReferences"] = [
+        {"type": "distribution", "url": url} for url in public + private
+    ]
+    assert module._remove_private_locations(report) == len(private)
+    assert [row["url"] for row in report["components"][1]["externalReferences"]] == public
+    _write(path, report)
+    _reseal(root)
+    assert module.verify_supply_chain(root, expected)["third_party_count"] == 1
 
 
 @pytest.mark.parametrize("license_bytes, expression, accepted", [

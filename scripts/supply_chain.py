@@ -36,8 +36,11 @@ ABSOLUTE_POSIX_PATH = re.compile(
 ABSOLUTE_WINDOWS_PATH = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s\"'<>]+")
 SECRET_URL_KEYS = {
     "token", "access_token", "api_key", "apikey", "key", "password",
-    "passwd", "secret", "credential", "authorization",
+    "passwd", "secret", "credential", "authorization", "signature", "sig",
+    "auth", "auth_token", "access_key", "secret_key", "client_secret",
+    "awsaccesskeyid", "googleaccessid",
 }
+SECRET_URL_KEY_PREFIXES = ("x-amz-", "x-goog-")
 
 
 class SupplyChainInvalid(ValueError):
@@ -95,6 +98,26 @@ def _load(path: Path) -> object:
         raise SupplyChainInvalid(f"supply-chain evidence is unreadable: {path.name}") from exc
 
 
+def _private_url(url: str) -> bool:
+    """Classify links that can disclose local locations or access credentials."""
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return True
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return True
+    return any(
+        key.lower() in SECRET_URL_KEYS
+        or key.lower().startswith(SECRET_URL_KEY_PREFIXES)
+        for part in (parsed.query, parsed.fragment)
+        for key, _ in parse_qsl(part, keep_blank_values=True)
+    )
+
+
 def _verify_output_privacy(directory: Path) -> None:
     """Reject local paths or credential-bearing links in every shipped scanner file."""
     for name in sorted(RAW_FILES | {RECEIPT}):
@@ -102,14 +125,7 @@ def _verify_output_privacy(directory: Path) -> None:
         if ABSOLUTE_POSIX_PATH.search(payload) or ABSOLUTE_WINDOWS_PATH.search(payload):
             raise SupplyChainInvalid(f"supply-chain output contains a local path: {name}")
         for match in URL_PATTERN.finditer(payload):
-            parsed = urlsplit(match.group().rstrip(".,;)]}"))
-            if (
-                parsed.scheme.lower() not in {"http", "https"}
-                or parsed.username is not None
-                or parsed.password is not None
-                or any(key.lower() in SECRET_URL_KEYS for key, _ in parse_qsl(parsed.query))
-                or any(key.lower() in SECRET_URL_KEYS for key, _ in parse_qsl(parsed.fragment))
-            ):
+            if _private_url(match.group().rstrip(".,;)]}")):
                 raise SupplyChainInvalid(f"supply-chain output contains a private URL: {name}")
 
 
@@ -288,10 +304,7 @@ def _remove_private_locations(value: object) -> int:
             safe = []
             for reference in references:
                 url = reference.get("url") if isinstance(reference, dict) else None
-                parsed = urlsplit(url) if isinstance(url, str) else None
-                if parsed is None or parsed.scheme not in {"http", "https"} or (
-                    parsed.username is not None or parsed.password is not None
-                ):
+                if not isinstance(url, str) or _private_url(url):
                     removed += 1
                 else:
                     safe.append(reference)
