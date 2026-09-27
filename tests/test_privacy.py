@@ -170,8 +170,6 @@ def test_guarded_recovery_matches_uninterrupted_reference(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = _guarded_config(tmp_path, monkeypatch)
-    reference, succeeded = controller.run(source, tmp_path / "reference")
-    assert succeeded
     hook = tmp_path / "hook"
     hook.mkdir()
     (hook / "sitecustomize.py").write_text(
@@ -181,12 +179,17 @@ def test_guarded_recovery_matches_uninterrupted_reference(
         "    original = io.finish_save\n"
         "    def stop_after_commit(*args, **kwargs):\n"
         "        result = original(*args, **kwargs)\n"
-        "        if args[0].step == 1 and args[3] == 'attempt-001':\n"
+        "        if (args[0].step == 1 and args[3] == 'attempt-001' "
+        "and 'recovered' in args[0].path.parts):\n"
         "            os._exit(77)\n"
         "        return result\n"
         "    io.finish_save = stop_after_commit\n"
     )
-    monkeypatch.setenv("PYTHONPATH", str(hook) + os.pathsep + os.environ.get("PYTHONPATH", ""))
+    monkeypatch.setenv(
+        "PYTHONPATH", os.pathsep.join(filter(None, (str(hook), os.environ.get("PYTHONPATH"))))
+    )
+    reference, succeeded = controller.run(source, tmp_path / "reference")
+    assert succeeded
     recovered, succeeded = controller.run(source, tmp_path / "recovered")
     assert succeeded, (recovered / "launcher.log").read_text()
     assert (recovered / "attempts" / "attempt-002").exists()

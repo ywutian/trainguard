@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -119,6 +120,46 @@ def test_startup_identity_detects_new_import_hook_and_hash_seed(
         (site_dir / "untracked.pth").unlink()
         patch.setenv("PYTHONHASHSEED", "1729")
         assert environment.startup_identity_sha256() != original
+
+
+def test_startup_identity_detects_explicit_import_tree_and_zip_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "imports"
+    root.mkdir()
+    hook = root / "sitecustomize.py"
+    hook.write_text("value = 'one'\n")
+    monkeypatch.setenv("PYTHONPATH", str(root))
+    first = environment.startup_identity_sha256()
+    hook.write_text("value = 'two'\n")
+    assert environment.startup_identity_sha256() != first
+    package = root / "otherpackage"
+    package.mkdir()
+    module = package / "trainer.py"
+    module.write_text("value = 'one'\n")
+    first = environment.startup_identity_sha256()
+    module.write_text("value = 'two'\n")
+    assert environment.startup_identity_sha256() != first
+
+    archive = tmp_path / "imports.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("sitecustomize.py", "value = 'one'\n")
+    monkeypatch.setenv("PYTHONPATH", str(archive))
+    first = environment.startup_identity_sha256()
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("sitecustomize.py", "value = 'two'\n")
+    assert environment.startup_identity_sha256() != first
+
+
+def test_explicit_import_root_cannot_shadow_application(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = tmp_path / "trainguard"
+    package.mkdir()
+    (package / "trainer.py").write_text("raise SystemExit(1)\n")
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    with pytest.raises(ValueError, match="may shadow"):
+        environment.startup_identity_sha256()
 
 
 def test_third_party_editable_dependency_is_rejected_without_path_leak(monkeypatch) -> None:

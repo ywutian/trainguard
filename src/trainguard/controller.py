@@ -350,6 +350,7 @@ def _launch_attempt(
     environment = os.environ.copy()
     environment["OMP_NUM_THREADS"] = "1"
     environment["PYTHONUNBUFFERED"] = "1"
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     offsets: dict[int, int] = {}
     steps: dict[int, int] = {}

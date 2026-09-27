@@ -181,6 +181,34 @@ def test_restore_load_failure_skips_self_consistent_candidate(
 def test_worker_exit_during_restore_skips_candidate_with_durable_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    hook_dir = tmp_path / "restore-hook"
+    hook_dir.mkdir()
+    (hook_dir / "sitecustomize.py").write_text(
+        "import os\n"
+        "import time\n"
+        "from pathlib import Path\n"
+        "if os.environ.get('RANK') == '0' and os.environ.get('LOCAL_RANK') == '0':\n"
+        "    from trainguard import checkpoint_io\n"
+        "    original = checkpoint_io.load_training_state\n"
+        "    def load(path, *args, **kwargs):\n"
+        "        root = Path(path).parents[1]\n"
+        "        marker = root / 'restore-hook-fired'\n"
+        "        if not marker.exists():\n"
+        "            peer = root / 'attempts' / 'attempt-002' "
+        "/ 'rank-1-restore-progress.json'\n"
+        "            deadline = time.monotonic() + 20\n"
+        "            while not peer.is_file() and time.monotonic() < deadline:\n"
+        "                time.sleep(0.01)\n"
+        "            if not peer.is_file():\n"
+        "                raise RuntimeError('peer did not reach restore')\n"
+        "            marker.write_text('triggered')\n"
+        "            os._exit(74)\n"
+        "        return original(path, *args, **kwargs)\n"
+        "    checkpoint_io.load_training_state = load\n"
+    )
+    monkeypatch.setenv(
+        "PYTHONPATH", os.pathsep.join(filter(None, (str(hook_dir), os.environ.get("PYTHONPATH"))))
+    )
     reference, reference_ok = controller.run(
         _configuration(tmp_path, recover=False), tmp_path / "reference-runs"
     )
@@ -208,31 +236,6 @@ def test_worker_exit_during_restore_skips_candidate_with_durable_evidence(
     newest, older = ordered_candidates(recovered)[:2]
     run_id = json.loads((recovered / "run.json").read_text())["run_id"]
 
-    hook_dir = tmp_path / "restore-hook"
-    hook_dir.mkdir()
-    (hook_dir / "sitecustomize.py").write_text(
-        "import os\n"
-        "import time\n"
-        "from pathlib import Path\n"
-        "if os.environ.get('RANK') == '0' and os.environ.get('LOCAL_RANK') == '0':\n"
-        "    from trainguard import checkpoint_io\n"
-        "    original = checkpoint_io.load_training_state\n"
-        "    def load(path, *args, **kwargs):\n"
-        f"        if Path(path).name == {newest.name!r}:\n"
-        "            peer = Path(path).parents[1] / 'attempts' / 'attempt-002' "
-        "/ 'rank-1-restore-progress.json'\n"
-        "            deadline = time.monotonic() + 20\n"
-        "            while not peer.is_file() and time.monotonic() < deadline:\n"
-        "                time.sleep(0.01)\n"
-        "            if not peer.is_file():\n"
-        "                raise RuntimeError('peer did not reach restore')\n"
-        "            os._exit(74)\n"
-        "        return original(path, *args, **kwargs)\n"
-        "    checkpoint_io.load_training_state = load\n"
-    )
-    monkeypatch.setenv(
-        "PYTHONPATH", str(hook_dir) + os.pathsep + os.environ.get("PYTHONPATH", "")
-    )
     assert controller.resume(recovered), (recovered / "launcher.log").read_text()
 
     with sqlite3.connect(recovered / "run.sqlite3") as database:

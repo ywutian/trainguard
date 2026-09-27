@@ -14,6 +14,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import zipfile
 from io import StringIO
 from pathlib import Path
 
@@ -118,11 +119,83 @@ def source_sha256() -> str:
     return digest.hexdigest()
 
 
+def _import_entry_sha256(path: Path) -> str:
+    """Hash an explicit import root, including code and data reachable from it."""
+    digest = hashlib.sha256()
+    files = 0
+    total_bytes = 0
+
+    def add(name: bytes, kind: bytes) -> None:
+        digest.update(len(name).to_bytes(8, "big"))
+        digest.update(name)
+        digest.update(kind)
+
+    def visit(current: Path, relative: Path) -> None:
+        nonlocal files, total_bytes
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            add(os.fsencode(str(relative)), b"M")
+            return
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError("Python import path contains a linked file")
+        name = os.fsencode(str(relative))
+        if stat.S_ISDIR(metadata.st_mode):
+            add(name, b"D")
+            for child in sorted(current.iterdir()):
+                visit(child, relative / child.name)
+        elif stat.S_ISREG(metadata.st_mode):
+            files += 1
+            total_bytes += metadata.st_size
+            if files > 100000 or total_bytes > 2 * 1024**3:
+                raise ValueError("Python import path exceeds identity limits")
+            add(name, b"F")
+            digest.update(metadata.st_size.to_bytes(8, "big"))
+            with current.open("rb") as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(block)
+        else:
+            raise ValueError("Python import path contains a non-regular file")
+
+    visit(path, Path("."))
+    return digest.hexdigest()
+
+
 def startup_identity_sha256() -> str:
     """Bind import lookup paths, startup hooks, and Python path controls without exposing paths."""
     paths = [Path(entry or os.getcwd()).resolve() for entry in sys.path]
+    pythonpath = os.environ.get("PYTHONPATH")
+    import_entries = []
+    if pythonpath is not None:
+        entries = pythonpath.split(os.pathsep)
+        if any(not entry for entry in entries):
+            raise ValueError("PYTHONPATH contains an empty import root")
+        source_root = Path(__file__).resolve().parents[1]
+        for entry in entries:
+            original = Path(entry)
+            if original.is_symlink():
+                raise ValueError("PYTHONPATH contains a linked import root")
+            root = original.resolve()
+            if root != source_root and (
+                (root / "trainguard").exists() or (root / "trainguard.py").exists()
+            ):
+                raise ValueError("PYTHONPATH may shadow the application package")
+            if root.is_file() and zipfile.is_zipfile(root):
+                with zipfile.ZipFile(root) as archive:
+                    if any(
+                        name == "trainguard.py" or name.startswith("trainguard/")
+                        for name in archive.namelist()
+                    ):
+                        raise ValueError("PYTHONPATH may shadow the application package")
+            import_entries.append((str(root), _import_entry_sha256(root)))
     startup_files = []
-    for directory in sorted(set(paths)):
+    scan_paths = set(paths)
+    if pythonpath:
+        scan_paths.update(Path(entry).resolve() for entry in pythonpath.split(os.pathsep))
+    for directory in sorted(scan_paths):
+        if directory.is_file():
+            startup_files.append((str(directory), _import_entry_sha256(directory)))
+            continue
         if not directory.is_dir():
             continue
         candidates = set(directory.glob("*.pth"))
@@ -147,6 +220,7 @@ def startup_identity_sha256() -> str:
         hooks[name] = hashlib.sha256(Path(source).read_bytes()).hexdigest()
     payload = {
         "sys_path": [str(path) for path in paths],
+        "pythonpath_entries": import_entries,
         "startup_files": startup_files,
         "hooks": hooks,
         "environment": {

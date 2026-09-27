@@ -84,7 +84,9 @@ def test_one_rank_low_space_rejects_before_candidate_creation(
         "        return type(result)(result.total, result.used, 1)\n"
         "    shutil.disk_usage = limited\n"
     )
-    monkeypatch.setenv("PYTHONPATH", str(hook) + os.pathsep + os.environ.get("PYTHONPATH", ""))
+    monkeypatch.setenv(
+        "PYTHONPATH", os.pathsep.join(filter(None, (str(hook), os.environ.get("PYTHONPATH"))))
+    )
     run_dir, succeeded = controller.run(source, tmp_path / "runs")
     assert not succeeded
     assert "another rank rejected checkpoint capacity" in (run_dir / "launcher.log").read_text()
