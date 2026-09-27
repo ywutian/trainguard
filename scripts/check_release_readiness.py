@@ -38,6 +38,18 @@ LOCAL_RAW_FILES = {
     "supply-chain-installed.json", "supply-chain-requirements.txt",
     "supply-chain-receipt.json",
 }
+LOCAL_CPU_CASES = (
+    ("sync-worker_exit", "sync", "worker_exit", "none", True),
+    ("async-worker_exit", "async", "worker_exit", "none", True),
+    ("sync-save_interrupt", "sync", "save_interrupt", "none", True),
+    ("async-save_interrupt", "async", "save_interrupt", "none", True),
+    ("sync-corrupt", "sync", "corrupt", "none", True),
+    ("async-corrupt", "async", "corrupt", "none", True),
+    ("sync-hang", "sync", "hang", "none", True),
+    ("omit-rng", "sync", "worker_exit", "rng", False),
+    ("omit-optimizer", "sync", "worker_exit", "optimizer", False),
+    ("omit-cursor", "sync", "worker_exit", "cursor", False),
+)
 
 
 def _supply_module():
@@ -198,6 +210,7 @@ REQUIRED_TEST_IDENTITIES = {
      "test_source_distribution_excludes_generated_output_and_rejects_injection"),
     ("tests.test_delivery_bundle_verify",
      "test_transferred_bundle_rejects_self_consistent_file_list_with_stale_artifact"),
+    ("tests.test_release_gate", "test_local_cpu_receipt_rejects_self_consistent_case_tampering"),
     ("tests.test_validation", "test_failed_restore_before_training_can_retry"),
     ("tests.test_scaler_boundary", "test_nonfinite_gradient_does_not_advance_optimizer_or_scheduler"),
 }
@@ -281,6 +294,32 @@ def _validate_pytest_result(raw_dir: Path, details: dict) -> None:
         or recorded_tests != expected_tests
     ):
         raise ValueError("local raw test suite is incomplete, failing, or over-skipped")
+
+
+def _local_cpu_acceptance_complete(acceptance: object) -> bool:
+    """Independently verify the ordered campaign matrix before local evidence passes."""
+    if not isinstance(acceptance, dict) or acceptance.get("status") != "SUCCEEDED" or (
+        acceptance.get("reference_status") != "VALIDATED"
+    ):
+        return False
+    cases = acceptance.get("cases")
+    if not isinstance(cases, list) or len(cases) != len(LOCAL_CPU_CASES):
+        return False
+    for case, (name, mode, fault, omitted, exact) in zip(cases, LOCAL_CPU_CASES, strict=True):
+        if not isinstance(case, dict) or (
+            case.get("name"), case.get("mode"), case.get("fault"), case.get("omit_state")
+        ) != (name, mode, fault, omitted) or (
+            case.get("expected_exact") is not exact
+        ) or (
+            case.get("status") != "PASSED"
+            or type(case.get("recovery_count")) is not int
+            or case["recovery_count"] != 1
+            or case.get("fault_attributed") is not True
+            or not isinstance(case.get("validation"), dict)
+            or case["validation"].get("passed") is not exact
+        ):
+            return False
+    return True
 
 
 def _verify_artifacts(root: Path, wheel: Path, sdist: Path, source_digest: str) -> None:
@@ -434,32 +473,11 @@ def _local_evidence(root: Path, details: dict, source_digest: str,
         raise ValueError("local raw result does not prove all required gates")
     _validate_pytest_result(raw_dir, details)
     acceptance = json.loads((raw_dir / "acceptance.json").read_text(encoding="utf-8"))
-    expected_cases = {
-        "sync-worker_exit", "async-worker_exit", "sync-save_interrupt",
-        "async-save_interrupt", "sync-corrupt", "async-corrupt", "sync-hang",
-        "omit-rng", "omit-optimizer", "omit-cursor",
-    }
-    cases = acceptance.get("cases")
     if (
-        acceptance.get("status") != "SUCCEEDED"
-        or acceptance.get("reference_status") != "VALIDATED"
+        not _local_cpu_acceptance_complete(acceptance)
         or result.get("acceptance") != acceptance
-        or acceptance.get("environment", {}).get("git_commit") != execution_commit
-        or not isinstance(cases, list)
-        or len(cases) != len(expected_cases)
-        or not all(isinstance(case, dict) and isinstance(case.get("name"), str)
-                   for case in cases)
-        or {case["name"] for case in cases} != expected_cases
-        or any(
-            case.get("status") != "PASSED"
-            or case.get("recovery_count") != 1
-            or case.get("fault_attributed") is not True
-            or not isinstance(case.get("validation"), dict)
-            or case["validation"].get("passed") is not (
-                not case["name"].startswith("omit-")
-            )
-            for case in cases
-        )
+        or not isinstance(acceptance.get("environment"), dict)
+        or acceptance["environment"].get("git_commit") != execution_commit
     ):
         raise ValueError("local raw CPU acceptance matrix is incomplete")
     wheel_name = next(name for name in artifacts if name.endswith(".whl"))

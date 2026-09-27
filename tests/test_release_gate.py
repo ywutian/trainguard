@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 import tomllib
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from xml.etree import ElementTree
@@ -65,6 +66,136 @@ def test_local_evaluation_rejects_self_asserted_checks_without_raw_results() -> 
             root, {"checks": {"full_suite": True, "cpu_fault_matrix": True}},
             module.package_source_sha256(root), {"uv.lock": "0" * 64}, previous,
         )
+
+
+def test_local_cpu_receipt_rejects_self_consistent_case_tampering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    root = tmp_path / "candidate"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Evidence Test", "-c", "user.email=test@example.invalid",
+         "commit", "--allow-empty", "-qm", "Prepare candidate"], cwd=root, check=True,
+    )
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    (root / "pyproject.toml").write_text('[project]\nversion = "0.3.6"\n')
+    for name in (
+        "scripts/supply-chain-tools.txt", "SECURITY.md", "LICENSE",
+        "docs/commercial/security-channel-2026-09-27.json",
+    ):
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("fixed-policy")
+    raw = root / "evidence/raw"
+    raw.mkdir(parents=True)
+    for name in module.LOCAL_RAW_FILES:
+        (raw / name).write_text("{}\n")
+    source_digest, input_digest = "1" * 64, "2" * 64
+    artifacts = {
+        "trainguard-0.3.6-py3-none-any.whl": "3" * 64,
+        "trainguard-0.3.6.tar.gz": "4" * 64,
+        "uv.lock": "5" * 64,
+    }
+    previous = {
+        "git_commit": "a" * 40, "version": "0.3.5",
+        "wheel_sha256": "6" * 64, "lock_sha256": "7" * 64,
+    }
+    cases = [
+        {
+            "name": name, "mode": mode, "fault": fault, "omit_state": omitted,
+            "expected_exact": exact, "status": "PASSED", "recovery_count": 1,
+            "fault_attributed": True, "validation": {"passed": exact},
+        }
+        for name, mode, fault, omitted, exact in module.LOCAL_CPU_CASES
+    ]
+    acceptance = {
+        "status": "SUCCEEDED", "reference_status": "VALIDATED",
+        "environment": {"git_commit": commit}, "cases": cases,
+    }
+    result = {
+        "status": "SUCCEEDED", "version": "0.3.6", "source_sha256": source_digest,
+        "execution_inputs_sha256": input_digest,
+        "execution_inputs_after_sha256": input_digest,
+        "execution_commit": commit, "execution_commit_after": commit,
+        "artifact_sha256": {name: digest for name, digest in artifacts.items()
+                            if name != "uv.lock"},
+        "lock_sha256": artifacts["uv.lock"],
+        "gates": [
+            {
+                "name": name, "exit_code": 0, "timed_out": False,
+                "execution_inputs_before_sha256": input_digest,
+                "execution_inputs_after_sha256": input_digest,
+                "output": f"raw/{name}.txt",
+            }
+            for name in (
+                "static", "tests", "cpu-acceptance", "package", "wheel",
+                "fresh-install", "upgrade-boundary", "supply-chain",
+            )
+        ],
+    }
+    (raw / "supply-chain.txt").write_text(json.dumps({
+        "status": "PASS", "wheel_sha256": artifacts["trainguard-0.3.6-py3-none-any.whl"],
+    }) + "\n")
+    (raw / "wheel.txt").write_text(json.dumps({
+        "passed": True, "version": "0.3.6", "source_sha256": source_digest,
+    }) + "\n")
+    (raw / "fresh-install.txt").write_text(json.dumps({
+        "version": "0.3.6", "wheel_sha256": artifacts["trainguard-0.3.6-py3-none-any.whl"],
+        "installed_outside_checkout": True, "completed_run": True,
+        "recovered_run_matches_reference": True, "support_export_checked": True,
+        "run_data_preserved_after_uninstall": True, "run_data_files_checked": 1,
+        "attributed_faults": 1, "recoveries": 1,
+    }) + "\n")
+    (raw / "upgrade-boundary.txt").write_text(json.dumps({
+        "current_version": "0.3.6",
+        "current_wheel_sha256": artifacts["trainguard-0.3.6-py3-none-any.whl"],
+        "current_lock_sha256": artifacts["uv.lock"],
+        "previous_commit_sha": previous["git_commit"],
+        "previous_version": previous["version"],
+        "previous_wheel_sha256": previous["wheel_sha256"],
+        "previous_lock_sha256": previous["lock_sha256"],
+        "new_version_rejected_interrupted_old_run": True,
+        "old_locked_environment_resumed_exactly": True,
+        "old_run_files_unchanged_after_rejection": 1,
+    }) + "\n")
+    monkeypatch.setattr(module, "execution_inputs_sha256", lambda _: input_digest)
+    monkeypatch.setattr(module, "require_evidence_only_descendant", lambda *args: None)
+    monkeypatch.setattr(module, "_validate_pytest_result", lambda *args: None)
+    monkeypatch.setattr(module, "_verify_supply_chain", lambda *args: None)
+
+    def check(candidate: dict) -> None:
+        result["acceptance"] = candidate
+        (raw / "acceptance.json").write_text(json.dumps(candidate))
+        (raw / "result.json").write_text(json.dumps(result))
+        details = {
+            "raw_evidence_dir": "evidence/raw", "execution_inputs_sha256": input_digest,
+            "execution_commit": commit,
+            "raw_files": {name: hashlib.sha256((raw / name).read_bytes()).hexdigest()
+                          for name in module.LOCAL_RAW_FILES},
+        }
+        module._local_evidence(root, details, source_digest, artifacts, previous)
+
+    check(acceptance)
+    for field, value in (
+        ("mode", "async"), ("fault", "hang"), ("omit_state", "rng"),
+        ("expected_exact", False),
+    ):
+        changed = deepcopy(acceptance)
+        changed["cases"][0][field] = value
+        with pytest.raises(ValueError, match="CPU acceptance matrix"):
+            check(changed)
+    reordered = deepcopy(acceptance)
+    reordered["cases"][0], reordered["cases"][1] = (
+        reordered["cases"][1], reordered["cases"][0]
+    )
+    with pytest.raises(ValueError, match="CPU acceptance matrix"):
+        check(reordered)
+    duplicated = deepcopy(acceptance)
+    duplicated["cases"][1] = deepcopy(duplicated["cases"][0])
+    with pytest.raises(ValueError, match="CPU acceptance matrix"):
+        check(duplicated)
 
 
 def test_local_test_gate_rejects_skip_inflation(tmp_path: Path) -> None:
