@@ -102,6 +102,7 @@ def test_generation_objects_are_create_only_checksummed_and_listed_by_page() -> 
     assert store.object_size(root + "missing") is None
     assert store.list(root) == tuple(root + name for name in "abcde")
     assert set(s3.objects) == {f"team/ckpt/{root}{name}" for name in "abcde"}
+    assert s3.unchecked_puts == 0
     with pytest.raises(ValueError, match="generation prefixes"):
         store.list("runs/run-one/")
     assert store.delete(root + "e") and not store.delete(root + "e")

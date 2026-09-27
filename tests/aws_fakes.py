@@ -53,6 +53,7 @@ class FakeS3(_Faults):
         super().__init__()
         self.objects: dict[str, bytes] = {}
         self.page_size = page_size
+        self.unchecked_puts = 0
 
     @staticmethod
     def etag(data: bytes) -> str:
@@ -62,7 +63,9 @@ class FakeS3(_Faults):
         del Bucket
         if IfNoneMatch not in {None, "*"}:
             raise FakeClientError("InvalidArgument", 400)
-        if ChecksumSHA256 != base64.b64encode(hashlib.sha256(Body).digest()).decode():
+        if ChecksumSHA256 is None:
+            self.unchecked_puts += 1
+        elif ChecksumSHA256 != base64.b64encode(hashlib.sha256(Body).digest()).decode():
             raise FakeClientError("BadDigest", 400)
 
         def action():
@@ -147,3 +150,9 @@ class FakeDynamoDB(_Faults):
                 return {}
 
         return self._apply("put", key, action)
+
+    def delete_item(self, *, TableName, Key):
+        del TableName
+        with self.lock:
+            self.items.pop(Key["pk"]["S"], None)
+        return {}
