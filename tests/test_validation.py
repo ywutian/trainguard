@@ -118,6 +118,20 @@ def _write_events(directory: Path, rank: int, events: list[dict]) -> None:
     path.write_text("".join(json.dumps(event) + "\n" for event in events))
 
 
+def _write_selections(directory: Path, *attempt_ids: str) -> None:
+    events = [
+        {
+            "run_id": "recovered", "attempt_id": attempt_id,
+            "event_type": "checkpoint_selected", "checkpoint_path": "checkpoint",
+            "global_step": 2, "manifest_sha256": "a" * 64,
+        }
+        for attempt_id in attempt_ids
+    ]
+    (directory / "controller.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events)
+    )
+
+
 @pytest.mark.parametrize(
     "fault,reason",
     [
@@ -208,6 +222,7 @@ def test_rollback_and_truncated_failed_attempt_tail_remain_valid(tmp_path: Path)
         store.finish_attempt("attempt-002", "SUCCEEDED", 0, "completed")
     finally:
         store.close()
+    _write_selections(recovered, "attempt-002")
     for rank in (0, 1):
         source = recovered / "attempts/attempt-001" / f"rank-{rank}.jsonl"
         with source.open("a") as stream:
@@ -218,6 +233,7 @@ def test_rollback_and_truncated_failed_attempt_tail_remain_valid(tmp_path: Path)
             {
                 "run_id": "recovered", "attempt_id": "attempt-002", "rank": rank,
                 "event_type": "state_loaded", "global_step": 2, "consumed_batches": 2,
+                "checkpoint_path": "checkpoint", "manifest_sha256": "a" * 64,
             },
             {
                 "run_id": "recovered", "attempt_id": "attempt-002", "rank": rank,
@@ -241,6 +257,27 @@ def test_rollback_and_truncated_failed_attempt_tail_remain_valid(tmp_path: Path)
         path.write_text(json.dumps(record))
     assert validate_runs(reference, recovered)["passed"]
 
+    rank_log = recovered / "attempts/attempt-002/rank-0.jsonl"
+    original = rank_log.read_text()
+    for field, replacement in (
+        ("checkpoint_path", "another-checkpoint"),
+        ("manifest_sha256", "b" * 64),
+    ):
+        events = [json.loads(line) for line in original.splitlines()]
+        events[0][field] = replacement
+        rank_log.write_text("".join(json.dumps(event) + "\n" for event in events))
+        result = validate_runs(reference, recovered)
+        assert not result["passed"], field
+        assert any("loaded state boundary differs" in value for value in result["differences"])
+        rank_log.write_text(original)
+    selection_log = recovered / "controller.jsonl"
+    selected = json.loads(selection_log.read_text())
+    selected["checkpoint_path"] = "another-checkpoint"
+    selection_log.write_text(json.dumps(selected) + "\n")
+    result = validate_runs(reference, recovered)
+    assert not result["passed"]
+    assert any("checkpoint selection differs" in value for value in result["differences"])
+
 
 def test_failed_restore_before_training_can_retry(tmp_path: Path) -> None:
     reference = _run(tmp_path, "reference")
@@ -256,6 +293,7 @@ def test_failed_restore_before_training_can_retry(tmp_path: Path) -> None:
         store.finish_attempt("attempt-003", "SUCCEEDED", 0, "completed")
     finally:
         store.close()
+    _write_selections(recovered, "attempt-002", "attempt-003")
     for rank in (0, 1):
         source_events = _events(recovered, rank)
         if rank == 0:
@@ -264,6 +302,8 @@ def test_failed_restore_before_training_can_retry(tmp_path: Path) -> None:
                 "event_type": "state_loaded",
                 "global_step": 2,
                 "consumed_batches": 2,
+                "checkpoint_path": "checkpoint",
+                "manifest_sha256": "a" * 64,
             }
             path = recovered / "attempts/attempt-002/rank-0.jsonl"
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -272,6 +312,7 @@ def test_failed_restore_before_training_can_retry(tmp_path: Path) -> None:
             source_events[0] | {
                 "attempt_id": "attempt-003", "event_type": "state_loaded",
                 "global_step": 2, "consumed_batches": 2,
+                "checkpoint_path": "checkpoint", "manifest_sha256": "a" * 64,
             },
             source_events[0] | {
                 "attempt_id": "attempt-003", "event_type": "training_started",

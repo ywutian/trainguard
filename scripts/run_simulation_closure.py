@@ -10,6 +10,7 @@ import platform
 import signal
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -28,6 +29,63 @@ GATE_TIMEOUT_SECONDS = {
     "fresh-install": 1200,
     "upgrade-boundary": 1200,
 }
+GATE_TERMINATION_GRACE_SECONDS = 5
+
+
+def _process_table() -> dict[int, tuple[int, int, str]]:
+    """Read parent, group and state before a timed-out gate loses its children."""
+    result = subprocess.run(
+        ["ps", "axww", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "stat="],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode:
+        raise RuntimeError("cannot inspect timed-out gate processes")
+    rows = {}
+    for line in result.stdout.splitlines():
+        fields = line.split(maxsplit=3)
+        if len(fields) != 4:
+            continue
+        try:
+            pid, parent, group = map(int, fields[:3])
+        except ValueError:
+            continue
+        rows[pid] = (parent, group, fields[3])
+    return rows
+
+
+def _descendant_groups(root_pid: int) -> set[int]:
+    rows = _process_table()
+    descendants = {root_pid}
+    while True:
+        found = {pid for pid, (parent, _, _) in rows.items() if parent in descendants}
+        if found <= descendants:
+            break
+        descendants.update(found)
+    # A child can start a fresh session. Signal only groups led by this gate's
+    # descendants, never a group that a child happened to join elsewhere.
+    groups = {root_pid}
+    for pid in descendants:
+        entry = rows.get(pid)
+        if entry is not None and entry[1] in descendants:
+            groups.add(entry[1])
+    return groups
+
+
+def _live_groups(groups: set[int]) -> set[int]:
+    return {
+        current_group for _, current_group, state in _process_table().values()
+        if current_group in groups and not state.startswith("Z")
+    }
+
+
+def _signal_groups(groups: set[int], signum: signal.Signals) -> None:
+    for group in sorted(groups):
+        if group == os.getpgrp():
+            continue
+        try:
+            os.killpg(group, signum)
+        except ProcessLookupError:
+            pass
 
 
 def _run(directory: Path, name: str, command: list[str]) -> dict:
@@ -42,17 +100,25 @@ def _run(directory: Path, name: str, command: list[str]) -> dict:
         except subprocess.TimeoutExpired:
             timed_out = True
             try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
+                groups = _descendant_groups(process.pid)
+            except RuntimeError:
+                groups = {process.pid}
+                stream.write("Could not inspect gate descendants before cleanup.\n")
+            _signal_groups(groups, signal.SIGTERM)
+            deadline = time.monotonic() + GATE_TERMINATION_GRACE_SECONDS
+            while time.monotonic() < deadline:
                 try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                process.wait()
+                    if not _live_groups(groups):
+                        break
+                except RuntimeError:
+                    break
+                time.sleep(0.1)
+            try:
+                remaining = _live_groups(groups)
+            except RuntimeError:
+                remaining = groups
+            _signal_groups(remaining, signal.SIGKILL)
+            process.wait(timeout=5)
             stream.write(f"\nGate timed out after {GATE_TIMEOUT_SECONDS[name]} seconds.\n")
             exit_code = 124
     return {

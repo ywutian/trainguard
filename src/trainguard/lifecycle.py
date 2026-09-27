@@ -37,8 +37,11 @@ def prune_checkpoints(
             )
         except (CheckpointInvalid, OSError):
             continue
-        if record.manifest_sha256 in failed_restores.get(path, set()):
+        if record.manifest_sha256 in failed_restores.explicit.get(path, set()):
             failed.append(record)
+            continue
+        if record.manifest_sha256 in failed_restores.incomplete.get(path, set()):
+            protected_paths.add(path.resolve())
             continue
         valid.append(record)
     retained = valid[:keep]

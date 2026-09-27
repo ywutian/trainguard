@@ -33,6 +33,8 @@ Rank 0 broadcasts the result of checkpoint commit before any rank leaves the sav
 
 Selection uses descending candidate order with full integrity verification until a valid version is found; full-history audit is explicit. `lifecycle.py` applies optional retention under controller ownership, with persisted deletion intent, loading protection, two fallback versions and a reported soft capacity budget. SQLite inspection updates are batched per scan. Commit hashes each payload once and checks file identity before and after publication; recovery independently rereads every payload before loading it.
 
+Each resumed rank records the selected manifest and its entry into DCP loading before it starts, then records completion of state loading. A worker's explicit load exception is durable evidence for excluding that manifest. For a load that stalls or ends without an exception, the controller records an incomplete restore only after it has stopped the whole owned group, every rank has matching entry evidence, and at least one rank has no completion evidence. An incomplete candidate is excluded from selection but retained for diagnosis; a failure before every rank enters the load does not condemn the checkpoint. Progress, selected-checkpoint events, and final recovery lineage are checked against the same attempt identity.
+
 ## Measurement and experiments
 
 `controller.jsonl` records launch, fault observation, group stopped and selected checkpoint phases. Rank events record initialization, state loaded and first resumed update. RTO spans controller fault observation to all ranks completing their first resumed update; attempt allocation gap remains a separate compatibility metric.

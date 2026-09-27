@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -136,6 +137,39 @@ def _recovery_lineage_errors(run_dir: Path, run_id: str, world_size: int) -> lis
         return [f"recovery lineage index is unreadable: {exc}"]
 
     errors: list[str] = []
+    selections: dict[str, list[dict]] = {}
+    if len(attempts) > 1:
+        path = run_dir / "controller.jsonl"
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        except (OSError, UnicodeError) as exc:
+            errors.append(f"checkpoint selection evidence is unreadable: {exc}")
+            lines = []
+        for number, line in enumerate(lines, 1):
+            if not line.endswith("\n") and number == len(lines):
+                continue
+            try:
+                event = json.loads(line)
+            except ValueError:
+                errors.append(f"checkpoint selection line {number} is invalid JSON")
+                continue
+            if not isinstance(event, dict):
+                errors.append(f"checkpoint selection line {number} is not a mapping")
+                continue
+            if event.get("run_id") != run_id or event.get("event_type") != "checkpoint_selected":
+                continue
+            attempt_id = event.get("attempt_id")
+            if (
+                not isinstance(attempt_id, str)
+                or not isinstance(event.get("checkpoint_path"), str)
+                or not event["checkpoint_path"]
+                or type(event.get("global_step")) is not int
+                or not isinstance(event.get("manifest_sha256"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", event["manifest_sha256"]) is None
+            ):
+                errors.append(f"checkpoint selection line {number} has an invalid identity")
+                continue
+            selections.setdefault(attempt_id, []).append(event)
     decisions: dict[str, list[tuple]] = {}
     for recovery in recoveries:
         decisions.setdefault(recovery[1], []).append(recovery)
@@ -165,6 +199,17 @@ def _recovery_lineage_errors(run_dir: Path, run_id: str, world_size: int) -> lis
             attempts[index - 1][0], attempt_id, checkpoint, step
         ):
             errors.append(f"{attempt_id}: recovery decision differs from selected checkpoint")
+        selected = selections.get(attempt_id, [])
+        selected_identities = {
+            (event["checkpoint_path"], event["global_step"], event["manifest_sha256"])
+            for event in selected
+        }
+        selected_identity = next(iter(selected_identities)) if len(selected_identities) == 1 else None
+        if selected_identity is None or selected_identity[:2] != (checkpoint, step):
+            errors.append(f"{attempt_id}: checkpoint selection differs from recovery decision")
+            selected_digest = None
+        else:
+            selected_digest = selected_identity[2]
 
         for rank in range(world_size):
             path = run_dir / "attempts" / attempt_id / f"rank-{rank}.jsonl"
@@ -208,6 +253,8 @@ def _recovery_lineage_errors(run_dir: Path, run_id: str, world_size: int) -> lis
                     or event["global_step"] != step
                     or type(event.get("consumed_batches")) is not int
                     or event["consumed_batches"] != cursor
+                    or event.get("checkpoint_path") != checkpoint
+                    or event.get("manifest_sha256") != selected_digest
                 ):
                     errors.append(f"{attempt_id} rank {rank}: loaded state boundary differs")
             for event in started:

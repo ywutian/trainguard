@@ -178,6 +178,84 @@ def test_restore_load_failure_skips_self_consistent_candidate(
     assert comparison["passed"], comparison
 
 
+def test_worker_exit_during_restore_skips_candidate_after_all_rank_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_launch = controller._launch_attempt
+
+    class StopAfterFirstAttempt(BaseException):
+        pass
+
+    def stop_after_fault(*args, **kwargs):
+        result = original_launch(*args, **kwargs)
+        if args[3] == "attempt-001":
+            assert not result.succeeded
+            raise StopAfterFirstAttempt
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(controller, "_launch_attempt", stop_after_fault)
+        with pytest.raises(StopAfterFirstAttempt):
+            controller.run(
+                _configuration(tmp_path, recover=True), tmp_path / "recovery-runs",
+                allow_experiment=True,
+            )
+    recovered = next((tmp_path / "recovery-runs").iterdir())
+    newest, older = ordered_candidates(recovered)[:2]
+    run_id = json.loads((recovered / "run.json").read_text())["run_id"]
+
+    hook_dir = tmp_path / "restore-hook"
+    hook_dir.mkdir()
+    (hook_dir / "sitecustomize.py").write_text(
+        "import os\n"
+        "import time\n"
+        "from pathlib import Path\n"
+        "if os.environ.get('RANK') == '0' and os.environ.get('LOCAL_RANK') == '0':\n"
+        "    from trainguard import checkpoint_io\n"
+        "    original = checkpoint_io.load_training_state\n"
+        "    def load(path, *args, **kwargs):\n"
+        f"        if Path(path).name == {newest.name!r}:\n"
+        "            peer = Path(path).parents[1] / 'attempts' / 'attempt-002' "
+        "/ 'rank-1-restore-progress.json'\n"
+        "            deadline = time.monotonic() + 20\n"
+        "            while not peer.is_file() and time.monotonic() < deadline:\n"
+        "                time.sleep(0.01)\n"
+        "            if not peer.is_file():\n"
+        "                raise RuntimeError('peer did not reach restore')\n"
+        "            os._exit(74)\n"
+        "        return original(path, *args, **kwargs)\n"
+        "    checkpoint_io.load_training_state = load\n"
+    )
+    monkeypatch.setenv(
+        "PYTHONPATH", str(hook_dir) + os.pathsep + os.environ.get("PYTHONPATH", "")
+    )
+    assert controller.resume(recovered), (recovered / "launcher.log").read_text()
+
+    with sqlite3.connect(recovered / "run.sqlite3") as database:
+        attempts = database.execute(
+            "SELECT attempt_id, status, resume_checkpoint FROM attempts ORDER BY number"
+        ).fetchall()
+        status = database.execute(
+            "SELECT status, reason FROM checkpoints WHERE path=?", (str(newest),)
+        ).fetchone()
+    assert attempts == [
+        ("attempt-001", "INTERRUPTED", None),
+        ("attempt-002", "FAILED", str(newest)),
+        ("attempt-003", "SUCCEEDED", str(older)),
+    ]
+    assert status == ("INVALID", "worker restore incomplete for this manifest")
+    verdict = json.loads((recovered / "attempts/attempt-002/restore-incomplete.json").read_text())
+    assert verdict["checkpoint_path"] == str(newest)
+    assert verdict["manifest_sha256"] == _digest(newest / "manifest.json")
+    assert 0 in verdict["incomplete_ranks"]
+    assert all(
+        (recovered / f"attempts/attempt-002/rank-{rank}-restore-progress.json").is_file()
+        for rank in range(2)
+    )
+    assert not list((recovered / "attempts/attempt-002").glob("rank-*-restore-failure.json"))
+    assert run_id == verdict["run_id"]
+
+
 @pytest.mark.parametrize("damage", ["missing_shard", "short_shard"])
 def test_self_consistent_unloadable_newest_candidate_recovers_from_older_real_dcp(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str

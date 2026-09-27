@@ -28,7 +28,11 @@ from trainguard.environment import environment_snapshot
 from trainguard.events import append_event, utc_now, write_json_atomic
 from trainguard.lifecycle import prune_checkpoints
 from trainguard.records import parse_event
-from trainguard.restore_failures import failed_restore_candidates
+from trainguard.restore_failures import (
+    failed_restore_candidates,
+    record_group_ended,
+    record_restore_incomplete,
+)
 from trainguard.run_store import RunStore
 from trainguard.strategy import preflight
 from trainguard.validation import completion_errors
@@ -212,10 +216,15 @@ def _scan_checkpoints(
         except (CheckpointInvalid, OSError) as exc:
             records.append((str(path), run_id, None, None, "INVALID", str(exc)))
         else:
-            if record.manifest_sha256 in failed_restores.get(path, set()):
+            if record.manifest_sha256 in failed_restores.explicit.get(path, set()):
                 records.append((
                     str(path), run_id, record.attempt_id, record.global_step,
                     "INVALID", "worker restore failed for this manifest",
+                ))
+            elif record.manifest_sha256 in failed_restores.incomplete.get(path, set()):
+                records.append((
+                    str(path), run_id, record.attempt_id, record.global_step,
+                    "INVALID", "worker restore incomplete for this manifest",
                 ))
             else:
                 records.append(
@@ -377,8 +386,9 @@ def _launch_attempt(
             )
             summary = _valid_attempt_summary(run_dir, attempt_id, config, run_id)
             if exit_code == 0 and not orphaned_workers and summary is not None:
+                reason = "completed all training steps"
                 return AttemptResult(
-                    True, "completed all training steps", 0, max(steps.values(), default=0)
+                    True, reason, 0, max(steps.values(), default=0)
                 )
             if reason == "launcher exited before completion":
                 reason = f"launcher exit code {exit_code}; completion evidence missing or invalid"
@@ -395,6 +405,9 @@ def _launch_attempt(
         finally:
             try:
                 _stop_process_group(process, run_dir, run_id, attempt_id)
+                record_group_ended(
+                    run_dir, run_id, attempt_id, reason, "controller_cleanup"
+                )
                 milestone("group_stopped")
             except BaseException as cleanup:
                 raise RunActiveError(f"{reason}; worker cleanup failed: {cleanup}") from cleanup
@@ -452,6 +465,15 @@ def _drive(run_dir: Path, status: dict, store: RunStore, config: ProjectConfig) 
             if last["pid"] is None and (not attempt_dir.exists() or not any(attempt_dir.iterdir())):
                 store.discard_unlaunched_attempt(last["attempt_id"])
             else:
+                if last["resume_checkpoint"] is not None:
+                    record_group_ended(
+                        run_dir, run_id, last["attempt_id"],
+                        "previous owner exited after worker group ended", "no_owned_workers",
+                    )
+                    record_restore_incomplete(
+                        run_dir, run_id, last["attempt_id"],
+                        Path(last["resume_checkpoint"]), config.run.world_size,
+                    )
                 store.finish_attempt(last["attempt_id"], "INTERRUPTED", None, "controller exited")
             attempts = store.attempts(run_id)
 
@@ -512,6 +534,11 @@ def _drive(run_dir: Path, status: dict, store: RunStore, config: ProjectConfig) 
                 max(0, previous_max - selected.global_step),
             )
         result = _launch_attempt(run_dir, config, run_id, attempt_id, selected, store)
+        if not result.succeeded and selected is not None:
+            record_restore_incomplete(
+                run_dir, run_id, attempt_id, selected.path, config.run.world_size,
+                selected.manifest_sha256,
+            )
         store.finish_attempt(
             attempt_id,
             "SUCCEEDED" if result.succeeded else "FAILED",

@@ -21,6 +21,11 @@ from trainguard.checkpoint import (
     validate_checkpoint,
 )
 from trainguard.config import ProjectConfig, load_config
+from trainguard.restore_failures import (
+    record_group_ended,
+    record_restore_incomplete,
+    record_restore_progress,
+)
 from trainguard.run_store import RunStore
 
 
@@ -245,6 +250,34 @@ def test_retention_preserves_two_loadable_backups_after_two_restore_failures(tmp
         dcp.load(state, checkpoint_id=path / "dcp")
         assert torch.equal(state["model"]["weight"], torch.full((2, 2), float(step)))
         assert torch.equal(state["optimizer"]["slot"], torch.full((2, 2), float(step)))
+
+
+def test_incomplete_restore_is_excluded_but_retained_for_diagnosis(tmp_path):
+    from trainguard import lifecycle
+
+    config = settings(2)
+    paths = [candidate(tmp_path, config, step) for step in range(1, 5)]
+    digest = hashlib.sha256((paths[3] / "manifest.json").read_bytes()).hexdigest()
+    store = RunStore(tmp_path / "run.sqlite3")
+    store.create_run("run", config.fingerprint(), "now")
+    store.start_attempt("run", "attempt-001", 1, None, 0)
+    store.start_attempt("run", "attempt-002", 2, str(paths[3]), 4)
+    for rank in range(2):
+        record_restore_progress(
+            tmp_path, "run", "attempt-002", rank, paths[3], digest, "restore_started"
+        )
+    record_group_ended(
+        tmp_path, "run", "attempt-002", "launcher exit code 74", "controller_cleanup"
+    )
+    assert record_restore_incomplete(
+        tmp_path, "run", "attempt-002", paths[3], 2, digest
+    )
+    assert controller._scan_checkpoints(tmp_path, config, "run", store).path == paths[2]
+    store.close()
+
+    lifecycle.prune_checkpoints(tmp_path, config, "run")
+    assert not paths[0].exists()
+    assert all(path.exists() for path in paths[1:])
 
 
 def test_atomic_publication_syncs_parent_directory(tmp_path, monkeypatch):

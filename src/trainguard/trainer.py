@@ -30,6 +30,7 @@ from trainguard.external_workload import (
     read_verified_source,
 )
 from trainguard.model import TinyTransformer
+from trainguard.restore_failures import record_restore_progress
 from trainguard.strategy import bind_device, state_digest, wrap_model
 from trainguard.training_state import TrainingState, complete_update
 
@@ -151,6 +152,15 @@ def train(
         event("group_initialized", global_step=0, device=str(device), strategy=config.run.strategy)
         if resume_checkpoint is not None:
             verify_resume_checkpoint("before load")
+            record_restore_progress(
+                run_dir, run_id, attempt_id, rank, resume_checkpoint,
+                expected_checkpoint_sha256, "restore_started",
+            )
+            event(
+                "restore_started",
+                checkpoint_path=str(resume_checkpoint),
+                manifest_sha256=expected_checkpoint_sha256,
+            )
             loaded = time.monotonic()
             try:
                 _, data_start = load_training_state(
@@ -184,12 +194,22 @@ def train(
                 )
                 sync_event_file(event_path)
                 raise
+            record_restore_progress(
+                run_dir, run_id, attempt_id, rank, resume_checkpoint,
+                expected_checkpoint_sha256, "payload_loaded",
+            )
             verify_resume_checkpoint("during load")
+            record_restore_progress(
+                run_dir, run_id, attempt_id, rank, resume_checkpoint,
+                expected_checkpoint_sha256, "state_loaded",
+            )
             event(
                 "state_loaded",
                 global_step=state.optimizer_updates,
                 consumed_batches=state.consumed_batches,
                 load_seconds=time.monotonic() - loaded,
+                checkpoint_path=str(resume_checkpoint),
+                manifest_sha256=expected_checkpoint_sha256,
             )
         resumed_at = state.optimizer_updates
         cursor = data_start if resume_checkpoint else state.consumed_batches
