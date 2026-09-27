@@ -296,7 +296,7 @@ def resume_campaign(directory: Path) -> Path:
         current = environment_snapshot(base.run.world_size, base.run.device, directory)
         for field in (
             "source_sha256", "torch", "python", "versions", "installed_distributions",
-            "environment_options",
+            "environment_options", "startup_identity_sha256",
         ):
             if field not in result["environment"]:
                 raise ValueError(f"acceptance runtime {field} identity is missing")

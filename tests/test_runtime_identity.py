@@ -186,6 +186,10 @@ def test_resume_rejects_indirect_version_or_wheel_metadata_change(
         patch.setenv("OMP_NUM_THREADS", "999" if current_threads != "999" else "998")
         with pytest.raises(ValueError, match="environment_options differs"):
             resume(run_dir)
+    with monkeypatch.context() as patch:
+        patch.setenv("PYTHONPATH", "/temporary/import-shadow")
+        with pytest.raises(ValueError, match="startup_identity_sha256 differs"):
+            resume(run_dir)
     assert not (run_dir / "attempts").exists()
     assert resume(run_dir), (run_dir / "launcher.log").read_text()
 

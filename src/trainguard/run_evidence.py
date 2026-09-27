@@ -15,7 +15,7 @@ from trainguard.config import ProjectConfig
 
 RUNTIME_IDENTITY_FIELDS = (
     "source_sha256", "python", "torch", "versions", "installed_distributions",
-    "environment_options",
+    "environment_options", "startup_identity_sha256",
     "platform", "device", "world_size", "storage", "storage_device",
     "cuda_available", "cuda_version", "cuda_device_count",
 )
@@ -109,6 +109,9 @@ def saved_completed_metadata_errors(status: Any, config: ProjectConfig) -> list[
     digest = environment.get("source_sha256")
     if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
         errors.append("run environment source identity is invalid")
+    startup = environment.get("startup_identity_sha256")
+    if not isinstance(startup, str) or re.fullmatch(r"[0-9a-f]{64}", startup) is None:
+        errors.append("run environment startup identity is invalid")
     if not isinstance(environment.get("versions"), dict) or not isinstance(
         environment.get("installed_distributions"), list
     ):

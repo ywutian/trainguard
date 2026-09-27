@@ -118,6 +118,30 @@ def source_sha256() -> str:
     return digest.hexdigest()
 
 
+def startup_identity_sha256() -> str:
+    """Bind import lookup paths, startup hooks, and Python path controls without exposing paths."""
+    hooks = {}
+    for name in ("sitecustomize", "usercustomize"):
+        module = sys.modules.get(name)
+        if module is None:
+            hooks[name] = None
+            continue
+        source = getattr(module, "__file__", None)
+        if not isinstance(source, str):
+            raise TypeError(f"Python startup hook identity is incomplete: {name}")
+        hooks[name] = hashlib.sha256(Path(source).read_bytes()).hexdigest()
+    payload = {
+        "sys_path": [str(Path(entry or os.getcwd()).resolve()) for entry in sys.path],
+        "hooks": hooks,
+        "environment": {
+            key: os.environ.get(key)
+            for key in ("PYTHONPATH", "PYTHONHOME", "PYTHONNOUSERSITE", "PYTHONDONTWRITEBYTECODE")
+        },
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def environment_snapshot(world_size: int, device: str, storage_path: Path) -> dict:
     repository = Path(__file__).resolve().parents[2]
     checkout_source = repository / "src" / "trainguard" / "environment.py"
@@ -160,6 +184,7 @@ def environment_snapshot(world_size: int, device: str, storage_path: Path) -> di
         "disk_free_bytes": disk.free,
         "versions": versions,
         "installed_distributions": installed_distributions(),
+        "startup_identity_sha256": startup_identity_sha256(),
         "source_sha256": source_sha256(),
         "git_commit": git("rev-parse", "HEAD"),
         "git_dirty": None if git_status is None else bool(git_status),
