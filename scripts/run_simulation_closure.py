@@ -431,6 +431,8 @@ def _acceptance_complete(acceptance: dict) -> bool:
         and case.get("fault_attributed") is True
         and isinstance(case.get("validation"), dict)
         and case["validation"].get("passed") is case["expected_exact"]
+        and case["validation"].get("independent_reference") is True
+        and case["validation"].get("comparison_kind") == "INDEPENDENT_REFERENCE"
         and _case_differences_complete(case)
         for case in cases
     )

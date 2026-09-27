@@ -258,7 +258,11 @@ def test_cpu_matrix_rejects_missing_or_extra_negative_control_differences() -> N
             "name": name, "mode": mode, "fault": fault, "omit_state": omitted,
             "expected_exact": exact, "status": "PASSED", "recovery_count": 1,
             "fault_attributed": True,
-            "validation": {"passed": exact, "differences": differences},
+            "validation": {
+                "passed": exact, "differences": differences,
+                "independent_reference": True,
+                "comparison_kind": "INDEPENDENT_REFERENCE",
+            },
         })
     acceptance = {
         "status": "SUCCEEDED", "reference_status": "VALIDATED",
@@ -280,6 +284,19 @@ def test_cpu_matrix_rejects_missing_or_extra_negative_control_differences() -> N
     changed = json.loads(json.dumps(acceptance))
     changed["config"]["run"]["world_size"] = 1
     assert not module._acceptance_complete(changed)
+    for name in ("sync-worker_exit", "omit-rng"):
+        for marker in (None, False):
+            changed = json.loads(json.dumps(acceptance))
+            case = next(case for case in changed["cases"] if case["name"] == name)
+            if marker is None:
+                case["validation"].pop("independent_reference")
+            else:
+                case["validation"]["independent_reference"] = marker
+            assert not module._acceptance_complete(changed)
+        changed = json.loads(json.dumps(acceptance))
+        case = next(case for case in changed["cases"] if case["name"] == name)
+        case["validation"]["comparison_kind"] = "SELF_CHECK"
+        assert not module._acceptance_complete(changed)
 
 
 def test_gate_timeout_is_recorded_and_process_stops(tmp_path: Path) -> None:

@@ -376,6 +376,8 @@ def _local_cpu_acceptance_complete(acceptance: object) -> bool:
             or case.get("fault_attributed") is not True
             or not isinstance(case.get("validation"), dict)
             or case["validation"].get("passed") is not exact
+            or case["validation"].get("independent_reference") is not True
+            or case["validation"].get("comparison_kind") != "INDEPENDENT_REFERENCE"
             or not _local_case_difference_hashes_complete(case)
         ):
             return False

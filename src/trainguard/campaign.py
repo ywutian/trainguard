@@ -122,7 +122,11 @@ def _case_evidence(reference, run_dir, case, expected):
     )
     validation = validate_runs(reference, run_dir)
     differences = set(validation["differences"])
-    expected_difference = validation["passed"] == case["expected_exact"]
+    independent = (
+        validation.get("independent_reference") is True
+        and validation.get("comparison_kind") == "INDEPENDENT_REFERENCE"
+    )
+    expected_difference = independent and validation["passed"] == case["expected_exact"]
     if not case["expected_exact"]:
         allowed = {"final model_sha256 differs", "final optimizer_sha256 differs"}
         required = {"final model_sha256 differs"}
@@ -134,7 +138,7 @@ def _case_evidence(reference, run_dir, case, expected):
             }
             allowed |= sequences
             required |= sequences
-        expected_difference = required <= differences <= allowed
+        expected_difference = independent and required <= differences <= allowed
     case.update(
         validation=validation,
         recovery_count=count,

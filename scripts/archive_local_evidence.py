@@ -176,7 +176,12 @@ def _safe_acceptance(acceptance: dict, expected_config: dict,
         if not isinstance(original, dict) or original.get("name") not in EXPECTED_CASES:
             raise ValueError("original CPU case identity is invalid")
         validation = original.get("validation")
-        if not isinstance(validation, dict) or type(validation.get("passed")) is not bool:
+        if (
+            not isinstance(validation, dict)
+            or type(validation.get("passed")) is not bool
+            or validation.get("independent_reference") is not True
+            or validation.get("comparison_kind") != "INDEPENDENT_REFERENCE"
+        ):
             raise ValueError("original CPU case validation is missing")
         case = _selected(
             original,
@@ -194,6 +199,8 @@ def _safe_acceptance(acceptance: dict, expected_config: dict,
             raise ValueError("original CPU difference evidence is invalid")
         case["validation"] = {
             "passed": validation["passed"],
+            "independent_reference": True,
+            "comparison_kind": "INDEPENDENT_REFERENCE",
             "difference_sha256": [hashlib.sha256(item.encode()).hexdigest() for item in differences],
         }
         case["metrics"] = _numeric_metrics(original.get("metrics"))

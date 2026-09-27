@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,11 @@ def test_cpu_campaign_closes_recovery_matrix(tmp_path):
     assert len(result["cases"]) == 10
     assert all(case["status"] == "PASSED" for case in result["cases"])
     assert all(case["recovery_count"] >= 1 for case in result["cases"])
+    assert all(
+        case["validation"]["independent_reference"] is True
+        and case["validation"]["comparison_kind"] == "INDEPENDENT_REFERENCE"
+        for case in result["cases"]
+    )
     campaign.resume_campaign(directory)
     again = json.loads((directory / "acceptance.json").read_text())
     assert [(row["name"], row["run_dir"]) for row in result["cases"]] == [
@@ -24,6 +30,53 @@ def test_cpu_campaign_closes_recovery_matrix(tmp_path):
     with pytest.raises(ValueError, match="evidence"):
         campaign.resume_campaign(directory)
     assert json.loads((directory / "acceptance.json").read_text())["status"] == "FAILED"
+
+
+@pytest.mark.parametrize("expected_exact", [True, False])
+def test_case_evidence_rejects_self_comparison(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, expected_exact: bool
+) -> None:
+    from trainguard import campaign
+    from trainguard.config import load_config
+
+    omitted = "none" if expected_exact else "rng"
+    expected = campaign._case_config(
+        load_config(Path(__file__).parents[1] / "configs/cpu_demo.yaml"),
+        "sync", "worker_exit", omitted,
+    )
+    run_dir = tmp_path / "case"
+    run_dir.mkdir()
+    (run_dir / "config.json").write_text(json.dumps(expected.model_dump()))
+    (run_dir / "run.json").write_text(json.dumps({"run_id": "case-run"}))
+    with sqlite3.connect(run_dir / "run.sqlite3") as database:
+        database.execute("CREATE TABLE recoveries(run_id TEXT)")
+        database.execute("INSERT INTO recoveries VALUES ('case-run')")
+        database.execute("CREATE TABLE attempts(run_id TEXT, number INTEGER, status TEXT)")
+        database.executemany(
+            "INSERT INTO attempts VALUES ('case-run', ?, ?)",
+            [(1, "FAILED"), (2, "SUCCEEDED")],
+        )
+    fault_log = run_dir / "attempts/attempt-001/rank-0.jsonl"
+    fault_log.parent.mkdir(parents=True)
+    fault_log.write_text(json.dumps({
+        "event_type": "fault_injected", "fault_kind": "worker_exit", "global_step": 3,
+    }) + "\n")
+    monkeypatch.setattr(campaign, "_run_metrics", lambda path: {})
+
+    def self_check(reference: Path, recovered: Path) -> dict:
+        return {
+            "passed": True if reference == recovered else expected_exact,
+            "differences": [] if expected_exact or reference == recovered else [
+                "final model_sha256 differs"
+            ],
+            "independent_reference": False,
+            "comparison_kind": "SELF_CHECK",
+        }
+
+    monkeypatch.setattr(campaign, "validate_runs", self_check)
+    case = {"fault": "worker_exit", "omit_state": omitted, "expected_exact": expected_exact}
+    assert not campaign._case_evidence(tmp_path / "reference", run_dir, case, expected)
+    assert case["validation"]["independent_reference"] is False
 
 
 def test_failed_reference_can_be_retried_without_discarding_history(tmp_path, monkeypatch):

@@ -96,8 +96,12 @@ def archive_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                 "run_dir": "/Users/private/test-artifacts/customer-sample.key",
                 "reason": "TOPSECRET-KEY-MATERIAL",
                 "metrics": {"recovery_rto_seconds": 1.5, "host_path": "/Users/private"},
-                "validation": {"passed": case_contract(name)[3],
-                               "differences": case_differences(name)},
+                "validation": {
+                    "passed": case_contract(name)[3],
+                    "differences": case_differences(name),
+                    "independent_reference": True,
+                    "comparison_kind": "INDEPENDENT_REFERENCE",
+                },
             }
             for name in names
         ],
@@ -253,6 +257,11 @@ def test_archive_keeps_original_hashes_and_removes_private_test_text(archive_fix
     assert sanitized["environment"]["platform_sha256"] == hashlib.sha256(
         b"Darwin-test"
     ).hexdigest()
+    assert all(
+        case["validation"]["independent_reference"] is True
+        and case["validation"]["comparison_kind"] == "INDEPENDENT_REFERENCE"
+        for case in sanitized["cases"]
+    )
     assert record["unredacted_source_sha256"]["result.json"] == original_hash
     requirements = (source / "supply-chain-requirements.txt").read_bytes()
     assert (output / "raw/supply-chain-requirements.txt").read_bytes() == requirements
@@ -436,7 +445,7 @@ def test_archive_rejects_swapped_cpu_case_contract(archive_fixture) -> None:
 @pytest.mark.parametrize("damage", [
     "missing-rng-difference", "missing-cursor-sequences", "spurious-positive-difference",
     "single-rank", "changed-model-config", "changed-source", "changed-python",
-    "changed-device",
+    "changed-device", "self-comparison", "missing-comparison-marker",
 ])
 def test_archive_rejects_self_consistent_cpu_identity_or_difference_tampering(
     archive_fixture, damage: str,
@@ -465,6 +474,11 @@ def test_archive_rejects_self_consistent_cpu_identity_or_difference_tampering(
         acceptance["environment"]["source_sha256"] = "9" * 64
     elif damage == "changed-python":
         acceptance["environment"]["python"] = "3.11.12"
+    elif damage == "self-comparison":
+        cases["sync-worker_exit"]["validation"]["independent_reference"] = False
+        cases["sync-worker_exit"]["validation"]["comparison_kind"] = "SELF_CHECK"
+    elif damage == "missing-comparison-marker":
+        cases["omit-rng"]["validation"].pop("independent_reference")
     else:
         acceptance["environment"]["device"] = "cuda"
     Path(result["acceptance_path"]).write_text(json.dumps(acceptance))

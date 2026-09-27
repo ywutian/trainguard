@@ -149,6 +149,8 @@ def test_local_cpu_receipt_rejects_self_consistent_case_tampering(
             "expected_exact": exact, "status": "PASSED", "recovery_count": 1,
             "fault_attributed": True, "validation": {
                 "passed": exact, "difference_sha256": difference_hashes(name),
+                "independent_reference": True,
+                "comparison_kind": "INDEPENDENT_REFERENCE",
             },
         }
         for name, mode, fault, omitted, exact in module.LOCAL_CPU_CASES
@@ -250,6 +252,7 @@ def test_local_cpu_receipt_rejects_self_consistent_case_tampering(
     for damage in (
         "missing-rng-difference", "missing-cursor-sequences", "spurious-positive-difference",
         "wrong-config-hash", "single-rank", "wrong-source", "wrong-platform",
+        "self-comparison", "missing-comparison-marker",
     ):
         changed = deepcopy(acceptance)
         changed_cases = {case["name"]: case for case in changed["cases"]}
@@ -270,6 +273,11 @@ def test_local_cpu_receipt_rejects_self_consistent_case_tampering(
             changed["environment"]["world_size"] = 1
         elif damage == "wrong-source":
             changed["environment"]["source_sha256"] = "0" * 64
+        elif damage == "self-comparison":
+            changed_cases["sync-worker_exit"]["validation"]["independent_reference"] = False
+            changed_cases["sync-worker_exit"]["validation"]["comparison_kind"] = "SELF_CHECK"
+        elif damage == "missing-comparison-marker":
+            changed_cases["omit-rng"]["validation"].pop("independent_reference")
         else:
             changed["environment"]["platform_sha256"] = "0" * 64
         with pytest.raises(ValueError, match="CPU acceptance matrix"):

@@ -25,7 +25,9 @@ def _acceptance(source: str, python: str, commit: str, platform: str) -> dict:
         {"name": f"{mode}-{fault}", "mode": mode, "fault": fault,
          "omit_state": "none", "expected_exact": True, "status": "PASSED",
          "recovery_count": 1, "fault_attributed": True,
-         "validation": {"passed": True, "differences": []}}
+         "validation": {"passed": True, "differences": [],
+                        "independent_reference": True,
+                        "comparison_kind": "INDEPENDENT_REFERENCE"}}
         for mode, fault in (
             ("sync", "worker_exit"), ("async", "worker_exit"),
             ("sync", "save_interrupt"), ("async", "save_interrupt"),
@@ -36,7 +38,8 @@ def _acceptance(source: str, python: str, commit: str, platform: str) -> dict:
         {"name": f"omit-{state}", "mode": "sync", "fault": "worker_exit",
          "omit_state": state, "expected_exact": False, "status": "PASSED",
          "recovery_count": 1, "fault_attributed": True,
-         "validation": {"passed": False, "differences": [
+         "validation": {"passed": False, "independent_reference": True,
+                        "comparison_kind": "INDEPENDENT_REFERENCE", "differences": [
              "final model_sha256 differs",
              *(
                  [
@@ -304,6 +307,18 @@ def test_hosted_linux_evidence_rejects_missing_cpu_negative_difference(evidence)
     case = next(case for case in result["acceptance"]["cases"]
                 if case["name"] == "omit-cursor")
     case["validation"]["differences"] = ["final model_sha256 differs"]
+    _write_json(run / "result.json", result)
+    with pytest.raises(ValueError, match="CPU fault matrix is incomplete"):
+        _verify(evidence)
+
+
+def test_hosted_linux_evidence_rejects_cpu_self_comparison(evidence) -> None:
+    run = evidence[2]["3.11"] / "simulation-run"
+    result = json.loads((run / "result.json").read_text())
+    case = next(case for case in result["acceptance"]["cases"]
+                if case["name"] == "sync-worker_exit")
+    case["validation"]["independent_reference"] = False
+    case["validation"]["comparison_kind"] = "SELF_CHECK"
     _write_json(run / "result.json", result)
     with pytest.raises(ValueError, match="CPU fault matrix is incomplete"):
         _verify(evidence)
