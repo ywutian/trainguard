@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -144,6 +145,77 @@ def test_safe_failure_identity_requires_source_defined_class_and_function(tmp_pa
         pass
     else:
         raise AssertionError("unknown test function was accepted")
+
+
+def test_timeout_report_uses_durable_source_identity_without_junit(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    module = _closure_module()
+    fixture = tmp_path / "fixture"
+    tests_root = fixture / "tests"
+    tests_root.mkdir(parents=True)
+    shutil.copyfile(Path(__file__).with_name("conftest.py"), tests_root / "conftest.py")
+    (tests_root / "test_probe.py").write_text(
+        "import time\nimport pytest\n"
+        "@pytest.mark.parametrize('payload', ['https://private.example/?accessToken=secret'])\n"
+        "def test_hangs(payload):\n    time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    progress = tmp_path / "pytest-progress.json"
+    monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
+    module.GATE_TIMEOUT_SECONDS["tests"] = 5
+    gate = module._run(
+        tmp_path, "tests",
+        [sys.executable, "-m", "pytest", "-q", "-o", "addopts=",
+         f"--safe-progress-file={progress}", str(tests_root / "test_probe.py")],
+    )
+    assert gate["exit_code"] == 124 and gate["timed_out"] is True
+    assert not (tmp_path / "pytest.xml").exists()
+    assert module._last_started_test(progress, tests_root=tests_root) == (
+        "test_probe.py::test_hangs"
+    )
+    module._persist(tmp_path, {
+        "status": "FAILED", "version": "0.3.6", "source_sha256": "0" * 64,
+        "gates": [gate],
+    }, tests_root=tests_root)
+    report = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "test_probe.py::test_hangs" in report
+    for private in ("accessToken", "private.example", "secret", str(fixture), "time.sleep"):
+        assert private not in report
+
+
+def test_timeout_report_rejects_forged_or_unsafe_progress(tmp_path: Path) -> None:
+    module = _closure_module()
+    tests_root = tmp_path / "tests"
+    tests_root.mkdir()
+    (tests_root / "test_probe.py").write_text(
+        "def test_known():\n    pass\n", encoding="utf-8",
+    )
+    progress = tmp_path / "pytest-progress.json"
+    gate = {"name": "tests", "exit_code": 124, "timed_out": True,
+            "output": str(tmp_path / "tests.txt")}
+    result = {"status": "FAILED", "version": "0.3.6", "source_sha256": "0" * 64,
+              "gates": [gate]}
+    unsafe = (
+        {"schema_version": 1, "identity": "test_probe.py::test_unknown"},
+        {"schema_version": 1, "identity": "test_probe.py::test_known[private]"},
+        {"schema_version": 1, "identity": "test_other.py::test_known"},
+        {"schema_version": 1, "identity": "test_probe.py::test_known", "secret": "private"},
+        {"schema_version": True, "identity": "test_probe.py::test_known"},
+    )
+    for item in unsafe:
+        progress.write_text(json.dumps(item), encoding="utf-8")
+        module._persist(tmp_path, result, tests_root=tests_root)
+        report = (tmp_path / "report.md").read_text(encoding="utf-8")
+        assert "没有可核验的测试标识" in report
+        assert "test_probe.py::test_known" not in report
+        assert "private" not in report
+    progress.write_bytes(b"x" * (module.MAX_TEST_PROGRESS_BYTES + 1))
+    assert module._last_started_test(progress, tests_root=tests_root) is None
+    progress.unlink()
+    progress.symlink_to(tests_root / "test_probe.py")
+    assert module._last_started_test(progress, tests_root=tests_root) is None
 
 
 def test_success_status_without_complete_cpu_matrix_is_rejected() -> None:

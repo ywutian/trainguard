@@ -37,6 +37,7 @@ GATE_TIMEOUT_SECONDS = {
 }
 GATE_TERMINATION_GRACE_SECONDS = 5
 MAX_JUNIT_SUMMARY_BYTES = 8 * 1024 * 1024
+MAX_TEST_PROGRESS_BYTES = 4096
 MAX_REPORTED_TEST_FAILURES = 20
 TEST_MODULE = re.compile(r"test_[A-Za-z0-9_]{1,96}")
 TEST_CLASS = re.compile(r"Test[A-Za-z0-9_]{1,96}")
@@ -269,7 +270,38 @@ def _failed_test_identities(
         return None
 
 
-def _persist(directory: Path, result: dict) -> None:
+def _last_started_test(path: Path, *, tests_root: Path | None = None) -> str | None:
+    """Read one bounded identity and independently verify it against test source."""
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        with os.fdopen(os.open(path, flags), "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or info.st_size > MAX_TEST_PROGRESS_BYTES):
+                return None
+            payload = stream.read(MAX_TEST_PROGRESS_BYTES + 1)
+        if len(payload) > MAX_TEST_PROGRESS_BYTES:
+            return None
+        progress = json.loads(payload)
+        if (not isinstance(progress, dict) or set(progress) != {"schema_version", "identity"}
+                or type(progress["schema_version"]) is not int
+                or progress["schema_version"] != 1
+                or not isinstance(progress["identity"], str)):
+            return None
+        parts = progress["identity"].split("::")
+        if len(parts) not in (2, 3) or not parts[0].endswith(".py"):
+            return None
+        module = parts[0][:-3]
+        classname = ".".join(("tests", module, *parts[1:-1]))
+        case = ElementTree.Element("testcase", {"classname": classname, "name": parts[-1]})
+        root = tests_root or Path(__file__).resolve().parents[1] / "tests"
+        identity = _safe_failed_test_identity(case, root)
+        return identity if identity == progress["identity"] else None
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
+def _persist(directory: Path, result: dict, *, tests_root: Path | None = None) -> None:
     write_json_atomic(directory / "result.json", result)
     lines = [
         "# 本机训练恢复模拟闭环",
@@ -285,9 +317,17 @@ def _persist(directory: Path, result: dict) -> None:
         lines.append(
             f"| {gate['name']} | {gate['exit_code']} | [{gate['name']}]({Path(gate['output']).name}) |"
         )
-    if any(gate["name"] == "tests" and gate["exit_code"] != 0 for gate in result["gates"]):
+    tests_gate = next(
+        (gate for gate in result["gates"] if gate["name"] == "tests" and gate["exit_code"] != 0),
+        None,
+    )
+    if tests_gate is not None and tests_gate.get("timed_out") is True:
+        lines.extend(["", "测试门槛超时；最后启动的测试（仅源码标识，不代表故障归因）："])
+        active = _last_started_test(directory / "pytest-progress.json", tests_root=tests_root)
+        lines.append(f"- `{active}`" if active is not None else "没有可核验的测试标识。")
+    elif tests_gate is not None:
         lines.extend(["", "失败测试标识（仅源码文件、类和函数；参数及诊断内容已省略）："])
-        failed = _failed_test_identities(directory / "pytest.xml")
+        failed = _failed_test_identities(directory / "pytest.xml", tests_root=tests_root)
         if failed is None:
             lines.append("测试结果 XML 不可解析；未展示测试标识。")
         elif not failed:
@@ -432,6 +472,7 @@ def main() -> int:
             [
                 "uv", "run", "pytest", "-q",
                 f"--junitxml={directory / 'pytest.xml'}",
+                f"--safe-progress-file={directory / 'pytest-progress.json'}",
                 f"--basetemp={directory / 'test-artifacts'}",
             ],
         ),
