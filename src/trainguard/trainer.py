@@ -33,6 +33,7 @@ from trainguard.external_workload import (
     read_verified_source,
 )
 from trainguard.model import TinyTransformer
+from trainguard.privacy import key_for_run, protect_sample_event
 from trainguard.restore_failures import record_restore_progress
 from trainguard.strategy import bind_device, state_digest, wrap_model
 from trainguard.training_state import TrainingState, complete_update
@@ -81,6 +82,7 @@ def train(
     config = load_config(config_path)
     if expected_config_fingerprint is not None and config.fingerprint() != expected_config_fingerprint:
         raise ValueError("worker configuration differs from controller-approved configuration")
+    sample_key = key_for_run(run_dir) if config.run.profile == "guarded" else None
     external = None
     external_v2 = config.external_workload is not None and config.external_workload.version == 2
     if config.external_workload is not None:
@@ -110,15 +112,17 @@ def train(
     extra = None
 
     def event(event_type, **fields):
-        append_event(
-            event_path,
-            max_bytes=event_log_limit(config),
-            run_id=run_id,
-            attempt_id=attempt_id,
-            rank=rank,
-            event_type=event_type,
+        event_fields = {
+            "run_id": run_id,
+            "attempt_id": attempt_id,
+            "rank": rank,
+            "event_type": event_type,
             **fields,
-        )
+        }
+        if sample_key is not None and "sample_ids" in event_fields:
+            sample_ids = event_fields.pop("sample_ids")
+            event_fields = protect_sample_event(event_fields, sample_ids, sample_key)
+        append_event(event_path, max_bytes=event_log_limit(config), **event_fields)
 
     def inject(kind: str, active: bool, step: int, checkpoint_path: Path | None = None) -> None:
         if active:

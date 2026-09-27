@@ -28,6 +28,7 @@ from trainguard.config import ProjectConfig, load_config
 from trainguard.environment import environment_snapshot
 from trainguard.events import append_event, utc_now, write_json_atomic
 from trainguard.lifecycle import prune_checkpoints
+from trainguard.privacy import key_for_run, load_sample_key, sample_key_id
 from trainguard.records import parse_event
 from trainguard.restore_failures import (
     failed_restore_candidates,
@@ -639,6 +640,7 @@ def run(
     workload_source = preflight(config)
     run_id = uuid.uuid4().hex[:12]
     run_dir = (output_root / run_id).resolve()
+    sample_key = load_sample_key(run_dir) if config.run.profile == "guarded" else None
     run_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
     if workload_source is not None:
         from trainguard.external_workload import (
@@ -665,6 +667,8 @@ def run(
         "execution_started_monotonic": execution_started,
         "execution_load_before": execution_load_before,
     }
+    if sample_key is not None:
+        status["sample_key_id"] = sample_key_id(sample_key)
     write_json_atomic(run_dir / "run.json", status)
     store = RunStore(run_dir / "run.sqlite3")
     try:
@@ -683,6 +687,8 @@ def resume(run_dir: Path) -> bool:
     config = load_config(run_dir / "config.json")
     if status.get("run_schema_version") != 2:
         raise ValueError("run schema is unsupported; use its original source and runtime")
+    if config.run.profile == "guarded":
+        key_for_run(run_dir)
     if (
         config.fault.kind != "none" or config.recovery.omit_state != "none"
     ) and status.get("experiment_authorized") is not True:

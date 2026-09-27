@@ -14,7 +14,13 @@ from trainguard.config import load_config
 from trainguard.events import append_event
 
 
-def _guarded_config(tmp_path: Path, **limits: int) -> Path:
+def _guarded_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **limits: int
+) -> Path:
+    key_path = tmp_path / "customer-sample.key"
+    key_path.write_bytes(b"a-private-customer-key-with-at-least-32-bytes")
+    key_path.chmod(0o600)
+    monkeypatch.setenv("TRAINGUARD_SAMPLE_HMAC_KEY_FILE", str(key_path))
     raw = load_config(Path(__file__).parents[1] / "configs/cpu_demo.yaml").model_dump()
     raw["run"]["profile"] = "guarded"
     raw["training"]["total_steps"] = 3
@@ -39,8 +45,10 @@ def test_event_log_refuses_bytes_above_its_bound(tmp_path: Path) -> None:
     assert path.read_bytes() == original
 
 
-def test_guarded_run_keeps_two_valid_backups_within_declared_budget(tmp_path: Path) -> None:
-    source = _guarded_config(tmp_path)
+def test_guarded_run_keeps_two_valid_backups_within_declared_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _guarded_config(tmp_path, monkeypatch)
     run_dir, succeeded = controller.run(source, tmp_path / "runs")
     assert succeeded, (run_dir / "launcher.log").read_text()
     config = load_config(run_dir / "config.json")
@@ -61,7 +69,7 @@ def test_guarded_run_keeps_two_valid_backups_within_declared_budget(tmp_path: Pa
 def test_one_rank_low_space_rejects_before_candidate_creation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    source = _guarded_config(tmp_path)
+    source = _guarded_config(tmp_path, monkeypatch)
     hook = tmp_path / "hook"
     hook.mkdir()
     (hook / "sitecustomize.py").write_text(
@@ -80,9 +88,11 @@ def test_one_rank_low_space_rejects_before_candidate_creation(
     assert not list((run_dir / "checkpoints").glob("step-*"))
 
 
-def test_oversized_checkpoint_never_publishes_commit_marker(tmp_path: Path) -> None:
+def test_oversized_checkpoint_never_publishes_commit_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     source = _guarded_config(
-        tmp_path, max_checkpoint_bytes=1, max_retained_bytes=2,
+        tmp_path, monkeypatch, max_checkpoint_bytes=1, max_retained_bytes=2,
     )
     run_dir, succeeded = controller.run(source, tmp_path / "runs")
     assert not succeeded

@@ -15,6 +15,7 @@ from trainguard.external_workload import (
     read_verified_source,
     verify_v2_inputs,
 )
+from trainguard.privacy import key_for_run, verified_sample_event
 from trainguard.records import parse_event, summary_errors
 
 
@@ -27,11 +28,15 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def _effective_samples(
     run_dir: Path, run_id: str, config: ProjectConfig
-) -> tuple[dict[int, list[tuple[int, list[int]]]], list[str]]:
+) -> tuple[dict[int, list[tuple[int, Any]]], list[str]]:
     database_path = run_dir / "run.sqlite3"
     world_size = config.run.world_size
     errors: list[str] = []
-    effective: dict[int, dict[int, list[int]]] = {rank: {} for rank in range(world_size)}
+    effective: dict[int, dict[int, Any]] = {rank: {} for rank in range(world_size)}
+    try:
+        sample_key = key_for_run(run_dir) if config.run.profile == "guarded" else None
+    except ValueError as exc:
+        return {rank: [] for rank in range(world_size)}, [str(exc)]
     try:
         with sqlite3.connect(database_path.resolve().as_uri() + "?mode=ro", uri=True) as database:
             attempts = database.execute(
@@ -73,10 +78,19 @@ def _effective_samples(
                     continue
                 if event is None:
                     continue
+                sample_value = None
+                if sample_key is not None and event.get("event_type") in {
+                    "batch_consumed", "step_completed", "update_skipped"
+                }:
+                    try:
+                        sample_value = verified_sample_event(event, sample_key)
+                    except ValueError as exc:
+                        errors.append(f"{location}: {exc}")
+                        continue
                 if event.get("event_type") != "step_completed":
                     continue
                 step = event.get("global_step")
-                ids = event.get("sample_ids")
+                ids = sample_value if sample_key is not None else event.get("sample_ids")
                 if type(step) is not int or not resume_step < step <= config.training.total_steps:
                     errors.append(f"{location}: invalid step")
                     continue
@@ -87,27 +101,23 @@ def _effective_samples(
                 if step != previous_step + 1:
                     errors.append(f"{location}: invalid step order; expected {previous_step + 1}")
                 previous_step = step
+                count = ids[0] if sample_key is not None else len(ids) if isinstance(ids, list) else 0
                 if (
-                    not isinstance(ids, list)
-                    or not config.training.gradient_accumulation_steps
-                    <= len(ids)
-                    <= (
-                        config.training.batch_size_per_rank
-                        * config.training.gradient_accumulation_steps
-                    )
+                    not config.training.gradient_accumulation_steps
+                    <= count
+                    <= config.training.batch_size_per_rank * config.training.gradient_accumulation_steps
                     or (
                         config.external_workload is None
                         and config.data.kind == "synthetic"
-                        and len(ids)
-                        != config.training.batch_size_per_rank
+                        and count != config.training.batch_size_per_rank
                         * config.training.gradient_accumulation_steps
                     )
-                    or any(type(sample) is not int or sample < 0 for sample in ids)
-                    or (
-                        config.external_workload is None
-                        and config.data.kind == "synthetic"
-                        and len(set(ids)) != len(ids)
-                    )
+                    or (sample_key is None and (
+                        not isinstance(ids, list)
+                        or any(type(sample) is not int or sample < 0 for sample in ids)
+                        or (config.external_workload is None and config.data.kind == "synthetic"
+                            and len(set(ids)) != len(ids))
+                    ))
                 ):
                     errors.append(f"{location}: invalid sample IDs")
                     continue
@@ -115,7 +125,7 @@ def _effective_samples(
     return {rank: sorted(steps.items()) for rank, steps in effective.items()}, errors
 
 
-def _sequence_digest(sequence: list[tuple[int, list[int]]]) -> str:
+def _sequence_digest(sequence: list[tuple[int, Any]]) -> str:
     payload = json.dumps(sequence, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -315,6 +325,13 @@ def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
         differences.append("recovered run did not succeed")
     if reference_config.workload_fingerprint() != recovered_config.workload_fingerprint():
         differences.append("workload fingerprint differs")
+    if reference_config.run.profile != recovered_config.run.profile:
+        differences.append("run protection profile differs")
+    if (
+        reference_config.run.profile == "guarded"
+        and reference_status.get("sample_key_id") != recovered_status.get("sample_key_id")
+    ):
+        differences.append("sample commitment key identity differs")
     if any(
         status.get("run_schema_version") == 2
         for status in (reference_status, recovered_status)
@@ -421,7 +438,11 @@ def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
         "comparison": {
             "tensor_atol": 0.0,
             "tensor_rtol": 0.0,
-            "method": "exact SHA-256 of rank states and effective sample/batch IDs",
+            "method": (
+                "exact SHA-256 of rank states and keyed ordered sample/batch commitments"
+                if reference_config.run.profile == "guarded"
+                else "exact SHA-256 of rank states and effective sample/batch IDs"
+            ),
         },
         "effective_samples": sample_counts,
         "effective_batches": batch_comparison,
@@ -467,6 +488,10 @@ def _effective_batches(run_dir: Path, run_id: str, config: ProjectConfig):
     effective = {rank: {} for rank in range(config.run.world_size)}
     errors = []
     try:
+        sample_key = key_for_run(run_dir) if config.run.profile == "guarded" else None
+    except ValueError as exc:
+        return {rank: [] for rank in effective}, [str(exc)]
+    try:
         with sqlite3.connect(
             (run_dir / "run.sqlite3").resolve().as_uri() + "?mode=ro", uri=True
         ) as database:
@@ -491,7 +516,7 @@ def _effective_batches(run_dir: Path, run_id: str, config: ProjectConfig):
             except (OSError, UnicodeError) as exc:
                 errors.append(f"{attempt_id} rank {rank}: rank log is unreadable: {exc}")
                 continue
-            for line in lines:
+            for number, line in enumerate(lines, 1):
                 if not line.endswith("\n") and status != "SUCCEEDED":
                     continue
                 try:
@@ -501,14 +526,25 @@ def _effective_batches(run_dir: Path, run_id: str, config: ProjectConfig):
                     continue
                 if not event or event["event_type"] != "batch_consumed":
                     continue
-                index, ids = event.get("consumed_batches"), event.get("sample_ids")
+                if sample_key is not None:
+                    try:
+                        ids = verified_sample_event(event, sample_key)
+                    except ValueError as exc:
+                        errors.append(f"{attempt_id} rank {rank} line {number}: {exc}")
+                        continue
+                else:
+                    ids = event.get("sample_ids")
+                index = event.get("consumed_batches")
                 if type(index) is not int or index != previous + 1:
                     errors.append(f"{attempt_id} rank {rank}: consumed batch order is invalid")
                     continue
+                count = ids[0] if sample_key is not None else len(ids) if isinstance(ids, list) else 0
                 if (
-                    not isinstance(ids, list)
-                    or not 1 <= len(ids) <= config.training.batch_size_per_rank
-                    or any(type(item) is not int or item < 0 for item in ids)
+                    not 1 <= count <= config.training.batch_size_per_rank
+                    or (sample_key is None and (
+                        not isinstance(ids, list)
+                        or any(type(item) is not int or item < 0 for item in ids)
+                    ))
                 ):
                     errors.append(f"{attempt_id} rank {rank}: invalid batch sample IDs")
                     continue
