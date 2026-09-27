@@ -25,6 +25,7 @@ RAW_FILES = {
     "supply-chain-requirements.txt",
 }
 RECEIPT = "supply-chain-receipt.json"
+PRIVACY_MARKER = "supply-chain-privacy-checked.txt"
 FIRST_PARTY = "trainguard"
 SBOM_TOOL_VERSION = "7.4.0"
 AUDIT_TOOL_VERSION = "2.10.1"
@@ -317,8 +318,8 @@ def _remove_private_locations(value: object) -> int:
     return removed
 
 
-def generate(root: Path, wheel: Path, output: Path) -> dict:
-    """Install a candidate and pinned tools in separate environments, then scan it."""
+def _generate_stage(root: Path, wheel: Path, output: Path) -> dict:
+    """Install and scan a candidate without exposing intermediate files."""
     from trainguard.environment import source_sha256
     from trainguard.execution_inputs import execution_inputs_sha256
 
@@ -464,6 +465,49 @@ def generate(root: Path, wheel: Path, output: Path) -> dict:
                 "candidate_version",
             )
         })
+    return receipt
+
+
+def _publish_scan_output(stage: Path, output: Path) -> None:
+    """Publish a complete privacy-checked scan; mark it only after every file moves."""
+    names = RAW_FILES | {RECEIPT}
+    if any((stage / name).is_symlink() or not (stage / name).is_file() for name in names):
+        raise SupplyChainInvalid("staged supply-chain evidence is incomplete or linked")
+    receipt = _load(stage / RECEIPT)
+    hashes = receipt.get("files") if isinstance(receipt, dict) else None
+    if not isinstance(hashes, dict) or set(hashes) != RAW_FILES or any(
+        _sha256(stage / name) != hashes[name] for name in RAW_FILES
+    ):
+        raise SupplyChainInvalid("staged supply-chain evidence differs from its receipt")
+    _verify_output_privacy(stage)
+    if output.is_symlink():
+        raise SupplyChainInvalid("supply-chain output directory is linked")
+    output.mkdir(parents=True, exist_ok=True)
+    if any((output / name).exists() or (output / name).is_symlink()
+           for name in names | {PRIVACY_MARKER}):
+        raise FileExistsError("supply-chain output already exists")
+    published = []
+    try:
+        for name in sorted(names):
+            os.replace(stage / name, output / name)
+            published.append(name)
+        (output / PRIVACY_MARKER).write_text("privacy-checked\n", encoding="utf-8")
+    except BaseException:
+        for name in published:
+            (output / name).unlink(missing_ok=True)
+        raise
+
+
+def generate(root: Path, wheel: Path, output: Path) -> dict:
+    """Stage the scan outside the published result and release only safe files."""
+    output = output.absolute()
+    if output.is_symlink():
+        raise SupplyChainInvalid("supply-chain output directory is linked")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".supply-chain-stage-", dir=output.parent) as temporary:
+        stage = Path(temporary)
+        receipt = _generate_stage(root, wheel, stage)
+        _publish_scan_output(stage, output)
     return receipt
 
 

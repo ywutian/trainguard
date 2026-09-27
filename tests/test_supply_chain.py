@@ -218,6 +218,97 @@ def test_sbom_reference_redaction_and_public_urls(tmp_path: Path) -> None:
     assert module.verify_supply_chain(root, expected)["third_party_count"] == 1
 
 
+@pytest.mark.parametrize("name, secret", [
+    ("supply-chain-sbom.json", "https://download.example/?X-Amz-Signature=test"),
+    ("supply-chain-audit.json", "/private/customer/checkpoints"),
+])
+def test_blocked_scan_private_output_is_not_published(
+    tmp_path: Path, name: str, secret: str,
+) -> None:
+    module = _module()
+    stage = tmp_path / "stage"
+    supply_fixture(stage)
+    receipt_path = stage / "supply-chain-receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["status"] = "BLOCKED"
+    _write(receipt_path, receipt)
+    path = stage / name
+    report = json.loads(path.read_text(encoding="utf-8"))
+    report["private_observation"] = secret
+    _write(path, report)
+    _reseal(stage)
+    published = tmp_path / "published"
+    with pytest.raises(module.SupplyChainInvalid, match="local path|private URL"):
+        module._publish_scan_output(stage, published)
+    assert not published.exists()
+    assert all((stage / name).is_file() for name in module.RAW_FILES | {module.RECEIPT})
+
+
+def test_safe_blocked_scan_keeps_public_failure_evidence(tmp_path: Path) -> None:
+    module = _module()
+    stage = tmp_path / "stage"
+    supply_fixture(stage)
+    receipt_path = stage / "supply-chain-receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["status"] = "BLOCKED"
+    _write(receipt_path, receipt)
+    published = tmp_path / "published"
+    module._publish_scan_output(stage, published)
+    assert {path.name for path in published.iterdir()} == (
+        module.RAW_FILES | {module.RECEIPT, module.PRIVACY_MARKER}
+    )
+    assert json.loads((published / module.RECEIPT).read_text())["status"] == "BLOCKED"
+    with pytest.raises(module.SupplyChainInvalid, match="not clear"):
+        module.verify_supply_chain(published, {
+            "candidate_version": "0.3.6", "source_sha256": "a" * 64,
+        })
+
+
+def test_scan_exception_leaves_no_published_raw_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    output = tmp_path / "simulation"
+    output.mkdir()
+    (output / "report.md").write_text("safe failure summary\n", encoding="utf-8")
+
+    def interrupted(_root: Path, _wheel: Path, stage: Path) -> dict:
+        (stage / "supply-chain-audit.json").write_text(
+            'https://download.example/?X-Goog-Signature=test\n', encoding="utf-8"
+        )
+        raise RuntimeError("scanner stopped")
+
+    monkeypatch.setattr(module, "_generate_stage", interrupted)
+    with pytest.raises(RuntimeError, match="scanner stopped"):
+        module.generate(tmp_path, tmp_path / "candidate.whl", output)
+    assert [path.name for path in output.iterdir()] == ["report.md"]
+    assert not list(tmp_path.glob(".supply-chain-stage-*"))
+
+
+def test_publish_error_leaves_no_privacy_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    stage = tmp_path / "stage"
+    supply_fixture(stage)
+    output = tmp_path / "simulation"
+    output.mkdir()
+    original_replace = module.os.replace
+    moves = 0
+
+    def interrupted(source: Path, destination: Path) -> None:
+        nonlocal moves
+        moves += 1
+        if moves == 2:
+            raise OSError("publication stopped")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(module.os, "replace", interrupted)
+    with pytest.raises(OSError, match="publication stopped"):
+        module._publish_scan_output(stage, output)
+    assert not list(output.iterdir())
+
+
 @pytest.mark.parametrize("license_bytes, expression, accepted", [
     (b"reviewed license", "MIT", True),
     (b"changed license", "MIT", False),
