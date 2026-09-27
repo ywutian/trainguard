@@ -127,6 +127,7 @@ def main() -> None:
             root / "build-requirements.in", root / "build-constraints.txt",
             root / "LICENSE", root / "SECURITY.md",
             root / "docs/commercial/security-channel-2026-09-27.json",
+            root / "docs/commercial/linux-license-evidence-0.3.6.md",
             root / "docs/commercial/operations-runbook.md",
             root / "docs/commercial/customer-pilot-template.md",
             root / "docs/commercial/pilot-ledger-template.json",

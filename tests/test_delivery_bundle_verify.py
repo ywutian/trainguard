@@ -337,3 +337,18 @@ def test_transferred_bundle_rejects_loose_file_rewritten_after_source_review(
     _seal(root)
     with pytest.raises(module.DeliveryInvalid, match="differs from reviewed source distribution"):
         module.verify_bundle(root)
+
+
+def test_transferred_bundle_requires_reviewed_license_document(tmp_path: Path) -> None:
+    module = _module()
+    root = _bundle(tmp_path / "bundle", module)
+    license_document = root / "linux-license-evidence-0.3.6.md"
+    license_document.unlink()
+    _seal(root)
+    with pytest.raises(module.DeliveryInvalid, match="reviewed source distribution"):
+        module.verify_bundle(root)
+
+    license_document.write_text("unreviewed terms\n", encoding="utf-8")
+    _seal(root)
+    with pytest.raises(module.DeliveryInvalid, match="differs from reviewed source distribution"):
+        module.verify_bundle(root)

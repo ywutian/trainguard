@@ -47,6 +47,20 @@ def test_source_distribution_excludes_generated_output_and_rejects_injection(
         assert not any("release-output-probe" in member.name for member in archive)
         assert not any("/verification/" in member.name for member in archive)
         assert not any("/docs/experiments/" in member.name for member in archive)
+        license_document = f"trainguard-{version}/docs/commercial/linux-license-evidence-0.3.6.md"
+        assert archive.extractfile(license_document).read() == (
+            root / "docs/commercial/linux-license-evidence-0.3.6.md"
+        ).read_bytes()
+
+    missing_license_document = tmp_path / "missing-license-document.tar.gz"
+    with tarfile.open(archive_path, "r:gz") as reviewed, tarfile.open(
+        missing_license_document, "w:gz"
+    ) as altered:
+        for member in reviewed:
+            if member.name != license_document:
+                altered.addfile(member, reviewed.extractfile(member))
+    with pytest.raises(ValueError, match="file set differs"):
+        verifier.verify_sdist(root, missing_license_document, version)
 
     injected = tmp_path / "injected.tar.gz"
     with tarfile.open(archive_path, "r:gz") as reviewed, tarfile.open(

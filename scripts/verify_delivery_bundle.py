@@ -34,6 +34,7 @@ SOURCE_MEMBERS = {
     "LICENSE": "LICENSE",
     "SECURITY.md": "SECURITY.md",
     "security-channel-2026-09-27.json": "docs/commercial/security-channel-2026-09-27.json",
+    "linux-license-evidence-0.3.6.md": "docs/commercial/linux-license-evidence-0.3.6.md",
     "operations-runbook.md": "docs/commercial/operations-runbook.md",
     "customer-pilot-template.md": "docs/commercial/customer-pilot-template.md",
     "pilot-ledger-template.json": "docs/commercial/pilot-ledger-template.json",

@@ -16,6 +16,7 @@ ROOT_DIRECTORIES = {"configs", "examples", "scripts", "src", "tests"}
 DOCUMENTS = {
     "docs/commercial/customer-pilot-template.md",
     "docs/commercial/security-channel-2026-09-27.json",
+    "docs/commercial/linux-license-evidence-0.3.6.md",
     "docs/commercial/market-evidence-2026-09-26.md",
     "docs/commercial/operations-runbook.md",
     "docs/commercial/pilot-ledger-template.json",
