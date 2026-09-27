@@ -192,3 +192,16 @@ def test_guarded_recovery_matches_uninterrupted_reference(
     assert (recovered / "attempts" / "attempt-002").exists()
     result = validate_runs(reference, recovered)
     assert result["passed"], result["differences"]
+
+
+def test_guarded_accumulated_synthetic_samples_validate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _guarded_config(tmp_path, monkeypatch)
+    raw = json.loads(source.read_text())
+    raw["training"]["gradient_accumulation_steps"] = 2
+    source.write_text(json.dumps(raw))
+    run_dir, succeeded = controller.run(source, tmp_path / "runs")
+    assert succeeded, (run_dir / "launcher.log").read_text()
+    result = validate_runs(run_dir, run_dir)
+    assert result["passed"], result["differences"]

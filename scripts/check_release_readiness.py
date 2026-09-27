@@ -148,6 +148,7 @@ REQUIRED_TEST_IDENTITIES = {
     ("tests.test_privacy", "test_guarded_recovery_matches_uninterrupted_reference"),
     ("tests.test_privacy", "test_guarded_signed_duplicate_synthetic_samples_fail_completion_audit"),
     ("tests.test_privacy", "test_guarded_unicode_mac_invalidates_previous_success"),
+    ("tests.test_privacy", "test_guarded_accumulated_synthetic_samples_validate"),
     ("tests.test_recovery_integration",
      "test_selected_checkpoint_mutation_before_worker_load_fails_closed"),
     ("tests.test_recovery_integration", "test_validator_detects_omitted_recovery_state"),
