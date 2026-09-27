@@ -38,12 +38,15 @@ def main() -> None:
 import json
 from pathlib import Path
 import trainguard
-from trainguard.environment import environment_snapshot, source_sha256
+from trainguard import environment
+from trainguard.environment import source_sha256
+module_path = Path(environment.__file__).resolve()
+repository = module_path.parents[2]
 print(json.dumps({
     'version': trainguard.__version__,
     'source_sha256': source_sha256(),
     'package_path': str(Path(trainguard.__file__).resolve()),
-    'git_dirty': environment_snapshot(1, 'cpu', Path('.'))['git_dirty'],
+    'is_checkout': (repository / 'src' / 'trainguard' / 'environment.py').resolve() == module_path,
 }))
 """
         environment = os.environ.copy()
@@ -54,14 +57,16 @@ print(json.dumps({
             env=environment,
             capture_output=True,
             text=True,
-            check=True,
+            check=False,
         )
+        if result.returncode:
+            raise SystemExit(f"wheel import probe failed: {result.stderr.strip()}")
         actual = json.loads(result.stdout)
         if (
             actual["version"] != expected_version
             or actual["source_sha256"] != expected_digest
             or not Path(actual["package_path"]).is_relative_to(Path(directory).resolve())
-            or actual["git_dirty"] is not None
+            or actual["is_checkout"] is not False
         ):
             raise SystemExit(f"wheel identity differs from source: {actual}")
     print(json.dumps({
