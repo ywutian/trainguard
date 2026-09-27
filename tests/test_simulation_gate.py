@@ -113,7 +113,8 @@ def test_real_pytest_xml_failure_extracts_only_source_identity(tmp_path: Path) -
     environment.pop("PYTEST_ADDOPTS", None)
     environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     completed = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-o", "addopts=",
+        [sys.executable, "-m", "pytest", "-q", "--rootdir", str(fixture),
+         "-o", "addopts=",
          f"--junitxml={xml}", str(tests_root / "test_probe.py")],
         cwd=fixture, env=environment, capture_output=True, text=True,
         check=False, timeout=30,

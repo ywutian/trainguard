@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -66,10 +67,18 @@ def test_guarded_missing_wrong_key_and_sample_tampering_fail_closed(
     source = _guarded_config(tmp_path, monkeypatch)
     run_dir, succeeded = controller.run(source, tmp_path / "runs")
     assert succeeded
+    original_status = (run_dir / "run.json").read_bytes()
+
+    def indexed_status() -> str:
+        with sqlite3.connect(run_dir / "run.sqlite3") as database:
+            return database.execute("SELECT status FROM runs").fetchone()[0]
+
     key_path = Path(os.environ["TRAINGUARD_SAMPLE_HMAC_KEY_FILE"])
     monkeypatch.delenv("TRAINGUARD_SAMPLE_HMAC_KEY_FILE")
     with pytest.raises(ValueError, match="key file is required"):
         controller.resume(run_dir)
+    assert (run_dir / "run.json").read_bytes() == original_status
+    assert indexed_status() == "SUCCEEDED"
     assert not validate_runs(run_dir, run_dir)["passed"]
     wrong_key = tmp_path / "wrong.key"
     wrong_key.write_bytes(b"another-private-customer-key-with-32-bytes")
@@ -77,6 +86,8 @@ def test_guarded_missing_wrong_key_and_sample_tampering_fail_closed(
     monkeypatch.setenv("TRAINGUARD_SAMPLE_HMAC_KEY_FILE", str(wrong_key))
     with pytest.raises(ValueError, match="differs from the run identity"):
         controller.resume(run_dir)
+    assert (run_dir / "run.json").read_bytes() == original_status
+    assert indexed_status() == "SUCCEEDED"
     assert not validate_runs(run_dir, run_dir)["passed"]
     monkeypatch.setenv("TRAINGUARD_SAMPLE_HMAC_KEY_FILE", str(key_path))
     path = run_dir / "attempts" / "attempt-001" / "rank-0.jsonl"
@@ -91,6 +102,7 @@ def test_guarded_missing_wrong_key_and_sample_tampering_fail_closed(
     assert not controller.resume(run_dir)
     failed_status = json.loads((run_dir / "run.json").read_text())
     assert failed_status["status"] == "FAILED"
+    assert indexed_status() == "FAILED"
     assert failed_status["post_run_audit"]["status"] == "INVALIDATED"
     path.write_text(original)
     assert controller.resume(run_dir)
