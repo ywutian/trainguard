@@ -447,6 +447,46 @@ def _set_status(run_dir: Path, status: dict, value: str, reason: str) -> None:
     write_json_atomic(run_dir / "run.json", status)
 
 
+def _finalize_completed_attempt(
+    run_dir: Path, status: dict, store: RunStore, config: ProjectConfig,
+    attempt_id: str, reason: str,
+) -> bool:
+    run_id = status["run_id"]
+    audit = {
+        "attempt_id": attempt_id,
+        "checkpoint_mode": config.checkpoint.mode,
+        "status": "PENDING",
+    }
+    status["post_run_audit"] = audit
+    _set_status(run_dir, status, "FINALIZING", "training completed; post-run audit pending")
+    store.set_run_status(run_id, "FINALIZING")
+    try:
+        if config.checkpoint.mode != "none":
+            if _scan_checkpoints(run_dir, config, run_id, store, audit=True) is None:
+                raise RuntimeError("no valid checkpoint remains after training")
+            retention = prune_checkpoints(run_dir, config, run_id)
+            audit["retention_enabled"] = retention.get("enabled")
+            audit["budget_satisfied"] = retention.get("budget_satisfied")
+            audit["pending_deletions"] = len(retention.get("pending", []))
+            if retention.get("enabled") and (
+                retention.get("pending") or retention.get("budget_satisfied") is not True
+            ):
+                raise RuntimeError("checkpoint retention or capacity budget is unsatisfied")
+        summary = _valid_attempt_summary(run_dir, attempt_id, config, run_id)
+        if summary is None:
+            raise RuntimeError("completion evidence missing or invalid after training")
+        write_json_atomic(run_dir / "summary.json", summary)
+    except Exception as exc:
+        audit.update(status="FAILED", reason=f"{type(exc).__name__}: {exc}")
+        _set_status(run_dir, status, "FINALIZING", f"post-run audit failed: {exc}")
+        raise
+    audit["status"] = "PASSED" if config.checkpoint.mode != "none" else "NOT_APPLICABLE"
+    audit["checked_at"] = utc_now()
+    store.set_run_status(run_id, "SUCCEEDED")
+    _set_status(run_dir, status, "SUCCEEDED", reason)
+    return True
+
+
 def _drive(run_dir: Path, status: dict, store: RunStore, config: ProjectConfig) -> bool:
     run_id = status["run_id"]
     attempts = store.attempts(run_id)
@@ -459,14 +499,18 @@ def _drive(run_dir: Path, status: dict, store: RunStore, config: ProjectConfig) 
             else None
         )
         if summary is not None:
-            write_json_atomic(run_dir / "summary.json", summary)
             if last["status"] == "RUNNING":
                 store.finish_attempt(
                     last["attempt_id"], "SUCCEEDED", 0, "completed before controller exit"
                 )
-            store.set_run_status(run_id, "SUCCEEDED")
-            _set_status(run_dir, status, "SUCCEEDED", "completed before controller exit")
-            return True
+            return _finalize_completed_attempt(
+                run_dir, status, store, config, last["attempt_id"],
+                "completed before controller exit",
+            )
+        if last["status"] == "SUCCEEDED" or status.get("status") == "FINALIZING":
+            store.set_run_status(run_id, "FAILED")
+            _set_status(run_dir, status, "FAILED", "completion evidence missing or invalid")
+            return False
         if last["status"] == "RUNNING":
             attempt_dir = run_dir / "attempts" / last["attempt_id"]
             if last["pid"] is None and (not attempt_dir.exists() or not any(attempt_dir.iterdir())):
@@ -554,14 +598,9 @@ def _drive(run_dir: Path, status: dict, store: RunStore, config: ProjectConfig) 
             result.reason,
         )
         if result.succeeded:
-            _scan_checkpoints(run_dir, config, run_id, store)
-            prune_checkpoints(run_dir, config, run_id)
-            summary = _valid_attempt_summary(run_dir, attempt_id, config, run_id)
-            assert summary is not None
-            write_json_atomic(run_dir / "summary.json", summary)
-            store.set_run_status(run_id, "SUCCEEDED")
-            _set_status(run_dir, status, "SUCCEEDED", result.reason)
-            return True
+            return _finalize_completed_attempt(
+                run_dir, status, store, config, attempt_id, result.reason
+            )
         if result.reason.startswith("controller "):
             store.set_run_status(run_id, "FAILED")
             _set_status(run_dir, status, "FAILED", result.reason)

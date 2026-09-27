@@ -45,12 +45,19 @@ def build_support_bundle(run_dir: Path) -> dict:
     if (
         not isinstance(run_id, str)
         or not run_id
-        or status.get("status") not in {"RUNNING", "SUCCEEDED", "FAILED", "INTERRUPTED"}
+        or status.get("status") not in {
+            "RUNNING", "FINALIZING", "SUCCEEDED", "FAILED", "INTERRUPTED"
+        }
         or not _hex_digest(fingerprint)
         or not isinstance(environment, dict)
         or not _hex_digest(environment.get("source_sha256"))
     ):
         raise SupportBundleError("run identity is incomplete or invalid")
+    audit = status.get("post_run_audit")
+    if status["status"] == "FINALIZING" and (
+        not isinstance(audit, dict) or audit.get("status") not in {"PENDING", "FAILED"}
+    ):
+        raise SupportBundleError("post-run audit state is invalid")
 
     database_path = run_dir / "run.sqlite3"
     if not database_path.is_file() or database_path.is_symlink():
@@ -106,7 +113,7 @@ def build_support_bundle(run_dir: Path) -> dict:
         summary = _mapping(summary_path)
         completed_step = summary.get("global_step")
         if (
-            status["status"] != "SUCCEEDED"
+            status["status"] not in {"FINALIZING", "SUCCEEDED"}
             or not attempts
             or attempts[-1][2] != "SUCCEEDED"
             or summary.get("run_id") != run_id

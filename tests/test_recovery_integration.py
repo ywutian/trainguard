@@ -291,7 +291,12 @@ def test_resume_reconciles_real_completion_before_controller_publication(
             run(config, tmp_path / "runs")
     run_dir = next((tmp_path / "runs").iterdir())
     assert (run_dir / "attempts/attempt-001/summary.json").is_file()
-    assert json.loads((run_dir / "run.json").read_text())["status"] == "RUNNING"
+    status = json.loads((run_dir / "run.json").read_text())
+    if exit_at == "attempt_return":
+        assert status["status"] == "RUNNING"
+    else:
+        assert status["status"] == "FINALIZING"
+        assert status["post_run_audit"]["status"] == "PENDING"
     assert resume(run_dir)
     with sqlite3.connect(run_dir / "run.sqlite3") as database:
         assert database.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 1

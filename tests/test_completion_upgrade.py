@@ -1,6 +1,7 @@
 import json
 import os
 import signal
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 from trainguard import controller
 from trainguard.config import load_config
 from trainguard.run_store import RunStore
+from trainguard.support import build_support_bundle
 
 
 def config():
@@ -38,9 +40,85 @@ def test_succeeded_run_is_reaudited(tmp_path):
     source = Path(__file__).parents[1] / "configs/cpu_demo.yaml"
     directory, ok = controller.run(source, tmp_path)
     assert ok
+    assert json.loads((directory / "run.json").read_text())["post_run_audit"]["status"] == (
+        "NOT_APPLICABLE"
+    )
     (directory / "attempts/attempt-001/rank-1.jsonl").unlink()
     assert not controller.resume(directory)
     assert json.loads((directory / "run.json").read_text())["status"] == "FAILED"
+
+
+@pytest.mark.parametrize("failure", ["scan", "prune"])
+def test_post_run_audit_failure_cannot_publish_success_or_repeat_training(
+    tmp_path, monkeypatch, failure
+):
+    settings = config().model_dump()
+    settings["checkpoint"].update(mode="sync", interval_steps=1, keep_last_k=2)
+    source = tmp_path / "guarded-config.json"
+    source.write_text(json.dumps(settings))
+    function_name = "_scan_checkpoints" if failure == "scan" else "prune_checkpoints"
+    original = getattr(controller, function_name)
+
+    def fail_after_training(run_dir, *args, **kwargs):
+        if json.loads((run_dir / "run.json").read_text())["status"] == "FINALIZING":
+            raise RuntimeError(f"injected {failure} failure")
+        return original(run_dir, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(controller, function_name, fail_after_training)
+        with pytest.raises(RuntimeError, match=f"injected {failure} failure"):
+            controller.run(source, tmp_path / "runs")
+        run_dir = next((tmp_path / "runs").iterdir())
+        with pytest.raises(RuntimeError, match=f"injected {failure} failure"):
+            controller.resume(run_dir)
+        status = json.loads((run_dir / "run.json").read_text())
+        assert status["status"] == "FINALIZING"
+        assert status["post_run_audit"]["status"] == "FAILED"
+        assert build_support_bundle(run_dir)["status"] == "FINALIZING"
+        with sqlite3.connect(run_dir / "run.sqlite3") as database:
+            assert database.execute("SELECT status FROM runs").fetchone()[0] == "FINALIZING"
+            assert database.execute("SELECT status FROM attempts").fetchall() == [
+                ("SUCCEEDED",)
+            ]
+
+    assert controller.resume(run_dir)
+    status = json.loads((run_dir / "run.json").read_text())
+    assert status["status"] == "SUCCEEDED"
+    assert status["post_run_audit"]["status"] == "PASSED"
+    with sqlite3.connect(run_dir / "run.sqlite3") as database:
+        assert database.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 1
+
+    with monkeypatch.context() as patch:
+        patch.setattr(controller, function_name, fail_after_training)
+        with pytest.raises(RuntimeError, match=f"injected {failure} failure"):
+            controller.resume(run_dir)
+        assert json.loads((run_dir / "run.json").read_text())["status"] == "FINALIZING"
+        assert build_support_bundle(run_dir)["status"] == "FINALIZING"
+    assert controller.resume(run_dir)
+
+
+def test_unsatisfied_retention_budget_cannot_pass_post_run_audit(tmp_path):
+    settings = config().model_dump()
+    settings["checkpoint"].update(
+        mode="sync", interval_steps=1, keep_last_k=2, max_retained_bytes=1
+    )
+    source = tmp_path / "tight-budget.json"
+    source.write_text(json.dumps(settings))
+    with pytest.raises(RuntimeError, match="capacity budget is unsatisfied"):
+        controller.run(source, tmp_path / "runs")
+    run_dir = next((tmp_path / "runs").iterdir())
+    status = json.loads((run_dir / "run.json").read_text())
+    assert status["status"] == "FINALIZING"
+    assert status["post_run_audit"]["status"] == "FAILED"
+    assert status["post_run_audit"]["budget_satisfied"] is False
+    with pytest.raises(RuntimeError, match="capacity budget is unsatisfied"):
+        controller.resume(run_dir)
+    resumed_status = json.loads((run_dir / "run.json").read_text())
+    assert resumed_status["status"] == "FINALIZING"
+    assert resumed_status["post_run_audit"]["status"] == "FAILED"
+    assert resumed_status["post_run_audit"]["budget_satisfied"] is False
+    with sqlite3.connect(run_dir / "run.sqlite3") as database:
+        assert database.execute("SELECT status FROM attempts").fetchall() == [("SUCCEEDED",)]
 
 
 @pytest.mark.parametrize("failure", ["pid", "events"])
