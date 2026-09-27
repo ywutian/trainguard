@@ -104,7 +104,7 @@ def test_worker_exit_recovery_matches_reference(tmp_path: Path) -> None:
     missing_dependencies = validate_runs(reference, recovered)
     assert not missing_dependencies["passed"]
     assert any(
-        "run environment installed_distributions differs" in item
+        "run environment dependency identity is invalid" in item
         for item in missing_dependencies["differences"]
     )
 

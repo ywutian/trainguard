@@ -29,12 +29,13 @@ def candidate(tmp_path: Path) -> Path:
     (tmp_path / "examples/workload.py").write_text("VALUE = 1\n", encoding="utf-8")
     (tmp_path / ".github/workflows/verify.yml").write_text("name: Verify\n", encoding="utf-8")
     for name in (
-        ".gitignore", "LICENSE", "README.md", "build-requirements.in",
+        ".gitignore", "LICENSE", "README.md", "SECURITY.md", "build-requirements.in",
         "build-constraints.txt",
         "docs/commercial/customer-pilot-template.md",
         "docs/commercial/market-evidence-2026-09-26.md",
         "docs/commercial/operations-runbook.md",
         "docs/commercial/pilot-ledger-template.json",
+        "docs/commercial/security-channel-2026-09-27.json",
         "docs/plans/product-closure-2026-09-26.md",
     ):
         (tmp_path / name).write_text("original\n", encoding="utf-8")
@@ -53,7 +54,9 @@ def candidate(tmp_path: Path) -> Path:
     ("examples/workload.py", "VALUE = 2\n"),
     (".github/workflows/verify.yml", "name: Changed\n"),
     ("README.md", "changed\n"),
+    ("SECURITY.md", "changed\n"),
     ("build-constraints.txt", "changed\n"),
+    ("docs/commercial/security-channel-2026-09-27.json", "changed\n"),
     ("docs/commercial/operations-runbook.md", "changed\n"),
     ("src/trainguard/__init__.py", "VALUE = 2\n"),
     ("pyproject.toml", '[project]\nversion = "0.3.6"\n'),
