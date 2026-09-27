@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,26 @@ from trainguard import benchmark, campaign, environment
 from trainguard.config import load_config
 from trainguard.controller import resume, run
 from trainguard.run_store import RunStore
+
+
+def test_existing_run_index_migration_preserves_legacy_identity(tmp_path: Path) -> None:
+    path = tmp_path / "run.sqlite3"
+    with sqlite3.connect(path) as database:
+        database.execute(
+            "CREATE TABLE runs (run_id TEXT PRIMARY KEY, status TEXT NOT NULL, "
+            "config_fingerprint TEXT NOT NULL, started_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+        )
+        database.execute(
+            "INSERT INTO runs VALUES (?, ?, ?, ?, ?)",
+            ("legacy", "SUCCEEDED", "a" * 64, "start", "finish"),
+        )
+    store = RunStore(path)
+    store.close()
+    with sqlite3.connect(path) as database:
+        assert database.execute(
+            "SELECT run_id, status, config_fingerprint, evidence_schema_version, "
+            "measurement_sha256 FROM runs"
+        ).fetchone() == ("legacy", "SUCCEEDED", "a" * 64, 1, None)
 
 
 class ChangedDistribution:
@@ -104,7 +125,7 @@ def test_resume_rejects_indirect_version_or_wheel_metadata_change(
     config = tmp_path / "config.json"
     config.write_text(json.dumps(load_config(source).model_dump()))
     with monkeypatch.context() as patch:
-        patch.setattr(RunStore, "create_run", lambda *args: (_ for _ in ()).throw(SystemExit(73)))
+        patch.setattr(RunStore, "create_run", lambda *args, **kwargs: (_ for _ in ()).throw(SystemExit(73)))
         with pytest.raises(SystemExit, match="73"):
             run(config, tmp_path / "runs")
     run_dir = next((tmp_path / "runs").iterdir())

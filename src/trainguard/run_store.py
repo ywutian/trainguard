@@ -20,7 +20,8 @@ class RunStore:
                 status TEXT NOT NULL,
                 config_fingerprint TEXT NOT NULL,
                 started_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                evidence_schema_version INTEGER NOT NULL DEFAULT 1
             );
             CREATE TABLE IF NOT EXISTS attempts (
                 attempt_id TEXT PRIMARY KEY,
@@ -64,15 +65,25 @@ class RunStore:
                 "ALTER TABLE attempts ADD COLUMN resume_consumed_batches INTEGER NOT NULL DEFAULT 0"
             )
             self.database.execute("UPDATE attempts SET resume_consumed_batches=resume_step")
+        run_columns = {row[1] for row in self.database.execute("PRAGMA table_info(runs)")}
+        if "evidence_schema_version" not in run_columns:
+            self.database.execute(
+                "ALTER TABLE runs ADD COLUMN evidence_schema_version INTEGER NOT NULL DEFAULT 1"
+            )
+        if "measurement_sha256" not in run_columns:
+            self.database.execute("ALTER TABLE runs ADD COLUMN measurement_sha256 TEXT")
         self.database.commit()
 
     def close(self) -> None:
         self.database.close()
 
-    def create_run(self, run_id: str, fingerprint: str, started_at: str) -> None:
+    def create_run(
+        self, run_id: str, fingerprint: str, started_at: str, *, evidence_schema_version: int = 1
+    ) -> None:
         self.database.execute(
-            "INSERT INTO runs VALUES (?, ?, ?, ?, ?)",
-            (run_id, "RUNNING", fingerprint, started_at, started_at),
+            "INSERT INTO runs (run_id, status, config_fingerprint, started_at, updated_at, "
+            "evidence_schema_version) VALUES (?, ?, ?, ?, ?, ?)",
+            (run_id, "RUNNING", fingerprint, started_at, started_at, evidence_schema_version),
         )
         self.database.commit()
 
@@ -83,8 +94,16 @@ class RunStore:
 
     def set_run_status(self, run_id: str, status: str) -> None:
         self.database.execute(
-            "UPDATE runs SET status=?, updated_at=? WHERE run_id=?",
+            "UPDATE runs SET status=?, updated_at=?, measurement_sha256=NULL WHERE run_id=?",
             (status, utc_now(), run_id),
+        )
+        self.database.commit()
+
+    def set_run_success(self, run_id: str, measurement_sha256: str | None) -> None:
+        self.database.execute(
+            "UPDATE runs SET status='SUCCEEDED', updated_at=?, measurement_sha256=? "
+            "WHERE run_id=?",
+            (utc_now(), measurement_sha256, run_id),
         )
         self.database.commit()
 

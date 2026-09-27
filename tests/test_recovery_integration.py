@@ -168,7 +168,7 @@ def test_no_valid_checkpoint_fails_without_restart(tmp_path: Path) -> None:
 def test_resume_after_run_metadata_before_sqlite_insert(tmp_path: Path, monkeypatch) -> None:
     config = _config(tmp_path, checkpoint="sync")
     with monkeypatch.context() as patch:
-        patch.setattr(RunStore, "create_run", lambda *args: (_ for _ in ()).throw(SystemExit(73)))
+        patch.setattr(RunStore, "create_run", lambda *args, **kwargs: (_ for _ in ()).throw(SystemExit(73)))
         with pytest.raises(SystemExit):
             run(config, tmp_path / "runs")
     run_dir = next((tmp_path / "runs").iterdir())

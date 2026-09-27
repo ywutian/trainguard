@@ -18,6 +18,12 @@ from trainguard.external_workload import (
 )
 from trainguard.privacy import key_for_run, verified_sample_event, verify_expected_sample_ids
 from trainguard.records import parse_event, summary_errors
+from trainguard.run_evidence import (
+    RUNTIME_IDENTITY_FIELDS,
+    completed_index_errors,
+    indexed_schema_version,
+    saved_completed_metadata_errors,
+)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -337,6 +343,26 @@ def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
             "recovered_run_id": None,
         }
     differences = []
+    for name, directory, status, config in (
+        ("reference", reference_dir, reference_status, reference_config),
+        ("recovered", recovered_dir, recovered_status, recovered_config),
+    ):
+        if status.get("status") == "SUCCEEDED" and (
+            status.get("run_schema_version") == 2
+            or indexed_schema_version(directory, status.get("run_id")) == 2
+        ):
+            differences.extend(
+                f"{name} {error}" for error in saved_completed_metadata_errors(status, config)
+            )
+            differences.extend(
+                f"{name} {error}" for error in completed_index_errors(directory, status, config)
+            )
+    if differences:
+        return {
+            "passed": False, "differences": differences,
+            "reference_run_id": reference_status.get("run_id"),
+            "recovered_run_id": recovered_status.get("run_id"),
+        }
     for name, directory, config, status in (
         ("reference", reference_dir, reference_config, reference_status),
         ("recovered", recovered_dir, recovered_config, recovered_status),
@@ -376,12 +402,12 @@ def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
         ):
             differences.append("run environment identity is missing")
         else:
-            for field in (
-                "source_sha256", "python", "torch", "versions", "installed_distributions"
-            ):
+            for field in RUNTIME_IDENTITY_FIELDS:
                 if (
-                    reference_environment.get(field) is None
-                    or reference_environment.get(field) != recovered_environment.get(field)
+                    field not in reference_environment
+                    or field not in recovered_environment
+                    or type(reference_environment[field]) is not type(recovered_environment[field])
+                    or reference_environment[field] != recovered_environment[field]
                 ):
                     differences.append(f"run environment {field} differs")
     for name, summary, config in (

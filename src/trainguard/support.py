@@ -10,6 +10,7 @@ from pathlib import Path
 from trainguard.config import load_config
 from trainguard.events import write_json_atomic
 from trainguard.records import summary_errors
+from trainguard.run_evidence import completed_index_errors, saved_completed_metadata_errors
 
 
 class SupportBundleError(ValueError):
@@ -45,6 +46,7 @@ def build_support_bundle(run_dir: Path) -> dict:
     if (
         not isinstance(run_id, str)
         or not run_id
+        or not isinstance(status.get("status"), str)
         or status.get("status") not in {
             "RUNNING", "FINALIZING", "SUCCEEDED", "FAILED", "INTERRUPTED"
         }
@@ -65,10 +67,16 @@ def build_support_bundle(run_dir: Path) -> dict:
     try:
         with sqlite3.connect(database_path.resolve().as_uri() + "?mode=ro", uri=True) as db:
             db.execute("PRAGMA query_only=ON")
+            run_columns = {row[1] for row in db.execute("PRAGMA table_info(runs)")}
+            schema_field = (
+                "evidence_schema_version" if "evidence_schema_version" in run_columns
+                else "1 AS evidence_schema_version"
+            )
             identity = db.execute(
-                "SELECT status, config_fingerprint FROM runs WHERE run_id=?", (run_id,)
+                f"SELECT status, config_fingerprint, started_at, {schema_field} "
+                "FROM runs WHERE run_id=?", (run_id,)
             ).fetchone()
-            if identity is None or identity != (status["status"], fingerprint):
+            if identity is None or identity[:2] != (status["status"], fingerprint):
                 raise SupportBundleError("run index status or identity differs from metadata")
             attempts = db.execute(
                 "SELECT attempt_id, number, status, resume_step, exit_code FROM attempts "
@@ -134,6 +142,13 @@ def build_support_bundle(run_dir: Path) -> dict:
             summary, config, run_id, attempts[-1][0]
         ):
             raise SupportBundleError("completion summary differs from saved run configuration")
+        if status["status"] == "SUCCEEDED" and (
+            status.get("run_schema_version") == 2 or identity[3] == 2
+        ):
+            errors = saved_completed_metadata_errors(status, config)
+            errors.extend(completed_index_errors(run_dir, status, config))
+            if errors:
+                raise SupportBundleError("completed run evidence differs: " + "; ".join(errors))
     elif status["status"] == "SUCCEEDED":
         raise SupportBundleError("successful run has no completion summary")
 

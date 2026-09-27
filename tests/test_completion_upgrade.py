@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import signal
 import sqlite3
 import subprocess
@@ -99,6 +100,96 @@ def test_succeeded_run_rejects_mismatched_saved_status_identity(tmp_path, field)
     failed = json.loads(path.read_text())
     assert failed["status"] == "FAILED"
     assert failed["post_run_audit"]["status"] == "INVALIDATED"
+
+
+def test_completed_run_cross_media_tampering_fails_closed(tmp_path):
+    from trainguard.benchmark import _original_measurement
+    from trainguard.validation import validate_runs
+
+    source = Path(__file__).parents[1] / "configs/cpu_demo.yaml"
+    original, ok = controller.run(source, tmp_path / "original")
+    assert ok
+    assert validate_runs(original, original)["passed"]
+    assert build_support_bundle(original)["status"] == "SUCCEEDED"
+    assert _original_measurement(original) is not None
+
+    def mutate_run(path, field, value):
+        saved = json.loads(path.read_text())
+        if field.startswith("environment."):
+            saved["environment"][field.split(".", 1)[1]] = value
+        else:
+            saved[field] = value
+        path.write_text(json.dumps(saved))
+
+    corruptions = (
+        ("device", lambda run: mutate_run(run / "run.json", "environment.device", "cuda")),
+        ("world_size", lambda run: mutate_run(run / "run.json", "environment.world_size", 8)),
+        ("environment_type", lambda run: mutate_run(run / "run.json", "environment", None)),
+        ("schema_downgrade", lambda run: mutate_run(run / "run.json", "run_schema_version", None)),
+        ("run_id_type", lambda run: mutate_run(run / "run.json", "run_id", [])),
+        ("status_type", lambda run: mutate_run(run / "run.json", "status", [])),
+        ("unfinished_timing", lambda run: mutate_run(
+            run / "run.json", "execution_started_monotonic", "invalid"
+        )),
+        ("run_index_status", lambda run: _change_index(run, "runs", "status", "FAILED")),
+        ("run_index_status_type", lambda run: _change_index(run, "runs", "status", b"bad")),
+        ("attempt_exit", lambda run: _change_index(run, "attempts", "exit_code", 9)),
+        ("attempt_exit_type", lambda run: _change_index(run, "attempts", "exit_code", b"bad")),
+        ("attempt_time", lambda run: _change_index(
+            run, "attempts", "finished_at", "2099-01-01T00:00:00+00:00"
+        )),
+        ("attempt_time_type", lambda run: _change_index(
+            run, "attempts", "started_at", b"invalid"
+        )),
+        ("measurement_index", lambda run: _change_index(
+            run, "runs", "measurement_sha256", "0" * 64
+        )),
+        ("measurement", lambda run: mutate_run(run / "run.json", "measurement", {
+            "method": "controller_monotonic", "elapsed_seconds": 0.0001,
+            "load_average_before": [0, 0, 0], "load_average_after": [0, 0, 0],
+        })),
+    )
+    for name, change in corruptions:
+        directory = tmp_path / name
+        shutil.copytree(original, directory)
+        change(directory)
+        assert not validate_runs(original, directory)["passed"], name
+        with pytest.raises(SupportBundleError):
+            build_support_bundle(directory)
+        if name == "measurement":
+            assert _original_measurement(directory) is None
+        assert not controller.resume(directory), name
+        failed = json.loads((directory / "run.json").read_text())
+        assert failed["status"] == "FAILED", name
+        assert failed["post_run_audit"]["status"] == "INVALIDATED", name
+
+
+def _change_index(run_dir: Path, table: str, field: str, value) -> None:
+    with sqlite3.connect(run_dir / "run.sqlite3") as database:
+        database.execute(f"UPDATE {table} SET {field}=?", (value,))
+
+
+@pytest.mark.parametrize("field", ["platform", "storage_device", "cuda_available"])
+def test_resume_requires_current_platform_and_storage_identity(tmp_path, field):
+    from trainguard.validation import validate_runs
+
+    source = Path(__file__).parents[1] / "configs/cpu_demo.yaml"
+    directory, ok = controller.run(source, tmp_path)
+    assert ok
+    reference = tmp_path / "reference-copy"
+    shutil.copytree(directory, reference)
+    path = directory / "run.json"
+    status = json.loads(path.read_text())
+    value = {
+        "platform": status["environment"]["platform"] + "-forged",
+        "storage_device": status["environment"]["storage_device"] + 1,
+        "cuda_available": not status["environment"]["cuda_available"],
+    }[field]
+    status["environment"][field] = value
+    path.write_text(json.dumps(status))
+    assert not validate_runs(reference, directory)["passed"]
+    with pytest.raises(ValueError, match=field):
+        controller.resume(directory)
 
 
 @pytest.mark.parametrize("failure", ["scan", "prune"])

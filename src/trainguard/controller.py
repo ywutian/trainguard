@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import fcntl
 import json
+import math
 import os
 import re
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import time
@@ -34,6 +36,12 @@ from trainguard.restore_failures import (
     failed_restore_candidates,
     record_group_ended,
     record_restore_incomplete,
+)
+from trainguard.run_evidence import (
+    RUNTIME_IDENTITY_FIELDS,
+    completed_index_errors,
+    measurement_sha256,
+    saved_completed_metadata_errors,
 )
 from trainguard.run_store import RunStore
 from trainguard.strategy import preflight
@@ -433,9 +441,31 @@ def _launch_attempt(
     return AttemptResult(False, reason, process.poll(), max(steps.values(), default=0))
 
 
+def _capture_measurement(status: dict) -> None:
+    started = status.pop("execution_started_monotonic", None)
+    before = status.pop("execution_load_before", None)
+    if started is None:
+        return
+    if type(started) not in (int, float) or not math.isfinite(started) or (
+        not isinstance(before, list) or len(before) != 3 or any(
+            type(item) not in (int, float) or not math.isfinite(item) for item in before
+        )
+    ):
+        raise ValueError("run timing window is invalid")
+    elapsed = time.monotonic() - started
+    if not math.isfinite(elapsed) or elapsed < 0:
+        raise ValueError("run timing window is invalid")
+    status["measurement"] = {
+        "elapsed_seconds": elapsed,
+        "load_average_before": before,
+        "load_average_after": list(os.getloadavg()),
+        "method": "controller_monotonic",
+    }
+
+
 def _set_status(run_dir: Path, status: dict, value: str, reason: str) -> None:
     previous = status.get("status")
-    if previous == "SUCCEEDED" and value == "FAILED":
+    if value == "FAILED":
         audit = status.get("post_run_audit")
         if isinstance(audit, dict) and audit.get("status") in {"PASSED", "NOT_APPLICABLE"}:
             previous_audit = audit["status"]
@@ -447,17 +477,35 @@ def _set_status(run_dir: Path, status: dict, value: str, reason: str) -> None:
     if value in {"SUCCEEDED", "FAILED", "INTERRUPTED"}:
         if previous != value or "finished_at" not in status:
             status["finished_at"] = utc_now()
-        started = status.pop("execution_started_monotonic", None)
-        if started is not None:
-            status["measurement"] = {
-                "elapsed_seconds": time.monotonic() - started,
-                "load_average_before": status.pop("execution_load_before"),
-                "load_average_after": list(os.getloadavg()),
-                "method": "controller_monotonic",
-            }
+        _capture_measurement(status)
     else:
         status.pop("finished_at", None)
     write_json_atomic(run_dir / "run.json", status)
+
+
+def _invalidate_completed_run(
+    run_dir: Path, status: dict, reason: str, *, lock_held: bool = False
+) -> bool:
+    """Remove a false success claim even if its index identity is malformed."""
+    if not lock_held:
+        with _controller_lock(run_dir):
+            return _invalidate_completed_run(run_dir, status, reason, lock_held=True)
+    for field in ("execution_started_monotonic", "execution_load_before", "measurement"):
+        status.pop(field, None)
+    run_id = status.get("run_id")
+    database_path = run_dir / "run.sqlite3"
+    if isinstance(run_id, str) and database_path.is_file() and not database_path.is_symlink():
+        try:
+            with sqlite3.connect(database_path.resolve().as_uri() + "?mode=rw", uri=True) as db:
+                db.execute(
+                    "UPDATE runs SET status='FAILED', updated_at=?, measurement_sha256=NULL "
+                    "WHERE run_id=?", (utc_now(), run_id),
+                )
+        except sqlite3.Error:
+            # The JSON success claim must still be invalidated when the index is unreadable.
+            pass
+    _set_status(run_dir, status, "FAILED", reason)
+    return False
 
 
 def _finalize_completed_attempt(
@@ -516,7 +564,8 @@ def _finalize_completed_attempt(
         raise
     audit["status"] = "PASSED" if config.checkpoint.mode != "none" else "NOT_APPLICABLE"
     audit["checked_at"] = utc_now()
-    store.set_run_status(run_id, "SUCCEEDED")
+    _capture_measurement(status)
+    store.set_run_success(run_id, measurement_sha256(status.get("measurement")))
     _set_status(run_dir, status, "SUCCEEDED", reason)
     return True
 
@@ -693,7 +742,7 @@ def run(
     store = RunStore(run_dir / "run.sqlite3")
     try:
         (run_dir / "run.sqlite3").chmod(0o600)
-        store.create_run(run_id, config.fingerprint(), started_at)
+        store.create_run(run_id, config.fingerprint(), started_at, evidence_schema_version=2)
         with _controller_lock(run_dir):
             succeeded = _drive(run_dir, status, store, config)
     finally:
@@ -704,7 +753,26 @@ def run(
 def resume(run_dir: Path) -> bool:
     run_dir = run_dir.resolve()
     status = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
-    config = load_config(run_dir / "config.json")
+    if not isinstance(status, dict):
+        raise ValueError("run metadata is not a mapping")  # noqa: TRY004
+    if not isinstance(status.get("status"), str) or status["status"] not in (
+        "RUNNING", "FINALIZING", "SUCCEEDED", "FAILED", "INTERRUPTED"
+    ):
+        return _invalidate_completed_run(run_dir, status, "saved run status is invalid")
+    try:
+        config = load_config(run_dir / "config.json")
+    except (OSError, TypeError, ValueError):
+        if status.get("status") == "SUCCEEDED":
+            return _invalidate_completed_run(
+                run_dir, status, "saved run configuration is invalid"
+            )
+        raise
+    if status.get("status") == "SUCCEEDED":
+        errors = saved_completed_metadata_errors(status, config)
+        if errors:
+            return _invalidate_completed_run(
+                run_dir, status, "completed run metadata is invalid: " + "; ".join(errors)
+            )
     if status.get("run_schema_version") != 2:
         raise ValueError("run schema is unsupported; use its original source and runtime")
     if config.run.profile == "guarded":
@@ -713,13 +781,16 @@ def resume(run_dir: Path) -> bool:
         config.fault.kind != "none" or config.recovery.omit_state != "none"
     ) and status.get("experiment_authorized") is not True:
         raise ExperimentNotAuthorizedError("saved experiment authorization is missing")
-    current = environment_snapshot(config.run.world_size, config.run.device, run_dir)
-    for field in (
-        "source_sha256", "python", "torch", "versions", "installed_distributions"
-    ):
-        if field not in status["environment"]:
+    current = json.loads(json.dumps(
+        environment_snapshot(config.run.world_size, config.run.device, run_dir)
+    ))
+    environment = status.get("environment")
+    if not isinstance(environment, dict):
+        raise ValueError("saved run environment identity is invalid")  # noqa: TRY004
+    for field in RUNTIME_IDENTITY_FIELDS:
+        if field not in environment:
             raise ValueError(f"saved run runtime {field} identity is missing")
-        if current[field] != status["environment"].get(field):
+        if type(current[field]) is not type(environment[field]) or current[field] != environment[field]:
             raise ValueError(f"saved run source or runtime {field} differs")
     if config.external_workload is not None:
         from trainguard.external_workload import frozen_workload_path, read_verified_source
@@ -731,6 +802,10 @@ def resume(run_dir: Path) -> bool:
         preflight(config)
     if config.fingerprint() != status["config_fingerprint"]:
         raise ValueError("saved config fingerprint differs from run metadata")
+    if not isinstance(status.get("run_id"), str) or not isinstance(
+        status.get("started_at"), str
+    ):
+        raise ValueError("saved run index identity is invalid")  # noqa: TRY004
     store = RunStore(run_dir / "run.sqlite3")
     try:
         with _controller_lock(run_dir):
@@ -751,7 +826,8 @@ def resume(run_dir: Path) -> bool:
                 if not pristine:
                     raise ValueError("run index is missing after training may have started")
                 store.create_run(
-                    status["run_id"], status["config_fingerprint"], status["started_at"]
+                    status["run_id"], status["config_fingerprint"], status["started_at"],
+                    evidence_schema_version=2,
                 )
             elif (
                 identity["config_fingerprint"] != status["config_fingerprint"]
@@ -767,7 +843,7 @@ def resume(run_dir: Path) -> bool:
             if status["status"] == "SUCCEEDED":
                 attempts = store.attempts(status["run_id"])
                 if (
-                    status.get("config") != config.model_dump()
+                    completed_index_errors(run_dir, status, config)
                     or not attempts
                     or status.get("attempt_id") != attempts[-1]["attempt_id"]
                     or _valid_attempt_summary(
@@ -775,9 +851,9 @@ def resume(run_dir: Path) -> bool:
                     )
                     is None
                 ):
-                    store.set_run_status(status["run_id"], "FAILED")
-                    _set_status(run_dir, status, "FAILED", "completion evidence missing or invalid")
-                    return False
+                    return _invalidate_completed_run(
+                        run_dir, status, "completion evidence missing or invalid", lock_held=True
+                    )
             return _drive(run_dir, status, store, config)
     finally:
         store.close()

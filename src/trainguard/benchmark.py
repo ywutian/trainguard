@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import sqlite3
 import statistics
@@ -17,6 +16,7 @@ from trainguard.config import ProjectConfig, load_config
 from trainguard.controller import RunActiveError, _controller_lock, resume, run
 from trainguard.environment import environment_snapshot
 from trainguard.events import utc_now, write_json_atomic
+from trainguard.run_evidence import trusted_measurement
 from trainguard.validation import validate_runs
 
 
@@ -306,25 +306,7 @@ def _persist(directory: Path, results: dict) -> None:
 
 
 def _original_measurement(run_dir: Path) -> dict | None:
-    path = run_dir / "run.json"
-    if not path.exists():
-        return None
-    measurement = json.loads(path.read_text()).get("measurement")
-    if not isinstance(measurement, dict):
-        return None
-    if measurement.get("method") != "controller_monotonic":
-        return None
-    duration = measurement.get("elapsed_seconds")
-    if type(duration) not in (int, float) or not math.isfinite(duration) or duration < 0:
-        return None
-    for key in ("load_average_before", "load_average_after"):
-        values = measurement.get(key)
-        if (
-            not isinstance(values, list) or len(values) != 3
-            or any(type(item) not in (int, float) or not math.isfinite(item) for item in values)
-        ):
-            return None
-    return measurement
+    return trusted_measurement(run_dir)
 
 
 def _execute_slots(directory: Path, results: dict) -> Path:
