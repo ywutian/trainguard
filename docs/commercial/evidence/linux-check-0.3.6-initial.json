@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "status": "FAILED",
+  "candidate_commit": "9b2d7e24eca3780a4e200eba6f2db5a3540e4aa1",
+  "candidate_source_sha256": "b09bf6d734b8b3ac568d22fb77c6e682df09cbeb3c5a2b876681d06b349978ca",
+  "execution_inputs_sha256": "7e161af53b492d3a60b2e40da39b4d0d7cb52bf6992c7c2307c88f2efec676ac",
+  "wheel_sha256": "43859baaa6fa36a21fb5b03650635c087e35f2f59b409c39b7420c54275fd4cc",
+  "sdist_sha256": "94e0abea5fca7912129cb8ab24ba9877a40d71707b1b64d0ee9faaf35f95c7bc",
+  "lock_sha256": "49425f1960dea1288c39272ac3c117030d64ea7c7f1b9322ec6e2eb99919805c",
+  "push_workflow": "https://github.com/ywutian/trainguard/actions/runs/36319462496",
+  "pull_request_workflow": "https://github.com/ywutian/trainguard/actions/runs/36319465144",
+  "lanes": {
+    "3.11": {
+      "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "tests_passed": 339,
+      "skipped_no_gpu": 4,
+      "passed_gates": ["static", "tests", "cpu-acceptance", "package", "wheel"],
+      "failed_gate": "supply-chain",
+      "component_count": 43,
+      "third_party_count": 42,
+      "known_vulnerability_count": 0,
+      "unscanned_third_party": [],
+      "unlicensed_third_party": ["cuda-toolkit", "nvidia-cusparselt-cu13"],
+      "local_result_reference": "runs/hosted-interim-9b/summary-311/simulation-247cc25b3171/result.json",
+      "result_sha256": "2a26d516770a0c02b2a695ef2fad54564ad488761a643cb4d2da7da5381f9c4c",
+      "junit_sha256": "5438684924c6e065996d364783d48bfc823e106dd8355dc647d0462879ac326b",
+      "supply_chain_receipt_sha256": "668857ed3deb6c79a2f1af4272337f844f70a22560e2c7f95ac76d4ef32f6276"
+    },
+    "3.12": {
+      "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "tests_passed": 339,
+      "skipped_no_gpu": 4,
+      "passed_gates": ["static", "tests", "cpu-acceptance", "package", "wheel"],
+      "failed_gate": "supply-chain",
+      "component_count": 43,
+      "third_party_count": 42,
+      "known_vulnerability_count": 0,
+      "unscanned_third_party": [],
+      "unlicensed_third_party": ["cuda-toolkit", "nvidia-cusparselt-cu13"],
+      "local_result_reference": "runs/hosted-interim-9b/summary-312/simulation-b24caec89d66/result.json",
+      "result_sha256": "8b4bcb06bf76bfab85d847360365842ccc58b396eba879865e9abcaa06e47082",
+      "junit_sha256": "8fcbdd123ad51a3a6bf4d37fa75f96766ac9305751991437059ae5fa2246b854",
+      "supply_chain_receipt_sha256": "1822af3d3bf982e8b9b84c9157d93d2e3d6e50db1e53299fb7cdfc9f3a2e3a01"
+    }
+  },
+  "finding": "Both hosted Python lanes passed static checks, 339 tests with four actual-GPU skips, the ten-case CPU recovery campaign, source package verification and wheel identity. The supply-chain gate failed closed because two installed NVIDIA dependencies had empty declared-license entries in the CycloneDX inventory. Fresh installation and upgrade gates were not run after this failure.",
+  "disposition": "Preserve this failed candidate and its original artifacts. The vendor-source evidence is recorded separately in docs/commercial/linux-license-evidence-0.3.6.md. Do not reuse either lane as final cross-platform or customer-delivery evidence; rerun all applicable gates on a frozen final candidate after the license evidence and review requirements are resolved.",
+  "production_release_authorized": false
+}
