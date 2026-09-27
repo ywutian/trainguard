@@ -257,11 +257,12 @@ def _acceptance_complete(acceptance: dict) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", type=Path, required=True)
-    parser.add_argument("--previous-ref", required=True)
+    parser.add_argument("--previous-ref")
     args = parser.parse_args()
     root = Path.cwd().resolve()
     release_manifest = json.loads(Path("docs/commercial/release-gates.json").read_text())
     previous = release_manifest["previous_release"]
+    previous_ref = args.previous_ref or previous["git_commit"]
     directory = (args.output_root / f"simulation-{uuid.uuid4().hex[:12]}").resolve()
     directory.mkdir(parents=True)
     inputs_sha256 = execution_inputs_sha256(root)
@@ -299,7 +300,9 @@ def main() -> int:
                 "configs/cpu_demo.yaml", "--output-root", str(directory / "acceptance"),
             ],
         ),
-        ("package", ["uv", "build", "--wheel", "--sdist", "--out-dir", str(directory / "dist")]),
+        ("package", ["uv", "build", "--wheel", "--sdist", "--build-constraints",
+                     "build-constraints.txt", "--require-hashes", "--out-dir",
+                     str(directory / "dist")]),
     ]
     class GateStopped(Exception):
         pass
@@ -358,7 +361,7 @@ def main() -> int:
             root, directory,
             "upgrade-boundary",
             ["uv", "run", "python", "scripts/verify_upgrade_boundary.py",
-             "--previous-ref", args.previous_ref,
+             "--previous-ref", previous_ref,
              "--expected-previous-commit", previous["git_commit"],
              "--expected-previous-wheel-sha256", previous["wheel_sha256"],
              "--expected-previous-lock-sha256", previous["lock_sha256"],

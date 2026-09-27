@@ -443,11 +443,6 @@ def commit_checkpoint(
     _check_dcp_files(path, config)
     recorded = [_file_record(path, entry) for entry in _files(path)]
     files = [item for item, _ in recorded]
-    if (
-        config.run.profile == "guarded"
-        and sum(item["size"] for item in files) > config.checkpoint.max_checkpoint_bytes
-    ):
-        raise CheckpointInvalid("checkpoint exceeds its configured byte limit")
     identities = {item["path"]: identity for item, identity in recorded}
     manifest = {
         "format_version": 2,
@@ -462,6 +457,11 @@ def commit_checkpoint(
         "torch_version": torch.__version__,
         "files": files,
     }
+    if config.run.profile == "guarded":
+        manifest_bytes = len(json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8")) + 1
+        committed_bytes = sum(item["size"] for item in files) + manifest_bytes + 65
+        if committed_bytes > config.checkpoint.max_checkpoint_bytes:
+            raise CheckpointInvalid("checkpoint exceeds its configured byte limit")
     # DCP syncs payload files; persist the directory entries before publishing the transaction.
     sync_directory(path / "dcp")
     sync_directory(path)

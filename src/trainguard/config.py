@@ -188,6 +188,8 @@ class ProjectConfig(StrictModel):
                 raise ValueError("guarded runs require checkpoint, retention, free-space and event budgets")
             if self.checkpoint.max_retained_bytes < 2 * self.checkpoint.max_checkpoint_bytes:
                 raise ValueError("guarded retention budget must hold two maximum-size checkpoints")
+            if self.checkpoint.interval_steps >= self.training.total_steps:
+                raise ValueError("guarded runs require two distinct checkpoint boundaries")
         if self.run.strategy == "fsdp2" and self.run.device != "cuda":
             raise ValueError("FSDP2 requires CUDA")
         if (self.run.device == "cuda") != (self.run.backend == "nccl"):

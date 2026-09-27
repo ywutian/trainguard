@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from trainguard import controller
-from trainguard.checkpoint import validate_checkpoint
+from trainguard.checkpoint import candidate_path, validate_checkpoint
 from trainguard.config import load_config
 from trainguard.events import append_event
 
@@ -62,6 +62,9 @@ def test_guarded_run_keeps_two_valid_backups_within_declared_budget(
         assert sum(item["size"] for item in record.manifest["files"]) <= (
             config.checkpoint.max_checkpoint_bytes
         )
+        assert sum(
+            file.stat().st_size for file in marker.parent.rglob("*") if file.is_file()
+        ) <= config.checkpoint.max_checkpoint_bytes
     for path in (run_dir / "controller.jsonl", *sorted((run_dir / "attempts").glob("*/*.jsonl"))):
         assert path.stat().st_size <= config.checkpoint.max_event_log_bytes
 
@@ -101,3 +104,100 @@ def test_oversized_checkpoint_never_publishes_commit_marker(
     ).read_text()
     assert list((run_dir / "checkpoints").glob("step-*"))
     assert not list((run_dir / "checkpoints").glob("*/COMMITTED"))
+
+
+def test_guarded_checkpoint_limit_includes_manifest_and_commit_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _guarded_config(tmp_path, monkeypatch)
+    reference, succeeded = controller.run(source, tmp_path / "reference")
+    assert succeeded
+    candidate = next((reference / "checkpoints").glob("*/COMMITTED")).parent
+    config = load_config(reference / "config.json")
+    record = validate_checkpoint(candidate, config, reference.name)
+    payload_bytes = sum(item["size"] for item in record.manifest["files"])
+    complete_bytes = sum(path.stat().st_size for path in candidate.rglob("*") if path.is_file())
+    assert complete_bytes > payload_bytes
+    limit = payload_bytes + (complete_bytes - payload_bytes) // 2
+    source = _guarded_config(
+        tmp_path, monkeypatch, max_checkpoint_bytes=limit, max_retained_bytes=2 * limit,
+    )
+    run_dir, succeeded = controller.run(source, tmp_path / "bounded")
+    assert not succeeded
+    assert "checkpoint exceeds its configured byte limit" in (run_dir / "launcher.log").read_text()
+    assert not list((run_dir / "checkpoints").glob("*/COMMITTED"))
+
+
+def test_guarded_config_needs_two_checkpoint_boundaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _guarded_config(tmp_path, monkeypatch)
+    raw = json.loads(source.read_text())
+    raw["training"]["total_steps"] = 1
+    raw["checkpoint"]["interval_steps"] = 10
+    source.write_text(json.dumps(raw))
+    with pytest.raises(ValueError, match="two distinct checkpoint boundaries"):
+        load_config(source)
+
+
+def test_guarded_completion_rejects_only_one_verified_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _guarded_config(tmp_path, monkeypatch)
+    original_scan = controller._scan_checkpoints
+    damaged_marker = None
+
+    def damage_older_at_audit(run_dir, *args, **kwargs):
+        nonlocal damaged_marker
+        if kwargs.get("audit") and damaged_marker is None:
+            marker = candidate_path(run_dir, "attempt-001", 2) / "COMMITTED"
+            damaged_marker = marker.read_bytes()
+            marker.write_bytes(b"invalid backup\n")
+        return original_scan(run_dir, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(controller, "_scan_checkpoints", damage_older_at_audit)
+        with pytest.raises(RuntimeError, match="fewer than two verified"):
+            controller.run(source, tmp_path / "runs")
+    run_dir = next((tmp_path / "runs").iterdir())
+    status = json.loads((run_dir / "run.json").read_text())
+    assert status["status"] == "FINALIZING"
+    assert status["post_run_audit"]["status"] == "FAILED"
+    assert status["post_run_audit"]["valid_retained_count"] == 1
+    assert damaged_marker is not None
+    (candidate_path(run_dir, "attempt-001", 2) / "COMMITTED").write_bytes(damaged_marker)
+    assert controller.resume(run_dir)
+    assert json.loads((run_dir / "run.json").read_text())["post_run_audit"][
+        "valid_retained_count"
+    ] >= 2
+
+
+def test_guarded_audit_counts_uncommitted_candidate_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _guarded_config(
+        tmp_path, monkeypatch, max_checkpoint_bytes=2_000_000,
+        max_retained_bytes=4_000_000,
+    )
+    original_scan = controller._scan_checkpoints
+
+    def add_uncommitted_at_audit(run_dir, *args, **kwargs):
+        if kwargs.get("audit"):
+            candidate = candidate_path(run_dir, "attempt-999", 999)
+            if not candidate.exists():
+                candidate.mkdir()
+                (candidate / "unfinished.bin").write_bytes(b"x" * 2_000_000)
+        return original_scan(run_dir, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(controller, "_scan_checkpoints", add_uncommitted_at_audit)
+        with pytest.raises(RuntimeError, match="capacity budget is unsatisfied"):
+            controller.run(source, tmp_path / "runs")
+    run_dir = next((tmp_path / "runs").iterdir())
+    audit = json.loads((run_dir / "run.json").read_text())["post_run_audit"]
+    assert audit["status"] == "FAILED"
+    assert audit["valid_retained_count"] >= 2
+    assert audit["unverified_candidate_count"] >= 1
+    assert audit["unverified_candidate_bytes"] >= 2_000_000
+    assert audit["checkpoint_file_bytes"] > 4_000_000
+    assert audit["checkpoint_file_budget_satisfied"] is False

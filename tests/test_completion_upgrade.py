@@ -49,6 +49,37 @@ def test_succeeded_run_is_reaudited(tmp_path):
     assert json.loads((directory / "run.json").read_text())["status"] == "FAILED"
 
 
+def test_malformed_rank_digest_invalidates_previous_success(tmp_path):
+    source = Path(__file__).parents[1] / "configs/cpu_demo.yaml"
+    directory, ok = controller.run(source, tmp_path)
+    assert ok
+    path = directory / "attempts/attempt-001/summary.json"
+    summary = json.loads(path.read_text())
+    summary["rank_states"][0]["model_sha256"] = ["malformed"]
+    path.write_text(json.dumps(summary))
+    assert not controller.resume(directory)
+    status = json.loads((directory / "run.json").read_text())
+    assert status["status"] == "FAILED"
+    assert status["post_run_audit"]["status"] == "INVALIDATED"
+
+
+def test_malformed_attempt_identity_invalidates_previous_success(tmp_path):
+    from trainguard.validation import validate_runs
+
+    source = Path(__file__).parents[1] / "configs/cpu_demo.yaml"
+    directory, ok = controller.run(source, tmp_path)
+    assert ok
+    with sqlite3.connect(directory / "run.sqlite3") as database:
+        database.execute("UPDATE attempts SET attempt_id=?", (b"bad",))
+    result = validate_runs(directory, directory)
+    assert not result["passed"]
+    assert any("invalid identity" in item for item in result["differences"])
+    assert not controller.resume(directory)
+    status = json.loads((directory / "run.json").read_text())
+    assert status["status"] == "FAILED"
+    assert status["post_run_audit"]["status"] == "INVALIDATED"
+
+
 @pytest.mark.parametrize("failure", ["scan", "prune"])
 def test_post_run_audit_failure_cannot_publish_success_or_repeat_training(
     tmp_path, monkeypatch, failure

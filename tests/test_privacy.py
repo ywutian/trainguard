@@ -10,6 +10,7 @@ import pytest
 
 from trainguard import controller
 from trainguard.config import load_config
+from trainguard.privacy import protect_sample_event
 from trainguard.validation import validate_runs
 
 
@@ -87,7 +88,12 @@ def test_guarded_missing_wrong_key_and_sample_tampering_fail_closed(
     result = validate_runs(run_dir, run_dir)
     assert not result["passed"]
     assert any("sample evidence MAC differs" in item for item in result["differences"])
+    assert not controller.resume(run_dir)
+    failed_status = json.loads((run_dir / "run.json").read_text())
+    assert failed_status["status"] == "FAILED"
+    assert failed_status["post_run_audit"]["status"] == "INVALIDATED"
     path.write_text(original)
+    assert controller.resume(run_dir)
     assert validate_runs(run_dir, run_dir)["passed"]
     status_path = run_dir / "run.json"
     original_status = status_path.read_text()
@@ -98,6 +104,66 @@ def test_guarded_missing_wrong_key_and_sample_tampering_fail_closed(
         controller.resume(run_dir)
     assert not validate_runs(run_dir, run_dir)["passed"]
     status_path.write_text(original_status)
+
+
+def test_guarded_signed_duplicate_synthetic_samples_fail_completion_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _guarded_config(tmp_path, monkeypatch)
+    run_dir, succeeded = controller.run(source, tmp_path / "runs")
+    assert succeeded
+    path = run_dir / "attempts" / "attempt-001" / "rank-0.jsonl"
+    lines = [json.loads(line) for line in path.read_text().splitlines()]
+    target = next(event for event in lines if event["event_type"] == "step_completed")
+    fields = {
+        name: value for name, value in target.items()
+        if name not in {"time", "sample_count", "sample_commitment", "sample_evidence_mac"}
+    }
+    key = Path(os.environ["TRAINGUARD_SAMPLE_HMAC_KEY_FILE"]).read_bytes()
+    signed = protect_sample_event(fields, [7, 7], key)
+    target.update({
+        name: value for name, value in signed.items()
+        if name in {"sample_count", "sample_commitment", "sample_evidence_mac"}
+    })
+    path.write_text("".join(json.dumps(event) + "\n" for event in lines))
+    result = validate_runs(run_dir, run_dir)
+    assert not result["passed"]
+    assert any("synthetic sample commitment differs" in item for item in result["differences"])
+    assert not controller.resume(run_dir)
+    assert json.loads((run_dir / "run.json").read_text())["status"] == "FAILED"
+
+
+def test_guarded_unicode_mac_invalidates_previous_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _guarded_config(tmp_path, monkeypatch)
+    run_dir, succeeded = controller.run(source, tmp_path / "runs")
+    assert succeeded
+    path = run_dir / "attempts" / "attempt-001" / "rank-0.jsonl"
+    lines = [json.loads(line) for line in path.read_text().splitlines()]
+    target = next(event for event in lines if event["event_type"] == "step_completed")
+    target["sample_evidence_mac"] = "é" * 64
+    path.write_text("".join(json.dumps(event) + "\n" for event in lines))
+    result = validate_runs(run_dir, run_dir)
+    assert not result["passed"]
+    assert any("commitment is incomplete" in item for item in result["differences"])
+    assert not controller.resume(run_dir)
+    status = json.loads((run_dir / "run.json").read_text())
+    assert status["status"] == "FAILED"
+    assert status["post_run_audit"]["status"] == "INVALIDATED"
+
+
+def test_guarded_key_is_checked_before_external_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _guarded_config(tmp_path, monkeypatch)
+    monkeypatch.delenv("TRAINGUARD_SAMPLE_HMAC_KEY_FILE")
+    invoked = []
+    monkeypatch.setattr(controller, "preflight", lambda config: invoked.append(config))
+    with pytest.raises(ValueError, match="key file is required"):
+        controller.run(source, tmp_path / "runs")
+    assert not invoked
+    assert not (tmp_path / "runs").exists()
 
 
 def test_guarded_recovery_matches_uninterrupted_reference(

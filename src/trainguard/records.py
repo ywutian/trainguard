@@ -93,11 +93,15 @@ def summary_errors(
                 values = [
                     item.get(field) if isinstance(item, dict) else None for item in rank_states
                 ]
-                if any(
-                    not isinstance(value, str) or len(value) != 64 for value in values
-                ) or state_digest(values) != summary.get(field):
+                valid_values = all(
+                    isinstance(value, str)
+                    and len(value) == 64
+                    and all(character in "0123456789abcdef" for character in value)
+                    for value in values
+                )
+                if not valid_values or state_digest(values) != summary.get(field):
                     errors.append(f"final combined rank {field} differs")
-                if field not in {"stream_sha256", "extra_sha256"} and (
+                if valid_values and field not in {"stream_sha256", "extra_sha256"} and (
                     config.run.strategy == "ddp" and len(set(values)) > 1
                 ):
                     errors.append(f"final DDP rank {field} differs")

@@ -10,12 +10,13 @@ from pathlib import Path
 from typing import Any
 
 from trainguard.config import ProjectConfig, load_config
+from trainguard.data import sample_ids_for_step
 from trainguard.external_workload import (
     frozen_workload_path,
     read_verified_source,
     verify_v2_inputs,
 )
-from trainguard.privacy import key_for_run, verified_sample_event
+from trainguard.privacy import key_for_run, verified_sample_event, verify_expected_sample_ids
 from trainguard.records import parse_event, summary_errors
 
 
@@ -24,6 +25,30 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise TypeError(f"{path.name} is not a mapping")
     return value
+
+
+def _verify_synthetic_sample_event(
+    event: dict[str, Any], config: ProjectConfig, rank: int, key: bytes
+) -> None:
+    if config.external_workload is not None or config.data.kind != "synthetic":
+        return
+    cursor = event.get("consumed_batches")
+    if type(cursor) is not int or cursor < 1:
+        raise ValueError("synthetic sample cursor is invalid")
+    batch_count = (
+        1 if event["event_type"] == "batch_consumed"
+        else config.training.gradient_accumulation_steps
+    )
+    if cursor < batch_count:
+        raise ValueError("synthetic sample cursor precedes its update")
+    expected_ids = [
+        sample_id
+        for batch in range(cursor - batch_count, cursor)
+        for sample_id in sample_ids_for_step(
+            batch, rank, config.run.world_size, config.training.batch_size_per_rank
+        )
+    ]
+    verify_expected_sample_ids(event, expected_ids, key)
 
 
 def _effective_samples(
@@ -48,6 +73,9 @@ def _effective_samples(
     if not attempts:
         errors.append("attempt index contains no attempts")
     for attempt_id, resume_step, status in attempts:
+        if not isinstance(attempt_id, str) or re.fullmatch(r"attempt-[0-9]{3,}", attempt_id) is None:
+            errors.append("attempt index contains an invalid identity")
+            continue
         if type(resume_step) is not int or not 0 <= resume_step <= config.training.total_steps:
             errors.append(f"{attempt_id}: invalid resume step")
             continue
@@ -84,6 +112,7 @@ def _effective_samples(
                 }:
                     try:
                         sample_value = verified_sample_event(event, sample_key)
+                        _verify_synthetic_sample_event(event, config, rank, sample_key)
                     except ValueError as exc:
                         errors.append(f"{location}: {exc}")
                         continue
@@ -191,7 +220,9 @@ def _recovery_lineage_errors(run_dir: Path, run_id: str, world_size: int) -> lis
         errors.append("recovery decision count differs from attempt history")
 
     for index, (attempt_id, number, status, checkpoint, step, cursor) in enumerate(attempts):
-        if number != index + 1 or not isinstance(attempt_id, str):
+        if number != index + 1 or not isinstance(attempt_id, str) or (
+            re.fullmatch(r"attempt-[0-9]{3,}", attempt_id) is None
+        ):
             errors.append(f"attempt {index + 1}: recovery attempt order is invalid")
             continue
         if index == 0:
@@ -502,6 +533,9 @@ def _effective_batches(run_dir: Path, run_id: str, config: ProjectConfig):
     except sqlite3.Error as exc:
         return {rank: [] for rank in effective}, [f"attempt index is unreadable: {exc}"]
     for attempt_id, status, cursor in attempts:
+        if not isinstance(attempt_id, str) or re.fullmatch(r"attempt-[0-9]{3,}", attempt_id) is None:
+            errors.append("attempt index contains an invalid identity")
+            continue
         if type(cursor) is not int or cursor < 0:
             errors.append(f"{attempt_id}: invalid consumed batch cursor")
             continue
@@ -529,6 +563,7 @@ def _effective_batches(run_dir: Path, run_id: str, config: ProjectConfig):
                 if sample_key is not None:
                     try:
                         ids = verified_sample_event(event, sample_key)
+                        _verify_synthetic_sample_event(event, config, rank, sample_key)
                     except ValueError as exc:
                         errors.append(f"{attempt_id} rank {rank} line {number}: {exc}")
                         continue

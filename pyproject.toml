@@ -30,6 +30,7 @@ packages = ["src/trainguard"]
 [tool.hatch.build.targets.sdist]
 only-include = [
     ".gitignore", "LICENSE", "README.md", "pyproject.toml", "uv.lock",
+    "build-requirements.in", "build-constraints.txt",
     "configs", "examples", "scripts", "src", "tests",
     "docs/commercial/customer-pilot-template.md",
     "docs/commercial/market-evidence-2026-09-26.md",

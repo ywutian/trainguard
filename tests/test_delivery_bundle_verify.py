@@ -148,7 +148,7 @@ def _bundle(root: Path, module) -> Path:
 def test_transferred_bundle_checks_files_and_evidence_bindings(tmp_path: Path) -> None:
     module = _module()
     root = _bundle(tmp_path / "bundle", module)
-    assert module.verify_bundle(root)["files_checked"] == 17
+    assert module.verify_bundle(root)["files_checked"] == 19
     (root / "trainguard-0.3.2-py3-none-any.whl").write_bytes(b"changed wheel")
     with pytest.raises(module.DeliveryInvalid, match="file digest differs"):
         module.verify_bundle(root)

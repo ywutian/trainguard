@@ -253,6 +253,8 @@ def _scan_checkpoints(
 def _valid_attempt_summary(
     run_dir: Path, attempt_id: str, config: ProjectConfig, run_id: str
 ) -> dict | None:
+    if not isinstance(attempt_id, str) or re.fullmatch(r"attempt-[0-9]{3,}", attempt_id) is None:
+        return None
     path = run_dir / "attempts" / attempt_id / "summary.json"
     if not path.is_file():
         return None
@@ -433,6 +435,14 @@ def _launch_attempt(
 
 def _set_status(run_dir: Path, status: dict, value: str, reason: str) -> None:
     previous = status.get("status")
+    if previous == "SUCCEEDED" and value == "FAILED":
+        audit = status.get("post_run_audit")
+        if isinstance(audit, dict) and audit.get("status") in {"PASSED", "NOT_APPLICABLE"}:
+            previous_audit = audit["status"]
+            audit.update(
+                status="INVALIDATED", previous_status=previous_audit,
+                invalidated_at=utc_now(), invalidation_reason=reason,
+            )
     status.update(status=value, reason=reason)
     if value in {"SUCCEEDED", "FAILED", "INTERRUPTED"}:
         if previous != value or "finished_at" not in status:
@@ -482,6 +492,16 @@ def _finalize_completed_attempt(
             audit["retention_enabled"] = retention.get("enabled")
             audit["budget_satisfied"] = retention.get("budget_satisfied")
             audit["pending_deletions"] = len(retention.get("pending", []))
+            if config.run.profile == "guarded":
+                for field in (
+                    "valid_retained_count", "payload_budget_satisfied",
+                    "checkpoint_file_bytes", "unverified_candidate_count",
+                    "unverified_candidate_bytes", "checkpoint_file_budget_satisfied",
+                    "free_floor_satisfied",
+                ):
+                    audit[field] = retention.get(field)
+                if retention.get("valid_retained_count", 0) < 2:
+                    raise RuntimeError("fewer than two verified checkpoint candidates remain")
             if retention.get("enabled") and (
                 retention.get("pending") or retention.get("budget_satisfied") is not True
             ):
@@ -637,10 +657,10 @@ def run(
         raise ExperimentNotAuthorizedError(
             "fault injection or omitted recovery state requires explicit experiment authorization"
         )
-    workload_source = preflight(config)
     run_id = uuid.uuid4().hex[:12]
     run_dir = (output_root / run_id).resolve()
     sample_key = load_sample_key(run_dir) if config.run.profile == "guarded" else None
+    workload_source = preflight(config)
     run_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
     if workload_source is not None:
         from trainguard.external_workload import (

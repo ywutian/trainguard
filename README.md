@@ -8,7 +8,7 @@ The CPU recovery path is implemented and tested with two Gloo workers. It suppor
 
 Version 0.3.3 added a single-file external CPU DDP workload interface for local evaluation. A nonbuilt-in regression example runs through the same reference, crash/recovery, and omitted-state comparisons. The interface still uses the fixed AdamW optimizer and Cosine scheduler; its source hash covers only the adapter file. The local SQLite object-store implementation exercises same-host conditional-write protocol behavior and is not connected to checkpoint storage in the training path. Version 0.3.4 restricts the source distribution to reviewed repository files and checks every archive member against the checkout.
 
-The current source also has a bounded v2 external workload contract for local two-rank CPU/Gloo evaluation. It tests an external one-group SGD optimizer with momentum, external StepLR, complete stream state, and extra loss state. A reference run, worker-exit recovery, and omitted-state controls compare exact final state. This is a source-level candidate and does not change customer or production gates.
+Version 0.3.6 is a candidate with a bounded v2 external workload contract for local two-rank CPU/Gloo evaluation. It tests an external one-group SGD optimizer with momentum, external StepLR, complete stream state, and extra loss state. A reference run, worker-exit recovery, and omitted-state controls compare exact final state. This remains a local experiment and does not change customer or production gates.
 
 For the proposed customer deployment, integration, operations, security and commercial acceptance scope, see the [product closure and release gates](docs/plans/product-closure-2026-09-26.md). The current release is an experiment package and has not passed those production gates.
 
@@ -28,7 +28,7 @@ uv run trainguard run --config configs/recovery_demo.yaml --allow-experiment
 
 The first run is an uninterrupted reference. The second injects a rank-0 exit after step 2, restarts the group from a committed checkpoint, and completes. Each command prints its run directory. Compare the two directories:
 
-An installed wheel can write its packaged CPU example outside the source checkout with `trainguard init-config --output cpu_demo.yaml`. A configuration with `run.profile: guarded` requires checkpointing and rejects fault injection or omitted recovery state. This guard does not imply production acceptance.
+An installed wheel can write its packaged CPU example outside the source checkout with `trainguard init-config --output cpu_demo.yaml`. A configuration with `run.profile: guarded` requires checkpointing, explicit capacity budgets, two checkpoint opportunities, and a customer-held sample commitment key. It rejects fault injection or omitted recovery state. This guard does not imply production acceptance.
 
 ```bash
 uv run trainguard validate --reference runs/<reference-id> --recovered runs/<recovered-id>
@@ -60,7 +60,7 @@ Each candidate is stored under `runs/<run-id>/checkpoints/step-<step>-<attempt>/
 
 The run directory also contains `run.json`, a SQLite index (`run.sqlite3`), `launcher.log`, per-attempt rank event logs and summaries, and a final `summary.json`. The committed manifest is the checkpoint validity source if the controller stops before updating SQLite.
 
-Raw run evidence can contain sample identifiers and paths. Keep it in a restricted customer-controlled directory. `trainguard support-bundle runs/<run-id> --output support.json` produces a read-only summary with allowlisted scalar fields; the customer should review and approve it before sharing.
+Experiment run evidence can contain raw sample identifiers and paths. Guarded rank events replace raw sample IDs with ordered, customer-keyed HMAC commitments and record only a key identifier; the customer keeps the key in a private file outside the run directory. The key holder can re-sign evidence, and custom workload output or unstructured launcher logs are outside this protection. Keep all run data in a restricted customer-controlled directory. `trainguard support-bundle runs/<run-id> --output support.json` produces a read-only summary with allowlisted scalar fields; the customer should review and approve it before sharing.
 
 For a paired trial cost calculation, fill in [the pilot ledger template](docs/commercial/pilot-ledger-template.json) with customer rates and measured results, then run `python scripts/calculate_pilot_value.py <ledger.json> --output <result.json>`. The result is conditional on the injected scenarios and is not a realized savings or billing record.
 
@@ -118,9 +118,9 @@ Version 0.2.1 rejects linked checkpoint roots and inactive retention budgets, an
 Version 0.2.2 binds each recovery decision to every progressing rank's state-load and training-start evidence, rejects cross-run software identity mismatches, and broadcasts commit failures to all ranks. The source fingerprint is computed from package code so an installed wheel and its source checkout have the same identity; resolved runtime versions remain a separate resume check. Verify a built artifact with:
 
 ```bash
-uv build --wheel --sdist --out-dir dist
-uv run python scripts/verify_wheel.py dist/trainguard-0.3.5-py3-none-any.whl
-uv run python scripts/verify_install.py dist/trainguard-0.3.5-py3-none-any.whl
+uv build --wheel --sdist --build-constraints build-constraints.txt --require-hashes --out-dir dist
+uv run python scripts/verify_wheel.py dist/trainguard-0.3.6-py3-none-any.whl
+uv run python scripts/verify_install.py dist/trainguard-0.3.6-py3-none-any.whl
 ```
 
 See the [full closure assessment](docs/analysis/closure-assessment-2026-09-26.md) for the supported boundary, infrastructure gates and next acceptance steps.
@@ -153,3 +153,5 @@ Version 0.3.2 closes the Linux process-start ownership race and makes the CLI op
 Version 0.3.3 verifies a selected checkpoint again on every worker before and after loading, rejects inconsistent rank scheduler and final DDP state, and strengthens local test and delivery-bundle integrity checks. Its [local validation record](docs/commercial/evidence/local-validation-0.3.3.json) binds the local artifacts and raw results. [Linux artifact inspection](docs/commercial/evidence/linux-check-0.3.3.json) later found generated test output in its source distribution, so those artifacts are superseded. Version 0.3.4 checks an explicit source archive file set and rejects generated members before delivery. A recipient can run `python scripts/verify_delivery_bundle.py <bundle-directory>` and compare the reported manifest SHA-256 with a digest received through an independent trusted channel. Bundle consistency alone does not authenticate the sender. The external workload example and same-host storage reference do not change the nine blocked customer and production gates.
 
 Version 0.3.5 strengthens checkpoint load checks, records per-rank restore progress so a stopped group cannot repeatedly select a checkpoint whose load did not finish, and keeps ambiguous candidates for diagnosis. Newly created run records are private, atomic report writes resist planted temporary links, and local release evidence is bound to collected test identities and a fixed prior release. Each local gate has a timeout, records timeout as failure, and stops its discovered child process groups. A separate offline check compares the downloaded Linux 3.11 and 3.12 test evidence and package bytes with the local candidate. These controls require a new full validation record; earlier version results cannot be reused for this candidate.
+
+Version 0.3.6 candidate adds full end-of-run checkpoint auditing, detached-worker fencing, external v2 state restoration, guarded local capacity and keyed sample evidence. A guarded run only reports success if its final-step candidate and at least two structurally verified candidates remain, with the actual checkpoint tree under its configured local byte budget and free-space floor. Structural verification does not prove every candidate can be loaded on a future device. The release checker binds local gates to execution inputs, then requires a live authenticated Linux 3.11/3.12 workflow fetch before constructing an `EVALUATION_ONLY` customer bundle. Production and customer-environment gates remain blocked until separately tested and signed off.

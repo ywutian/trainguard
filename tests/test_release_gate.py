@@ -82,6 +82,15 @@ def test_local_test_gate_rejects_skip_inflation(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="incomplete"):
         module._validate_pytest_result(tmp_path, details)
 
+    # The critical privacy and retention cases are pinned even when the
+    # collected suite and its JUnit report could otherwise shrink together.
+    assert {
+        ("tests.test_capacity", "test_guarded_completion_rejects_only_one_verified_candidate"),
+        ("tests.test_capacity", "test_guarded_audit_counts_uncommitted_candidate_bytes"),
+        ("tests.test_privacy", "test_guarded_missing_wrong_key_and_sample_tampering_fail_closed"),
+        ("tests.test_privacy", "test_guarded_recovery_matches_uninterrupted_reference"),
+    } <= module.REQUIRED_TEST_IDENTITIES
+
     target.set("name", "test_cpu_campaign_closes_recovery_matrix")
     for case in suite.findall("testcase"):
         if case.find("skipped") is not None:

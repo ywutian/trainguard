@@ -29,7 +29,8 @@ def candidate(tmp_path: Path) -> Path:
     (tmp_path / "examples/workload.py").write_text("VALUE = 1\n", encoding="utf-8")
     (tmp_path / ".github/workflows/verify.yml").write_text("name: Verify\n", encoding="utf-8")
     for name in (
-        ".gitignore", "LICENSE", "README.md",
+        ".gitignore", "LICENSE", "README.md", "build-requirements.in",
+        "build-constraints.txt",
         "docs/commercial/customer-pilot-template.md",
         "docs/commercial/market-evidence-2026-09-26.md",
         "docs/commercial/operations-runbook.md",
@@ -52,6 +53,7 @@ def candidate(tmp_path: Path) -> Path:
     ("examples/workload.py", "VALUE = 2\n"),
     (".github/workflows/verify.yml", "name: Changed\n"),
     ("README.md", "changed\n"),
+    ("build-constraints.txt", "changed\n"),
     ("docs/commercial/operations-runbook.md", "changed\n"),
     ("src/trainguard/__init__.py", "VALUE = 2\n"),
     ("pyproject.toml", '[project]\nversion = "0.3.6"\n'),

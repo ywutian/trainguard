@@ -124,6 +124,7 @@ def main() -> None:
         stage = Path(temporary)
         files = [
             args.wheel, args.sdist, root / "pyproject.toml", root / "uv.lock",
+            root / "build-requirements.in", root / "build-constraints.txt",
             root / "LICENSE", root / "docs/commercial/operations-runbook.md",
             root / "docs/commercial/customer-pilot-template.md",
             root / "docs/commercial/pilot-ledger-template.json",

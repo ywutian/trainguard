@@ -8,7 +8,10 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-ROOT_FILES = {".gitignore", "LICENSE", "README.md", "pyproject.toml", "uv.lock"}
+ROOT_FILES = {
+    ".gitignore", "LICENSE", "README.md", "pyproject.toml", "uv.lock",
+    "build-requirements.in", "build-constraints.txt",
+}
 ROOT_DIRECTORIES = {"configs", "examples", "scripts", "src", "tests"}
 DOCUMENTS = {
     "docs/commercial/customer-pilot-template.md",
@@ -76,7 +79,8 @@ def verify_sdist(root: Path, archive_path: Path, version: str) -> int:
                 raise ValueError(f"source distribution member differs from checkout: {relative}")
     with tempfile.TemporaryDirectory(prefix="source-rebuild-") as directory:
         rebuilt = subprocess.run(
-            ["uv", "build", "--sdist", "--out-dir", directory],
+            ["uv", "build", "--sdist", "--build-constraints",
+             "build-constraints.txt", "--require-hashes", "--out-dir", directory],
             cwd=root, capture_output=True, text=True, check=False,
         )
         if rebuilt.returncode:

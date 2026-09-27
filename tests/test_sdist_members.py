@@ -33,7 +33,8 @@ def test_source_distribution_excludes_generated_output_and_rejects_injection(
     try:
         (probe / "unreviewed.json").write_text('{"sample": "private"}')
         subprocess.run(
-            ["uv", "build", "--sdist", "--out-dir", str(tmp_path)],
+            ["uv", "build", "--sdist", "--build-constraints",
+             "build-constraints.txt", "--require-hashes", "--out-dir", str(tmp_path)],
             cwd=root, capture_output=True, text=True, check=True,
         )
     finally:

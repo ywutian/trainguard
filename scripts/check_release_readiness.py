@@ -130,6 +130,11 @@ DEVICE_PREFLIGHT_SKIP = (
 # if the test suite is narrowed or a critical test is replaced by a new one.
 REQUIRED_TEST_IDENTITIES = {
     ("tests.test_campaign", "test_cpu_campaign_closes_recovery_matrix"),
+    ("tests.test_capacity", "test_guarded_completion_rejects_only_one_verified_candidate"),
+    ("tests.test_capacity", "test_guarded_audit_counts_uncommitted_candidate_bytes"),
+    ("tests.test_capacity", "test_guarded_checkpoint_limit_includes_manifest_and_commit_marker"),
+    ("tests.test_completion_upgrade", "test_malformed_rank_digest_invalidates_previous_success"),
+    ("tests.test_completion_upgrade", "test_malformed_attempt_identity_invalidates_previous_success"),
     ("tests.test_checkpoint_crash_matrix",
      "test_process_exit_at_checkpoint_publication_boundary[after_commit_before_index]"),
     ("tests.test_external_workload", "test_external_two_rank_recovery_and_omitted_state_controls"),
@@ -137,6 +142,10 @@ REQUIRED_TEST_IDENTITIES = {
     ("tests.test_local_reference_store", "test_local_reference_two_processes_have_one_head_cas_winner"),
     ("tests.test_local_topology_simulation",
      "test_two_local_launch_agents_recover_exactly_after_worker_exit"),
+    ("tests.test_privacy", "test_guarded_missing_wrong_key_and_sample_tampering_fail_closed"),
+    ("tests.test_privacy", "test_guarded_recovery_matches_uninterrupted_reference"),
+    ("tests.test_privacy", "test_guarded_signed_duplicate_synthetic_samples_fail_completion_audit"),
+    ("tests.test_privacy", "test_guarded_unicode_mac_invalidates_previous_success"),
     ("tests.test_recovery_integration",
      "test_selected_checkpoint_mutation_before_worker_load_fails_closed"),
     ("tests.test_recovery_integration", "test_validator_detects_omitted_recovery_state"),
@@ -311,7 +320,8 @@ def _verify_artifacts(root: Path, wheel: Path, sdist: Path, source_digest: str) 
         raise ValueError("source distribution package code differs from source")
     with tempfile.TemporaryDirectory(prefix="release-rebuild-") as temporary:
         result = subprocess.run(
-            ["uv", "build", "--wheel", "--sdist", "--out-dir", temporary],
+            ["uv", "build", "--wheel", "--sdist", "--build-constraints",
+             "build-constraints.txt", "--require-hashes", "--out-dir", temporary],
             cwd=root, capture_output=True, text=True, check=False,
         )
         if result.returncode:

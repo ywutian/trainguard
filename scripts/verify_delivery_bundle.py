@@ -27,6 +27,8 @@ HOSTED_REPOSITORY = "ywutian/trainguard"
 SOURCE_MEMBERS = {
     "pyproject.toml": "pyproject.toml",
     "uv.lock": "uv.lock",
+    "build-requirements.in": "build-requirements.in",
+    "build-constraints.txt": "build-constraints.txt",
     "LICENSE": "LICENSE",
     "operations-runbook.md": "docs/commercial/operations-runbook.md",
     "customer-pilot-template.md": "docs/commercial/customer-pilot-template.md",

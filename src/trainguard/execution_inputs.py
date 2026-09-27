@@ -9,6 +9,7 @@ from pathlib import Path
 INPUT_DIRECTORIES = ("src", "tests", "scripts", "configs", "examples", ".github/workflows")
 INPUT_FILES = (
     ".gitignore", "LICENSE", "README.md", "pyproject.toml", "uv.lock",
+    "build-requirements.in", "build-constraints.txt",
     "docs/commercial/customer-pilot-template.md",
     "docs/commercial/market-evidence-2026-09-26.md",
     "docs/commercial/operations-runbook.md",

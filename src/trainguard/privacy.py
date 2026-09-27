@@ -112,6 +112,7 @@ def verified_sample_event(event: dict[str, Any], key: bytes) -> tuple[int, str]:
         or any(character not in "0123456789abcdef" for character in commitment)
         or not isinstance(supplied_mac, str)
         or len(supplied_mac) != 64
+        or any(character not in "0123456789abcdef" for character in supplied_mac)
     ):
         raise ValueError("guarded sample commitment is incomplete or exposes raw IDs")
     signed = {field: value for field, value in event.items() if field not in {"time", "sample_evidence_mac"}}
@@ -122,3 +123,14 @@ def verified_sample_event(event: dict[str, Any], key: bytes) -> tuple[int, str]:
     if not hmac.compare_digest(expected, supplied_mac):
         raise ValueError("guarded sample evidence MAC differs")
     return count, commitment
+
+
+def verify_expected_sample_ids(event: dict[str, Any], sample_ids: list[int], key: bytes) -> None:
+    """Check a signed commitment against an independently determined sample sequence."""
+    stable_context = {
+        field: event.get(field)
+        for field in ("rank", "event_type", "global_step", "consumed_batches")
+    }
+    expected = _mac(key, b"trainguard-ordered-samples-v1\0", [stable_context, sample_ids])
+    if not hmac.compare_digest(expected, event.get("sample_commitment", "")):
+        raise ValueError("synthetic sample commitment differs from expected IDs")
