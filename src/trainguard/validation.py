@@ -10,7 +10,11 @@ from pathlib import Path
 from typing import Any
 
 from trainguard.config import ProjectConfig, load_config
-from trainguard.external_workload import frozen_workload_path, read_verified_source
+from trainguard.external_workload import (
+    frozen_workload_path,
+    read_verified_source,
+    verify_v2_inputs,
+)
 from trainguard.records import parse_event, summary_errors
 
 
@@ -299,6 +303,10 @@ def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
         if config.external_workload is not None:
             try:
                 read_verified_source(config, path=frozen_workload_path(directory))
+                verify_v2_inputs(config, run_dir=directory)
+                if config.external_workload.version == 2:
+                    read_verified_source(config)
+                    verify_v2_inputs(config)
             except ValueError as exc:
                 differences.append(f"{name} external workload evidence differs: {exc}")
     if reference_status["status"] != "SUCCEEDED":
@@ -352,6 +360,8 @@ def validate_runs(reference_dir: Path, recovered_dir: Path) -> dict[str, Any]:
         "scaler_sha256",
         "consumed_batches",
         "optimizer_updates",
+        "stream_sha256",
+        "extra_sha256",
     ):
         if reference_summary.get(field) != recovered_summary.get(field):
             differences.append(f"final {field} differs")

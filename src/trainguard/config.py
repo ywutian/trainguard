@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
 from typing import Literal
 
@@ -57,7 +58,7 @@ class RecoverySettings(StrictModel):
     max_restarts: int = Field(default=2, ge=0)
     startup_timeout_seconds: int = Field(default=120, ge=1)
     progress_timeout_seconds: int = Field(default=120, ge=1)
-    omit_state: Literal["none", "rng", "optimizer", "cursor"] = "none"
+    omit_state: Literal["none", "rng", "optimizer", "cursor", "stream", "extra"] = "none"
 
 
 class FaultSettings(StrictModel):
@@ -103,10 +104,41 @@ class DataSettings(StrictModel):
         return self
 
 
-class ExternalWorkloadSettings(StrictModel):
-    version: Literal[1] = 1
+class WorkloadDependency(StrictModel):
+    module: str = Field(pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
     path: str = Field(min_length=1)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class WorkloadDataFile(StrictModel):
+    name: str = Field(pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+    path: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ExternalWorkloadSettings(StrictModel):
+    version: Literal[1, 2] = 1
+    path: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    dependencies: list[WorkloadDependency] = Field(default_factory=list)
+    data_files: list[WorkloadDataFile] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_inputs(self) -> ExternalWorkloadSettings:
+        if self.version == 1 and (self.dependencies or self.data_files):
+            raise ValueError("external workload v1 has no bound dependency or data files")
+        if self.version == 2 and (not self.dependencies or not self.data_files):
+            raise ValueError("external workload v2 requires declared dependencies and data files")
+        if len({item.module for item in self.dependencies}) != len(self.dependencies):
+            raise ValueError("external workload dependency modules must be unique")
+        if any(
+            item.module in sys.stdlib_module_names or item.module in {"torch", "numpy"}
+            for item in self.dependencies
+        ):
+            raise ValueError("external workload dependency cannot shadow a runtime module")
+        if len({item.name for item in self.data_files}) != len(self.data_files):
+            raise ValueError("external workload data names must be unique")
+        return self
 
 
 class ProjectConfig(StrictModel):
@@ -123,9 +155,19 @@ class ProjectConfig(StrictModel):
     def validate_fault(self) -> ProjectConfig:
         if self.external_workload is not None:
             if self.run.device != "cpu" or self.run.strategy != "ddp":
-                raise ValueError("external workload v1 requires CPU DDP")
+                raise ValueError(f"external workload v{self.external_workload.version} requires CPU DDP")
             if self.data.kind != "synthetic":
-                raise ValueError("external workload v1 owns its data stream")
+                raise ValueError(f"external workload v{self.external_workload.version} owns its data stream")
+            if self.external_workload.version == 2 and (
+                self.run.world_size != 2 or self.run.backend != "gloo"
+                or self.training.precision != "fp32"
+                or self.training.dataloader_workers != 0
+            ):
+                raise ValueError("external workload v2 requires two CPU/Gloo ranks, FP32 and no data workers")
+        if self.recovery.omit_state in {"stream", "extra"} and (
+            self.external_workload is None or self.external_workload.version != 2
+        ):
+            raise ValueError("stream/extra omission requires external workload v2")
         if self.run.profile == "guarded":
             if self.fault.kind != "none" or self.recovery.omit_state != "none":
                 raise ValueError("guarded runs forbid fault injection and omitted recovery state")
@@ -163,7 +205,25 @@ class ProjectConfig(StrictModel):
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def fingerprint(self) -> str:
-        return self._digest(self.model_dump())
+        value = self.model_dump()
+        if self.external_workload is not None and self.external_workload.version == 1:
+            value["external_workload"].pop("dependencies")
+            value["external_workload"].pop("data_files")
+        return self._digest(value)
+
+    def external_identity(self) -> dict | None:
+        if self.external_workload is None:
+            return None
+        value = self.external_workload.model_dump(exclude={"path"})
+        if self.external_workload.version == 1:
+            value.pop("dependencies")
+            value.pop("data_files")
+            return value
+        for entry in value["dependencies"]:
+            entry.pop("path")
+        for entry in value["data_files"]:
+            entry.pop("path")
+        return value
 
     def workload_fingerprint(self) -> str:
         return self._digest(
@@ -176,8 +236,7 @@ class ProjectConfig(StrictModel):
                 "training": self.training.model_dump(),
                 "model": self.model.model_dump(),
                 "data": self.data.model_dump(exclude={"path"}),
-                "external_workload": self.external_workload.model_dump(exclude={"path"})
-                if self.external_workload is not None else None,
+                "external_workload": self.external_identity(),
             }
         )
 
@@ -193,8 +252,7 @@ class ProjectConfig(StrictModel):
                 "generator": "sample-id-v1"
                 if self.data.kind == "synthetic"
                 else "epoch-shuffle-v1",
-                "external_workload": self.external_workload.model_dump(exclude={"path"})
-                if self.external_workload is not None else None,
+                "external_workload": self.external_identity(),
             }
         )
 
@@ -225,4 +283,6 @@ def load_config(path: Path) -> ProjectConfig:
         config.data.path = str((path.parent / config.data.path).resolve())
     if config.external_workload is not None:
         config.external_workload.path = str((path.parent / config.external_workload.path).resolve())
+        for entry in (*config.external_workload.dependencies, *config.external_workload.data_files):
+            entry.path = str((path.parent / entry.path).resolve())
     return config

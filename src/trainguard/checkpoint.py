@@ -245,7 +245,29 @@ def _check_rank_states(
         scheduler = state.get("scheduler")
         if not isinstance(scheduler, dict) or not isinstance(state.get("rng"), dict):
             raise CheckpointInvalid(f"rank {rank} scheduler or RNG state is missing")
-        if scheduler:
+        external_v2 = config.external_workload is not None and config.external_workload.version == 2
+        if external_v2:
+            base_lrs, last_lrs = scheduler.get("base_lrs"), scheduler.get("_last_lr")
+            interval, gamma = scheduler.get("step_size"), scheduler.get("gamma")
+            if (
+                type(interval) is not int or interval < 1
+                or type(gamma) not in (int, float) or not math.isfinite(gamma)
+                or gamma <= 0 or gamma > 1
+                or type(scheduler.get("last_epoch")) is not int
+                or scheduler["last_epoch"] != step
+                or type(scheduler.get("_step_count")) is not int
+                or scheduler["_step_count"] != step + 1
+                or not isinstance(base_lrs, list) or len(base_lrs) != 1
+                or type(base_lrs[0]) not in (int, float) or not math.isfinite(base_lrs[0])
+                or not isinstance(last_lrs, list) or len(last_lrs) != 1
+                or type(last_lrs[0]) not in (int, float) or not math.isfinite(last_lrs[0])
+                or not math.isclose(
+                    last_lrs[0], base_lrs[0] * gamma ** (step // interval),
+                    rel_tol=1e-10, abs_tol=1e-12,
+                )
+            ):
+                raise CheckpointInvalid(f"rank {rank} StepLR progress differs at checkpoint")
+        elif scheduler:
             base_lrs = scheduler.get("base_lrs")
             last_lrs = scheduler.get("_last_lr")
             eta_min = scheduler.get("eta_min")
@@ -290,6 +312,23 @@ def _check_rank_states(
         ):
             raise CheckpointInvalid(f"rank {rank} consumed batch boundary is invalid")
         consumed.append(cursor)
+        if external_v2:
+            external_state = state.get("external_state")
+            if (
+                not isinstance(external_state, dict)
+                or set(external_state) != {"stream", "extra"}
+                or not isinstance(external_state["stream"], dict)
+                or not isinstance(external_state["extra"], dict)
+                or type(external_state["stream"].get("consumed_batches")) is not int
+                or external_state["stream"]["consumed_batches"] != cursor
+            ):
+                raise CheckpointInvalid(f"rank {rank} external stream or extra state is incomplete")
+            try:
+                encoded = json.dumps(external_state, sort_keys=True, allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise CheckpointInvalid(f"rank {rank} external state is not finite JSON") from exc
+            if len(encoded.encode("utf-8")) > 65536:
+                raise CheckpointInvalid(f"rank {rank} external state exceeds 64 KiB")
         if config.training.precision == "fp16" and not isinstance(state.get("scaler"), dict):
             raise CheckpointInvalid(f"rank {rank} scaler state is missing")
         try:
@@ -338,6 +377,11 @@ def _check_dcp_files(
             name.startswith("optimizer.") for name in names
         ):
             raise CheckpointInvalid("DCP model or optimizer state is missing")
+        if config.external_workload is not None and config.external_workload.version == 2 and not any(
+            name.startswith("optimizer.state.") and name.endswith(".momentum_buffer")
+            for name in names
+        ):
+            raise CheckpointInvalid("DCP SGD momentum state is missing")
     for index, location in metadata.storage_data.items():
         relative_name = getattr(location, "relative_path", None)
         offset = getattr(location, "offset", None)

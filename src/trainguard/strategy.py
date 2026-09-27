@@ -26,12 +26,19 @@ def preflight(config, *, workload_source: Path | None = None) -> bytes | None:
 
         read_token_rows(config)
     if config.external_workload is not None:
-        from trainguard.external_workload import load_verified_workload, read_verified_source
+        from trainguard.external_workload import (
+            load_verified_workload,
+            read_verified_source,
+            verify_v2_inputs,
+        )
 
         source = read_verified_source(config, path=workload_source)
+        if config.external_workload.version == 2:
+            verify_v2_inputs(config)
         load_verified_workload(
             config, source,
             workload_source if workload_source is not None else Path(config.external_workload.path),
+            run_dir=workload_source.parent if workload_source is not None else None,
         )
         return source
     return None

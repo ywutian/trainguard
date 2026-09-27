@@ -627,10 +627,15 @@ def run(
     run_dir = (output_root / run_id).resolve()
     run_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
     if workload_source is not None:
-        from trainguard.external_workload import freeze_source, read_verified_source
+        from trainguard.external_workload import (
+            freeze_source,
+            freeze_v2_inputs,
+            read_verified_source,
+        )
 
         frozen = freeze_source(run_dir, workload_source)
         read_verified_source(config, path=frozen)
+        freeze_v2_inputs(config, run_dir)
     write_json_atomic(run_dir / "config.json", config.model_dump())
     started_at = utc_now()
     status = {
@@ -673,8 +678,10 @@ def resume(run_dir: Path) -> bool:
         if current[field] != status["environment"].get(field):
             raise ValueError(f"saved run source or runtime {field} differs")
     if config.external_workload is not None:
-        from trainguard.external_workload import frozen_workload_path
+        from trainguard.external_workload import frozen_workload_path, read_verified_source
 
+        if config.external_workload.version == 2:
+            read_verified_source(config)
         preflight(config, workload_source=frozen_workload_path(run_dir))
     else:
         preflight(config)

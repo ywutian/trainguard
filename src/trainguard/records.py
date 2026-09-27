@@ -85,7 +85,11 @@ def summary_errors(
         else:
             from trainguard.strategy import state_digest
 
-            for field in (*HASH_FIELDS, "scaler_sha256"):
+            external_v2 = config.external_workload is not None and config.external_workload.version == 2
+            hash_fields = (*HASH_FIELDS, "scaler_sha256") + (
+                ("stream_sha256", "extra_sha256") if external_v2 else ()
+            )
+            for field in hash_fields:
                 values = [
                     item.get(field) if isinstance(item, dict) else None for item in rank_states
                 ]
@@ -93,7 +97,9 @@ def summary_errors(
                     not isinstance(value, str) or len(value) != 64 for value in values
                 ) or state_digest(values) != summary.get(field):
                     errors.append(f"final combined rank {field} differs")
-                if config.run.strategy == "ddp" and len(set(values)) > 1:
+                if field not in {"stream_sha256", "extra_sha256"} and (
+                    config.run.strategy == "ddp" and len(set(values)) > 1
+                ):
                     errors.append(f"final DDP rank {field} differs")
             for item in rank_states:
                 if (

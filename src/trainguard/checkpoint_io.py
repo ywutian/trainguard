@@ -75,13 +75,17 @@ def start_save(
     scheduler: torch.optim.lr_scheduler.LRScheduler,
     process_group: dist.ProcessGroup,
     training_state: TrainingState | None = None,
+    external_state: dict | None = None,
 ) -> PendingSave:
     path = candidate_path(run_dir, attempt_id, step)
     if rank == 0:
         path.mkdir(parents=True, exist_ok=False)
     dist.barrier()
     started = time.monotonic()
-    model_state, optimizer_state = get_state_dict(model, optimizer)
+    if config.external_workload is not None and config.external_workload.version == 2:
+        model_state, optimizer_state = model.state_dict(), optimizer.state_dict()
+    else:
+        model_state, optimizer_state = get_state_dict(model, optimizer)
     state_ready = time.monotonic()
     state = {"model": model_state, "optimizer": optimizer_state}
     upload_started = time.monotonic()
@@ -107,6 +111,13 @@ def start_save(
     if training_state is not None:
         local.update(training_state.snapshot())
         local["next_data_step"] = training_state.consumed_batches
+    if config.external_workload is not None and config.external_workload.version == 2:
+        if not isinstance(external_state, dict) or set(external_state) != {"stream", "extra"}:
+            raise ValueError("external workload v2 requires complete stream and extra state")
+        encoded = json.dumps(external_state, sort_keys=True, allow_nan=False)
+        if len(encoded.encode("utf-8")) > 65536:
+            raise ValueError("external workload v2 state exceeds 64 KiB")
+        local["external_state"] = json.loads(encoded)
     write_json_atomic(path / f"rank-{rank}.json", local)
     return pending
 
@@ -218,20 +229,38 @@ def load_training_state(
     process_group: dist.ProcessGroup,
     omit_state: str = "none",
     training_state: TrainingState | None = None,
-) -> tuple[int, int]:
-    # Allocate AdamW's per-parameter slots before DCP loads in place.
-    for parameter in model.parameters():
-        parameter.grad = torch.zeros_like(parameter)
-    optimizer.step()
-    optimizer.zero_grad(set_to_none=True)
-    model_state, optimizer_state = get_state_dict(model, optimizer)
+    *,
+    external_v2: bool = False,
+) -> tuple[int, int, dict | None]:
+    if external_v2:
+        if type(optimizer) is not torch.optim.SGD or any(
+            group["momentum"] <= 0 for group in optimizer.param_groups
+        ):
+            raise TypeError("external workload v2 restore supports SGD with momentum only")
+        # DCP loads into allocated tensors. Allocate the exact SGD momentum slots
+        # without invoking optimizer.step() or changing model parameters.
+        for group in optimizer.param_groups:
+            for parameter in group["params"]:
+                optimizer.state[parameter]["momentum_buffer"] = torch.zeros_like(parameter)
+        model_state, optimizer_state = model.state_dict(), optimizer.state_dict()
+    else:
+        # Preserve the v1 AdamW checkpoint format and slot allocation.
+        for parameter in model.parameters():
+            parameter.grad = torch.zeros_like(parameter)
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        model_state, optimizer_state = get_state_dict(model, optimizer)
     state = {"model": model_state, "optimizer": optimizer_state}
     dcp.load(state, checkpoint_id=path / "dcp", process_group=process_group)
     if omit_state == "optimizer":
         initial_optimizer = optimizer.state_dict()
-    set_state_dict(
-        model, optimizer, model_state_dict=state["model"], optim_state_dict=state["optimizer"]
-    )
+    if external_v2:
+        model.load_state_dict(state["model"])
+        optimizer.load_state_dict(state["optimizer"])
+    else:
+        set_state_dict(
+            model, optimizer, model_state_dict=state["model"], optim_state_dict=state["optimizer"]
+        )
     if omit_state == "optimizer":
         optimizer.load_state_dict(initial_optimizer)
     local = json.loads((path / f"rank-{rank}.json").read_text(encoding="utf-8"))
@@ -241,4 +270,4 @@ def load_training_state(
     if training_state is not None:
         training_state.restore(local)
     cursor = local["next_data_step"] if omit_state != "cursor" else 0
-    return local["global_step"], cursor
+    return local["global_step"], cursor, local.get("external_state") if external_v2 else None

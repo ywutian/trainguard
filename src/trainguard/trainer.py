@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import random
 import resource
@@ -25,6 +26,7 @@ from trainguard.config import load_config
 from trainguard.data import BatchStream
 from trainguard.events import append_event, sync_event_file, write_json_atomic
 from trainguard.external_workload import (
+    frozen_data_path,
     frozen_workload_path,
     load_verified_workload,
     read_verified_source,
@@ -79,10 +81,11 @@ def train(
     if expected_config_fingerprint is not None and config.fingerprint() != expected_config_fingerprint:
         raise ValueError("worker configuration differs from controller-approved configuration")
     external = None
+    external_v2 = config.external_workload is not None and config.external_workload.version == 2
     if config.external_workload is not None:
         frozen = frozen_workload_path(run_dir)
         external = load_verified_workload(
-            config, read_verified_source(config, path=frozen), frozen
+            config, read_verified_source(config, path=frozen), frozen, run_dir=run_dir
         )
     rank, world_size = int(os.environ["RANK"]), int(os.environ["WORLD_SIZE"])
     if world_size != config.run.world_size:
@@ -103,6 +106,7 @@ def train(
     control_group = dist.new_group(backend="gloo")
     event_path = run_dir / "attempts" / attempt_id / f"rank-{rank}.jsonl"
     stream = None
+    extra = None
 
     def event(event_type, **fields):
         append_event(
@@ -143,12 +147,53 @@ def train(
         if not isinstance(model, nn.Module):
             raise TypeError("workload build_model must return a torch module")
         wrapped = wrap_model(model, config, device)
-        optimizer = torch.optim.AdamW(wrapped.parameters(), lr=1e-3)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=config.training.total_steps
-        )
+        if external_v2:
+            optimizer = external.build_optimizer(wrapped, config)
+            if type(optimizer) is not torch.optim.SGD or len(optimizer.param_groups) != 1:
+                raise TypeError("external workload v2 supports one-group SGD with momentum")
+            group = optimizer.param_groups[0]
+            expected_parameters = {id(parameter) for parameter in wrapped.parameters() if parameter.requires_grad}
+            actual_parameters = [id(parameter) for parameter in group["params"]]
+            if (
+                len(actual_parameters) != len(set(actual_parameters))
+                or set(actual_parameters) != expected_parameters
+                or type(group["momentum"]) not in (int, float)
+                or not math.isfinite(group["momentum"])
+                or not 0 < group["momentum"] < 1
+                or group["dampening"] != 0
+                or group["nesterov"] is not False
+                or group["maximize"] is not False
+                or group["differentiable"] is not False
+                or group["weight_decay"] != 0
+                or group.get("foreach") not in (None, False)
+                or group.get("fused") not in (None, False)
+            ):
+                raise TypeError("external workload v2 requires standard momentum SGD over all trainable parameters")
+            scheduler = external.build_scheduler(optimizer, config)
+            if type(scheduler) is not torch.optim.lr_scheduler.StepLR or (
+                scheduler.optimizer is not optimizer
+            ):
+                raise TypeError("external workload v2 supports StepLR bound to the external SGD")
+            if (
+                type(scheduler.step_size) is not int or scheduler.step_size < 1
+                or type(scheduler.gamma) not in (int, float)
+                or not math.isfinite(scheduler.gamma)
+                or not 0 < scheduler.gamma <= 1
+            ):
+                raise TypeError("external workload v2 StepLR settings are unsupported")
+            extra = external.build_extra_state(config, rank)
+            if not callable(getattr(extra, "state_dict", None)) or not callable(
+                getattr(extra, "load_state_dict", None)
+            ):
+                raise TypeError("external workload v2 extra state requires state_dict/load_state_dict")
+        else:
+            optimizer = torch.optim.AdamW(wrapped.parameters(), lr=1e-3)
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=config.training.total_steps
+            )
         scaler = torch.amp.GradScaler("cuda") if config.training.precision == "fp16" else None
         state = TrainingState(scaler=scaler)
+        loaded_external_state = None
         event("group_initialized", global_step=0, device=str(device), strategy=config.run.strategy)
         if resume_checkpoint is not None:
             verify_resume_checkpoint("before load")
@@ -162,8 +207,14 @@ def train(
                 manifest_sha256=expected_checkpoint_sha256,
             )
             loaded = time.monotonic()
+            original_optimizer_step = optimizer.step
+            if external_v2:
+                def reject_restore_step(*_args, **_kwargs):
+                    raise RuntimeError("v2 restore attempted an optimizer step")
+
+                optimizer.step = reject_restore_step
             try:
-                _, data_start = load_training_state(
+                _, data_start, loaded_external_state = load_training_state(
                     resume_checkpoint,
                     rank,
                     wrapped,
@@ -172,6 +223,7 @@ def train(
                     checkpoint_group,
                     config.recovery.omit_state,
                     state,
+                    external_v2=external_v2,
                 )
             except (Exception, CheckpointException) as exc:
                 write_json_atomic(
@@ -194,11 +246,43 @@ def train(
                 )
                 sync_event_file(event_path)
                 raise
+            finally:
+                if external_v2:
+                    optimizer.step = original_optimizer_step
             record_restore_progress(
                 run_dir, run_id, attempt_id, rank, resume_checkpoint,
                 expected_checkpoint_sha256, "payload_loaded",
             )
             verify_resume_checkpoint("during load")
+        resumed_at = state.optimizer_updates
+        cursor = data_start if resume_checkpoint else state.consumed_batches
+        stream = (
+            external.build_stream(
+                config, rank, cursor,
+                {item.name: frozen_data_path(run_dir, item.name)
+                 for item in config.external_workload.data_files},
+            ) if external_v2 else external.build_stream(config, rank, cursor)
+            if external is not None else BatchStream(config, rank, cursor)
+        )
+        if not callable(getattr(stream, "next", None)) or not callable(
+            getattr(stream, "close", None)
+        ):
+            raise TypeError("workload build_stream must return a stream with next and close")
+        if external_v2:
+            if not callable(getattr(stream, "state_dict", None)) or not callable(
+                getattr(stream, "load_state_dict", None)
+            ):
+                raise TypeError("external workload v2 stream requires state_dict/load_state_dict")
+            if resume_checkpoint is not None:
+                if not isinstance(loaded_external_state, dict) or set(loaded_external_state) != {
+                    "stream", "extra"
+                }:
+                    raise ValueError("external workload v2 checkpoint state is incomplete")
+                if config.recovery.omit_state != "stream":
+                    stream.load_state_dict(loaded_external_state["stream"])
+                if config.recovery.omit_state != "extra":
+                    extra.load_state_dict(loaded_external_state["extra"])
+        if resume_checkpoint is not None:
             record_restore_progress(
                 run_dir, run_id, attempt_id, rank, resume_checkpoint,
                 expected_checkpoint_sha256, "state_loaded",
@@ -211,16 +295,6 @@ def train(
                 checkpoint_path=str(resume_checkpoint),
                 manifest_sha256=expected_checkpoint_sha256,
             )
-        resumed_at = state.optimizer_updates
-        cursor = data_start if resume_checkpoint else state.consumed_batches
-        stream = (
-            external.build_stream(config, rank, cursor)
-            if external is not None else BatchStream(config, rank, cursor)
-        )
-        if not callable(getattr(stream, "next", None)) or not callable(
-            getattr(stream, "close", None)
-        ):
-            raise TypeError("workload build_stream must return a stream with next and close")
         parameter_count = sum(parameter.numel() for parameter in model.parameters())
         if device.type == "cuda":
             torch.cuda.synchronize(device)
@@ -268,7 +342,10 @@ def train(
                                 tokens[:, 1:].reshape(-1),
                             )
                         else:
-                            loss = external.loss(wrapped(tokens), tokens, config)
+                            loss = (
+                                external.loss(wrapped(tokens), tokens, config, extra)
+                                if external_v2 else external.loss(wrapped(tokens), tokens, config)
+                            )
                             if not isinstance(loss, torch.Tensor) or loss.ndim != 0:
                                 raise TypeError("external workload loss must return a scalar Tensor")
                     scaled_loss = loss / accumulation
@@ -386,6 +463,8 @@ def train(
                     scheduler,
                     checkpoint_group,
                     state,
+                    {"stream": stream.state_dict(), "extra": extra.state_dict()}
+                    if external_v2 else None,
                 )
                 if config.fault.kind == "save_interrupt":
                     inject("save_interrupt", active, completed)
@@ -434,6 +513,9 @@ def train(
             if device.type == "cuda"
             else None,
         }
+        if external_v2:
+            local["stream_sha256"] = state_digest(stream.state_dict())
+            local["extra_sha256"] = state_digest(extra.state_dict())
         rank_states = [None] * world_size
         dist.all_gather_object(rank_states, local, group=control_group)
         if rank == 0:
@@ -444,7 +526,7 @@ def train(
                     "optimizer_sha256",
                     "scheduler_sha256",
                     "scaler_sha256",
-                )
+                ) + (("stream_sha256", "extra_sha256") if external_v2 else ())
             }
             write_json_atomic(
                 run_dir / "attempts" / attempt_id / "summary.json",
