@@ -124,6 +124,138 @@ def test_startup_identity_detects_new_import_hook_and_hash_seed(
         assert environment.startup_identity_sha256() != original
 
 
+def _system_site_fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    version = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    system_lib = tmp_path / "usr/lib"
+    config_root = tmp_path / "etc"
+    source = system_lib / version / "sitecustomize.py"
+    target = config_root / version / "sitecustomize.py"
+    source.parent.mkdir(parents=True)
+    target.parent.mkdir(parents=True)
+    target.write_text("value = 'one'\n")
+    source.symlink_to(target)
+    return source, target, system_lib, config_root
+
+
+def _system_site_identity(
+    source: Path, system_lib: Path, config_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[str, str, str, str, str]:
+    with monkeypatch.context() as patch:
+        patch.setattr(environment.sys, "platform", "linux")
+        return environment._system_sitecustomize_identity(
+            source, source.parent, system_lib_root=system_lib,
+            config_root=config_root, owner_uid=os.getuid(),
+        )
+
+
+def test_system_sitecustomize_link_binds_target_and_rejects_retargeting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, target, system_lib, config_root = _system_site_fixture(tmp_path)
+    first = _system_site_identity(source, system_lib, config_root, monkeypatch)
+    assert first == (
+        str(source), "system_sitecustomize_symlink", str(target), str(target),
+        hashlib.sha256(target.read_bytes()).hexdigest(),
+    )
+    target.write_text("value = 'two'\n")
+    assert _system_site_identity(source, system_lib, config_root, monkeypatch) != first
+    source.unlink()
+    source.symlink_to(target, target_is_directory=False)
+    assert _system_site_identity(source, system_lib, config_root, monkeypatch)[4] != first[4]
+    source.unlink()
+    source.symlink_to(os.path.relpath(target, source.parent))
+    with pytest.raises(ValueError, match="startup file"):
+        _system_site_identity(source, system_lib, config_root, monkeypatch)
+
+
+@pytest.mark.parametrize("damage", [
+    "other-name", "other-target", "target-link", "missing-target", "writable-target",
+    "writable-parent", "oversize", "wrong-owner", "wrong-platform",
+])
+def test_system_sitecustomize_link_rejects_untrusted_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str,
+) -> None:
+    source, target, system_lib, config_root = _system_site_fixture(tmp_path)
+    if damage == "other-name":
+        source = source.with_name("usercustomize.py")
+        source.symlink_to(target)
+    elif damage == "other-target":
+        other = target.with_name("other.py")
+        other.write_text("pass\n")
+        source.unlink()
+        source.symlink_to(other)
+    elif damage == "target-link":
+        other = target.with_name("other.py")
+        other.write_text("pass\n")
+        target.unlink()
+        target.symlink_to(other)
+    elif damage == "missing-target":
+        target.unlink()
+    elif damage == "writable-target":
+        target.chmod(0o666)
+    elif damage == "writable-parent":
+        target.parent.chmod(0o777)
+    elif damage == "oversize":
+        target.write_bytes(b"x" * 65537)
+    elif damage == "wrong-owner":
+        with monkeypatch.context() as patch:
+            patch.setattr(environment.sys, "platform", "linux")
+            with pytest.raises(ValueError, match="startup file"):
+                environment._system_sitecustomize_identity(
+                    source, source.parent, system_lib_root=system_lib,
+                    config_root=config_root, owner_uid=os.getuid() + 1,
+                )
+        return
+    elif damage == "wrong-platform":
+        with monkeypatch.context() as patch:
+            patch.setattr(environment.sys, "platform", "darwin")
+            with pytest.raises(ValueError, match="startup file"):
+                environment._system_sitecustomize_identity(
+                    source, source.parent, system_lib_root=system_lib,
+                    config_root=config_root, owner_uid=os.getuid(),
+                )
+        return
+    with pytest.raises(ValueError, match="startup|unsafe|verified"):
+        _system_site_identity(source, system_lib, config_root, monkeypatch)
+
+
+def test_system_sitecustomize_link_rejects_change_during_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, target, system_lib, config_root = _system_site_fixture(tmp_path)
+    original = environment.os.readlink
+    calls = 0
+
+    def changed(path: Path) -> str:
+        nonlocal calls
+        calls += 1
+        return original(path) if calls == 1 else str(target.with_name("replaced.py"))
+
+    with monkeypatch.context() as patch:
+        patch.setattr(environment.sys, "platform", "linux")
+        patch.setattr(environment.os, "readlink", changed)
+        with pytest.raises(ValueError, match="changed"):
+            environment._system_sitecustomize_identity(
+                source, source.parent, system_lib_root=system_lib,
+                config_root=config_root, owner_uid=os.getuid(),
+            )
+
+
+def test_other_python_startup_links_remain_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    site_dir = tmp_path / "site-packages"
+    site_dir.mkdir()
+    hook = site_dir / "hook.py"
+    hook.write_text("pass\n")
+    (site_dir / "customer.pth").symlink_to(hook)
+    with monkeypatch.context() as patch:
+        patch.syspath_prepend(str(site_dir))
+        with pytest.raises(ValueError, match="startup file"):
+            environment.startup_identity_sha256()
+
+
 def test_startup_identity_detects_explicit_import_tree_and_zip_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

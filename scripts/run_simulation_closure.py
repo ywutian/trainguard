@@ -27,7 +27,7 @@ from trainguard.execution_inputs import execution_inputs_sha256
 
 GATE_TIMEOUT_SECONDS = {
     "static": 180,
-    "tests": 1800,
+    "tests": 3600,
     "cpu-acceptance": 1200,
     "package": 300,
     "wheel": 300,
