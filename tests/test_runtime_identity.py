@@ -106,6 +106,21 @@ def test_installed_file_bytes_must_match_record_at_runtime_boundary(
         environment._verify_record_files(LocalDistribution(), "dependency.py,,5\n", "dependency")
 
 
+def test_startup_identity_detects_new_import_hook_and_hash_seed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    site_dir = tmp_path / "site"
+    site_dir.mkdir()
+    with monkeypatch.context() as patch:
+        patch.syspath_prepend(str(site_dir))
+        original = environment.startup_identity_sha256()
+        (site_dir / "untracked.pth").write_text("import builtins; builtins.marker = True\n")
+        assert environment.startup_identity_sha256() != original
+        (site_dir / "untracked.pth").unlink()
+        patch.setenv("PYTHONHASHSEED", "1729")
+        assert environment.startup_identity_sha256() != original
+
+
 def test_third_party_editable_dependency_is_rejected_without_path_leak(monkeypatch) -> None:
     class EditableDistribution:
         def __init__(self):

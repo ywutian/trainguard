@@ -120,6 +120,21 @@ def source_sha256() -> str:
 
 def startup_identity_sha256() -> str:
     """Bind import lookup paths, startup hooks, and Python path controls without exposing paths."""
+    paths = [Path(entry or os.getcwd()).resolve() for entry in sys.path]
+    startup_files = []
+    for directory in sorted(set(paths)):
+        if not directory.is_dir():
+            continue
+        candidates = set(directory.glob("*.pth"))
+        candidates.update(directory / name for name in (
+            "sitecustomize.py", "sitecustomize.pyc", "usercustomize.py", "usercustomize.pyc"
+        ))
+        for candidate in sorted(candidates):
+            if not candidate.exists() and not candidate.is_symlink():
+                continue
+            if candidate.is_symlink() or not candidate.is_file():
+                raise ValueError("Python startup file is linked or not a regular file")
+            startup_files.append((str(candidate), hashlib.sha256(candidate.read_bytes()).hexdigest()))
     hooks = {}
     for name in ("sitecustomize", "usercustomize"):
         module = sys.modules.get(name)
@@ -131,11 +146,16 @@ def startup_identity_sha256() -> str:
             raise TypeError(f"Python startup hook identity is incomplete: {name}")
         hooks[name] = hashlib.sha256(Path(source).read_bytes()).hexdigest()
     payload = {
-        "sys_path": [str(Path(entry or os.getcwd()).resolve()) for entry in sys.path],
+        "sys_path": [str(path) for path in paths],
+        "startup_files": startup_files,
         "hooks": hooks,
         "environment": {
             key: os.environ.get(key)
-            for key in ("PYTHONPATH", "PYTHONHOME", "PYTHONNOUSERSITE", "PYTHONDONTWRITEBYTECODE")
+            for key in (
+                "PYTHONPATH", "PYTHONHOME", "PYTHONNOUSERSITE", "PYTHONDONTWRITEBYTECODE",
+                "PYTHONHASHSEED", "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER",
+                "NVIDIA_VISIBLE_DEVICES",
+            )
         },
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
