@@ -2,6 +2,8 @@ name: Verify recovery package
 
 on:
   push:
+    branches-ignore:
+      - work/linux-cpu-diagnosis
   pull_request:
 
 permissions:
