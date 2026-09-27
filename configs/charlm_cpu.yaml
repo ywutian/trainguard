@@ -1,0 +1,33 @@
+# Representative workload, CPU correctness scale: byte-level GPT on a public-domain novel.
+# A GPU-scale run changes model/training sizes and needs a CUDA-capable adapter.
+run:
+  seed: 42
+  world_size: 2
+  backend: gloo
+  device: cpu
+
+training:
+  total_steps: 6
+  sequence_length: 64
+  batch_size_per_rank: 4
+  dataloader_workers: 0
+
+model:
+  vocab_size: 256
+  hidden_size: 64
+  num_heads: 4
+  num_layers: 2
+  dropout: 0.1
+
+external_workload:
+  version: 2
+  path: ../examples/charlm/charlm_workload.py
+  sha256: 775d391a6e8ec75b3a78d45c08aee3b62159a26fad9279015119dab957d809d4
+  dependencies:
+    - module: charlm_model
+      path: ../examples/charlm/charlm_model.py
+      sha256: 35b5fc7dce6101c4dd125c2e54e571fa82634c0ce3a5a31431a45d06ef0022b5
+  data_files:
+    - name: corpus
+      path: ../examples/charlm/pride_and_prejudice.txt
+      sha256: ec5006ab5edb21cf0ee304712665ef03a8a96bc5ef2e8bb70877dca86973d79c

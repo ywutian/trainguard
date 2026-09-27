@@ -16,7 +16,7 @@
     },
     {
       "id": "representative_workload",
-      "reason": "尚未选定代表性真实任务（公开模型与不可变语料），也无该作业的恢复矩阵及目标 GPU 吞吐与内存实测",
+      "reason": "已选定公开语料字节级 GPT 作业，本机 CPU 两 rank 完成精确恢复，并对 RNG、优化器、数据流与 extra 状态缺失做负控；尚无目标 GPU 上同一作业的故障矩阵、吞吐与内存实测",
       "status": "BLOCKED"
     },
     {
